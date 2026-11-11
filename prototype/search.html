@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>日志检索 · 统一日志分析平台</title>
+<link rel="stylesheet" href="../design-tokens.css">
+<link rel="stylesheet" href="assets/base.css">
+</head>
+<body class="busi-app" data-page="search" data-cid="C-SRC-02">
+<div data-shell></div>
+<div class="busi-body">
+  <main class="busi-main">
+
+    <div class="busi-page-head">
+      <div class="busi-breadcrumb">
+        <span>日志分析</span><span class="busi-breadcrumb__sep">&gt;</span>
+        <span class="busi-breadcrumb__current">日志检索</span>
+      </div>
+      <div class="busi-page-head__bar">
+        <div>
+          <h1 class="busi-page-head__title">日志检索</h1>
+          <p class="busi-page-head__desc">支持 SPL 语句与关键词混合检索，命中后可按字段下钻</p>
+        </div>
+        <div class="busi-page-head__actions">
+          <button class="busi-btn busi-btn--default" type="button" data-toast="success" data-toast-text="已保存为视图：订单错误排查">保存为视图</button>
+          <button class="busi-btn busi-btn--default" type="button" data-loading-btn data-done="已导出 5,000 条日志（上限 5,000）">导出结果</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="busi-page">
+
+      <section class="busi-search__query" aria-label="检索条件">
+        <div class="busi-search__row">
+          <select class="busi-select" aria-label="时间范围" data-range>
+            <option>近 1 小时</option>
+            <option selected>近 1 天</option>
+            <option>近 1 周</option>
+            <option>近 1 月</option>
+            <option>近 1 年</option>
+          </select>
+          <input class="busi-input busi-input--mono" type="text" aria-label="检索语句"
+                 value='source:order-service AND level:ERROR | stats count() by host'
+                 placeholder="请输入 SPL 或关键词，例如 source:nginx AND status>=500">
+          <button class="busi-btn busi-btn--primary" type="button" data-loading-btn data-done="检索完成，命中 8,426 条，耗时 236ms">查询</button>
+          <button class="busi-btn busi-btn--default" type="button" data-filter-reset>重置</button>
+        </div>
+        <div class="busi-search__chips">
+          <span>常用语法</span>
+          <button class="busi-chip" type="button" data-toast="info" data-toast-text="已插入：level:ERROR">level:ERROR</button>
+          <button class="busi-chip" type="button" data-toast="info" data-toast-text="已插入：status&gt;=500">status&gt;=500</button>
+          <button class="busi-chip" type="button" data-toast="info" data-toast-text="已插入：| stats count() by source">| stats count() by source</button>
+          <button class="busi-chip" type="button" data-toast="info" data-toast-text="已插入：| timechart span=5m count()">| timechart span=5m count()</button>
+          <span class="busi-hint">按 Enter 执行，Shift + Enter 换行</span>
+        </div>
+      </section>
+
+      <section class="busi-card" aria-label="日志分布直方图">
+        <div class="busi-card__head">
+          <div class="busi-card__title">日志分布直方图</div>
+          <div class="busi-card__extra">
+            <span class="busi-hint">命中 8,426 条 · 耗时 236ms · 柱体可框选缩小时间范围</span>
+          </div>
+        </div>
+        <div class="busi-card__body">
+          <div class="busi-chart">
+            <div class="busi-chart__head">
+              <div class="busi-chart__legend">
+                <span class="busi-chart__legend-item"><span class="busi-chart__dot"></span>日志条数</span>
+                <span class="busi-chart__legend-item"><span class="busi-chart__dot busi-chart__dot--warning"></span>选中时段</span>
+              </div>
+              <span class="busi-hint">单位：条 · 每柱 5 分钟</span>
+            </div>
+            <svg class="busi-chart__canvas" viewBox="0 0 960 140" role="img" aria-label="近 1 天日志分布直方图，13 时 40 分出现峰值">
+              <line class="busi-chart__grid" x1="24" y1="20" x2="944" y2="20"/>
+              <line class="busi-chart__grid" x1="24" y1="62" x2="944" y2="62"/>
+              <line class="busi-chart__grid" x1="24" y1="104" x2="944" y2="104"/>
+              <rect class="busi-chart__bar" x="32" y="96" width="16" height="26" rx="1"/>
+              <rect class="busi-chart__bar" x="58" y="88" width="16" height="34" rx="1"/>
+              <rect class="busi-chart__bar" x="84" y="92" width="16" height="30" rx="1"/>
+              <rect class="busi-chart__bar" x="110" y="80" width="16" height="42" rx="1"/>
+              <rect class="busi-chart__bar" x="136" y="86" width="16" height="36" rx="1"/>
+              <rect class="busi-chart__bar" x="162" y="72" width="16" height="50" rx="1"/>
+              <rect class="busi-chart__bar" x="188" y="78" width="16" height="44" rx="1"/>
+              <rect class="busi-chart__bar" x="214" y="64" width="16" height="58" rx="1"/>
+              <rect class="busi-chart__bar" x="240" y="70" width="16" height="52" rx="1"/>
+              <rect class="busi-chart__bar" x="266" y="58" width="16" height="64" rx="1"/>
+              <rect class="busi-chart__bar" x="292" y="66" width="16" height="56" rx="1"/>
+              <rect class="busi-chart__bar" x="318" y="50" width="16" height="72" rx="1"/>
+              <rect class="busi-chart__bar" x="344" y="56" width="16" height="66" rx="1"/>
+              <rect class="busi-chart__bar" x="370" y="44" width="16" height="78" rx="1"/>
+              <rect class="busi-chart__bar" x="396" y="52" width="16" height="70" rx="1"/>
+              <rect class="busi-chart__bar" x="422" y="38" width="16" height="84" rx="1"/>
+              <rect class="busi-chart__bar" x="448" y="30" width="16" height="92" rx="1"/>
+              <rect class="busi-chart__bar" x="474" y="24" width="16" height="98" rx="1"/>
+              <rect class="busi-chart__bar" x="500" y="34" width="16" height="88" rx="1"/>
+              <rect class="busi-chart__bar" x="526" y="46" width="16" height="76" rx="1"/>
+              <rect class="busi-chart__bar" x="552" y="40" width="16" height="82" rx="1"/>
+              <rect class="busi-chart__bar busi-chart__bar--warning" x="578" y="18" width="16" height="104" rx="1"/>
+              <rect class="busi-chart__bar busi-chart__bar--warning" x="604" y="26" width="16" height="96" rx="1"/>
+              <rect class="busi-chart__bar busi-chart__bar--warning" x="630" y="36" width="16" height="86" rx="1"/>
+              <rect class="busi-chart__bar" x="656" y="54" width="16" height="68" rx="1"/>
+              <rect class="busi-chart__bar" x="682" y="62" width="16" height="60" rx="1"/>
+              <rect class="busi-chart__bar" x="708" y="74" width="16" height="48" rx="1"/>
+              <rect class="busi-chart__bar" x="734" y="82" width="16" height="40" rx="1"/>
+              <rect class="busi-chart__bar" x="760" y="90" width="16" height="32" rx="1"/>
+              <rect class="busi-chart__bar" x="786" y="86" width="16" height="36" rx="1"/>
+              <rect class="busi-chart__bar" x="812" y="94" width="16" height="28" rx="1"/>
+              <rect class="busi-chart__bar" x="838" y="98" width="16" height="24" rx="1"/>
+              <rect class="busi-chart__bar" x="864" y="92" width="16" height="30" rx="1"/>
+              <rect class="busi-chart__bar" x="890" y="100" width="16" height="22" rx="1"/>
+              <text class="busi-chart__axis" x="24" y="132">00:00</text>
+              <text class="busi-chart__axis" x="300" y="132">06:00</text>
+              <text class="busi-chart__axis" x="576" y="132">12:00</text>
+              <text class="busi-chart__axis" x="852" y="132">18:00</text>
+            </svg>
+            <div class="busi-chart__foot">
+              <span>数据来源：order-service 全部日志</span>
+              <span>注：13:40—13:55 为峰值区间，已自动聚焦</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="busi-search__layout" aria-label="字段与检索结果">
+
+        <aside class="busi-fields" aria-label="字段列表">
+          <div class="busi-fields__head">
+            <span class="busi-fields__title">字段</span>
+            <span class="busi-hint">已选 3 / 12</span>
+          </div>
+          <div class="busi-fields__body">
+            <div class="busi-fields__group">已选字段</div>
+            <label class="busi-fields__item">
+              <span class="busi-fields__check"><input class="busi-check" type="checkbox" checked><span>level</span></span>
+              <span class="busi-fields__count">8,426</span>
+            </label>
+            <label class="busi-fields__item">
+              <span class="busi-fields__check"><input class="busi-check" type="checkbox" checked><span>source</span></span>
+              <span class="busi-fields__count">8,426</span>
+            </label>
+            <label class="busi-fields__item">
+              <span class="busi-fields__check"><input class="busi-check" type="checkbox" checked><span>host</span></span>
+              <span class="busi-fields__count">8,426</span>
+            </label>
+            <div class="busi-fields__group">可选字段</div>
+            <label class="busi-fields__item">
+              <span class="busi-fields__check"><input class="busi-check" type="checkbox"><span>traceId</span></span>
+              <span class="busi-fields__count">7,918</span>
+            </label>
+            <label class="busi-fields__item">
+              <span class="busi-fields__check"><input class="busi-check" type="checkbox"><span>status</span></span>
+              <span class="busi-fields__count">6,204</span>
+            </label>
+            <label class="busi-fields__item">
+              <span class="busi-fields__check"><input class="busi-check" type="checkbox"><span>latency</span></span>
+              <span class="busi-fields__count">5,872</span>
+            </label>
+            <label class="busi-fields__item">
+              <span class="busi-fields__check"><input class="busi-check" type="checkbox"><span>region</span></span>
+              <span class="busi-fields__count">4,310</span>
+            </label>
+            <label class="busi-fields__item">
+              <span class="busi-fields__check"><input class="busi-check" type="checkbox"><span>userId</span></span>
+              <span class="busi-fields__count">3,942</span>
+            </label>
+            <div class="busi-fields__group">解析异常</div>
+            <label class="busi-fields__item">
+              <span class="busi-fields__check"><input class="busi-check" type="checkbox"><span>payload</span></span>
+              <span class="busi-fields__count">286</span>
+            </label>
+          </div>
+        </aside>
+
+        <div class="busi-table-wrap">
+          <div class="busi-card__head" style="border-bottom:0">
+            <div class="busi-card__title">检索结果</div>
+            <div class="busi-card__extra"><span class="busi-hint">点击行查看完整日志与上下文字段</span></div>
+          </div>
+
+          <div class="busi-table__batch">
+            <span>已选 <strong data-batch-count>0</strong> 项</span>
+            <div class="busi-table__batch-actions">
+              <button class="busi-btn busi-btn--text" type="button" data-toast="success" data-toast-text="已导出所选日志 3 条">导出所选</button>
+              <button class="busi-btn busi-btn--text" type="button" data-toast="info" data-toast-text="已复制所选日志的检索语句">复制语句</button>
+            </div>
+          </div>
+
+          <table class="busi-table">
+            <caption class="busi-sr-only">日志检索结果，共 8,426 条</caption>
+            <colgroup>
+              <col style="width:48px"><col style="width:146px"><col style="width:76px"><col style="width:150px"><col style="width:132px"><col>
+            </colgroup>
+            <thead>
+              <tr>
+                <th class="busi-table__th" scope="col"><input class="busi-check" type="checkbox" data-check-all aria-label="全选当前页"></th>
+                <th class="busi-table__th" scope="col">时间</th>
+                <th class="busi-table__th" scope="col">级别</th>
+                <th class="busi-table__th" scope="col">来源</th>
+                <th class="busi-table__th" scope="col">主机</th>
+                <th class="busi-table__th" scope="col">内容</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr class="busi-table__row is-clickable" data-detail="log-detail" data-detail-title="日志详情" data-raw="2026-11-11 09:42:18 ERROR order-service [host-10-24-8-21] Payment callback timeout after 3000ms, orderId=SO20261111094218 channel=UNIONPAY retry=2">
+                <td class="busi-table__cell busi-table__cell--check"><input class="busi-check" type="checkbox" aria-label="选择该行"></td>
+                <td class="busi-table__cell" data-label="时间">2026-11-11 09:42:18.326</td>
+                <td class="busi-table__cell" data-label="级别"><span class="busi-level busi-level--critical"><span class="busi-level__dot"></span>ERROR</span></td>
+                <td class="busi-table__cell" data-label="来源">order-service</td>
+                <td class="busi-table__cell" data-label="主机">host-10-24-8-21</td>
+                <td class="busi-table__cell" data-label="内容" title="Payment callback timeout after 3000ms, orderId=SO20261111094218 channel=UNIONPAY retry=2">Payment callback timeout after 3000ms, orderId=SO20261111094218 channel=UNIONPAY retry=2</td>
+              </tr>
+              <tr class="busi-table__row is-clickable" data-detail="log-detail" data-detail-title="日志详情" data-raw="2026-11-11 09:42:11 WARN api-gateway [host-10-24-8-16] upstream response time 1820ms exceeds threshold 800ms, route=/api/order/create status=502">
+                <td class="busi-table__cell busi-table__cell--check"><input class="busi-check" type="checkbox" aria-label="选择该行"></td>
+                <td class="busi-table__cell" data-label="时间">2026-11-11 09:42:11.104</td>
+                <td class="busi-table__cell" data-label="级别"><span class="busi-level busi-level--warning"><span class="busi-level__dot"></span>WARN</span></td>
+                <td class="busi-table__cell" data-label="来源">api-gateway</td>
+                <td class="busi-table__cell" data-label="主机">host-10-24-8-16</td>
+                <td class="busi-table__cell" data-label="内容" title="upstream response time 1820ms exceeds threshold 800ms, route=/api/order/create status=502">upstream response time 1820ms exceeds threshold 800ms, route=/api/order/create status=502</td>
+              </tr>
+              <tr class="busi-table__row is-clickable" data-detail="log-detail" data-detail-title="日志详情" data-raw="2026-11-11 09:41:57 INFO order-service [host-10-24-8-21] order created, orderId=SO20261111094157 amount=1280.00 userId=U88213 region=north-2">
+                <td class="busi-table__cell busi-table__cell--check"><input class="busi-check" type="checkbox" aria-label="选择该行"></td>
+                <td class="busi-table__cell" data-label="时间">2026-11-11 09:41:57.882</td>
+                <td class="busi-table__cell" data-label="级别"><span class="busi-level busi-level--info"><span class="busi-level__dot"></span>INFO</span></td>
+                <td class="busi-table__cell" data-label="来源">order-service</td>
+                <td class="busi-table__cell" data-label="主机">host-10-24-8-21</td>
+                <td class="busi-table__cell" data-label="内容" title="order created, orderId=SO20261111094157 amount=1280.00 userId=U88213 region=north-2">order created, orderId=SO20261111094157 amount=1280.00 userId=U88213 region=north-2</td>
+              </tr>
+              <tr class="busi-table__row is-clickable" data-detail="log-detail" data-detail-title="日志详情" data-raw="2026-11-11 09:41:32 ERROR payment-gateway [host-10-24-8-32] channel return code 5001: upstream timeout, channel=WECHAT_PAY orderId=SO20261111094132">
+                <td class="busi-table__cell busi-table__cell--check"><input class="busi-check" type="checkbox" aria-label="选择该行"></td>
+                <td class="busi-table__cell" data-label="时间">2026-11-11 09:41:32.470</td>
+                <td class="busi-table__cell" data-label="级别"><span class="busi-level busi-level--critical"><span class="busi-level__dot"></span>ERROR</span></td>
+                <td class="busi-table__cell" data-label="来源">payment-gateway</td>
+                <td class="busi-table__cell" data-label="主机">host-10-24-8-32</td>
+                <td class="busi-table__cell" data-label="内容" title="channel return code 5001: upstream timeout, channel=WECHAT_PAY orderId=SO20261111094132">channel return code 5001: upstream timeout, channel=WECHAT_PAY orderId=SO20261111094132</td>
+              </tr>
+              <tr class="busi-table__row is-clickable" data-detail="log-detail" data-detail-title="日志详情" data-raw="2026-11-11 09:41:08 INFO nginx-access [host-10-24-8-11] GET /api/order/list 200 86ms client=10.24.32.88">
+                <td class="busi-table__cell busi-table__cell--check"><input class="busi-check" type="checkbox" aria-label="选择该行"></td>
+                <td class="busi-table__cell" data-label="时间">2026-11-11 09:41:08.015</td>
+                <td class="busi-table__cell" data-label="级别"><span class="busi-level busi-level--info"><span class="busi-level__dot"></span>INFO</span></td>
+                <td class="busi-table__cell" data-label="来源">nginx-access</td>
+                <td class="busi-table__cell" data-label="主机">host-10-24-8-11</td>
+                <td class="busi-table__cell" data-label="内容" title="GET /api/order/list 200 86ms client=10.24.32.88">GET /api/order/list 200 86ms client=10.24.32.88</td>
+              </tr>
+              <tr class="busi-table__row is-clickable" data-detail="log-detail" data-detail-title="日志详情" data-raw="2026-11-11 09:40:55 WARN db-audit [host-10-24-9-08] slow query 2.8s, sql=select * from t_order where create_time > ? and status = ? rows=18204">
+                <td class="busi-table__cell busi-table__cell--check"><input class="busi-check" type="checkbox" aria-label="选择该行"></td>
+                <td class="busi-table__cell" data-label="时间">2026-11-11 09:40:55.663</td>
+                <td class="busi-table__cell" data-label="级别"><span class="busi-level busi-level--warning"><span class="busi-level__dot"></span>WARN</span></td>
+                <td class="busi-table__cell" data-label="来源">db-audit</td>
+                <td class="busi-table__cell" data-label="主机">host-10-24-9-08</td>
+                <td class="busi-table__cell" data-label="内容" title="slow query 2.8s, sql=select * from t_order where create_time > ? and status = ? rows=18204">slow query 2.8s, sql=select * from t_order where create_time &gt; ? and status = ? rows=18204</td>
+              </tr>
+              <tr class="busi-table__row is-clickable" data-detail="log-detail" data-detail-title="日志详情" data-raw="2026-11-11 09:40:21 ERROR order-service [host-10-24-8-22] inventory deduct failed, sku=SKU-2048 reason=库存不足 warehouse=north-1">
+                <td class="busi-table__cell busi-table__cell--check"><input class="busi-check" type="checkbox" aria-label="选择该行"></td>
+                <td class="busi-table__cell" data-label="时间">2026-11-11 09:40:21.230</td>
+                <td class="busi-table__cell" data-label="级别"><span class="busi-level busi-level--critical"><span class="busi-level__dot"></span>ERROR</span></td>
+                <td class="busi-table__cell" data-label="来源">order-service</td>
+                <td class="busi-table__cell" data-label="主机">host-10-24-8-22</td>
+                <td class="busi-table__cell" data-label="内容" title="inventory deduct failed, sku=SKU-2048 reason=库存不足 warehouse=north-1">inventory deduct failed, sku=SKU-2048 reason=库存不足 warehouse=north-1</td>
+              </tr>
+              <tr class="busi-table__row is-clickable" data-detail="log-detail" data-detail-title="日志详情" data-raw="2026-11-11 09:39:46 DEBUG order-service [host-10-24-8-22] cache hit, key=order:SO20261111093946 ttl=286s">
+                <td class="busi-table__cell busi-table__cell--check"><input class="busi-check" type="checkbox" aria-label="选择该行"></td>
+                <td class="busi-table__cell" data-label="时间">2026-11-11 09:39:46.907</td>
+                <td class="busi-table__cell" data-label="级别"><span class="busi-level busi-level--info"><span class="busi-level__dot"></span>DEBUG</span></td>
+                <td class="busi-table__cell" data-label="来源">order-service</td>
+                <td class="busi-table__cell" data-label="主机">host-10-24-8-22</td>
+                <td class="busi-table__cell" data-label="内容" title="cache hit, key=order:SO20261111093946 ttl=286s">cache hit, key=order:SO20261111093946 ttl=286s</td>
+              </tr>
+              <tr class="busi-table__row is-clickable" data-detail="log-detail" data-detail-title="日志详情" data-raw="2026-11-11 09:39:12 INFO api-gateway [host-10-24-8-17] rate limit applied, client=web-portal qps=118 limit=100">
+                <td class="busi-table__cell busi-table__cell--check"><input class="busi-check" type="checkbox" aria-label="选择该行"></td>
+                <td class="busi-table__cell" data-label="时间">2026-11-11 09:39:12.554</td>
+                <td class="busi-table__cell" data-label="级别"><span class="busi-level busi-level--info"><span class="busi-level__dot"></span>INFO</span></td>
+                <td class="busi-table__cell" data-label="来源">api-gateway</td>
+                <td class="busi-table__cell" data-label="主机">host-10-24-8-17</td>
+                <td class="busi-table__cell" data-label="内容" title="rate limit applied, client=web-portal qps=118 limit=100">rate limit applied, client=web-portal qps=118 limit=100</td>
+              </tr>
+              <tr class="busi-table__row is-clickable" data-detail="log-detail" data-detail-title="日志详情" data-raw="2026-11-11 09:38:50 FATAL payment-gateway [host-10-24-8-32] datasource pool exhausted, active=64 idle=0 waitQueue=128">
+                <td class="busi-table__cell busi-table__cell--check"><input class="busi-check" type="checkbox" aria-label="选择该行"></td>
+                <td class="busi-table__cell" data-label="时间">2026-11-11 09:38:50.031</td>
+                <td class="busi-table__cell" data-label="级别"><span class="busi-level busi-level--critical"><span class="busi-level__dot"></span>FATAL</span></td>
+                <td class="busi-table__cell" data-label="来源">payment-gateway</td>
+                <td class="busi-table__cell" data-label="主机">host-10-24-8-32</td>
+                <td class="busi-table__cell" data-label="内容" title="datasource pool exhausted, active=64 idle=0 waitQueue=128">datasource pool exhausted, active=64 idle=0 waitQueue=128</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <div class="busi-pagination">
+            <span class="busi-pagination__total">共 8,426 条</span>
+            <div class="busi-pagination__pages">
+              <button class="busi-pagination__item busi-pagination__item--arrow" type="button" disabled aria-label="上一页">&lt;</button>
+              <button class="busi-pagination__item is-active" type="button">1</button>
+              <button class="busi-pagination__item" type="button">2</button>
+              <button class="busi-pagination__item" type="button">3</button>
+              <button class="busi-pagination__item" type="button">4</button>
+              <button class="busi-pagination__item" type="button">5</button>
+              <button class="busi-pagination__item" type="button">…</button>
+              <button class="busi-pagination__item" type="button" aria-label="第 421 页">421</button>
+              <button class="busi-pagination__item busi-pagination__item--arrow" type="button" aria-label="下一页">&gt;</button>
+            </div>
+            <div class="busi-pagination__size">
+              <span>每页</span>
+              <select class="busi-pagination__select" aria-label="每页条数">
+                <option selected>20</option><option>50</option><option>100</option>
+              </select>
+              <span>条</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+    </div>
+  </main>
+</div>
+
+<div class="busi-mask" data-mask="log-detail"></div>
+<aside class="busi-drawer" id="log-detail" role="dialog" aria-modal="true" aria-labelledby="log-detail-title">
+  <div class="busi-drawer__head">
+    <div class="busi-drawer__title" id="log-detail-title" data-drawer-title>日志详情</div>
+    <button class="busi-icon-btn" type="button" data-drawer-close aria-label="关闭详情">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M3 3l10 10M13 3L3 13"/></svg>
+    </button>
+  </div>
+  <div class="busi-drawer__body" data-drawer-body></div>
+  <div class="busi-drawer__foot">
+    <button class="busi-btn busi-btn--default" type="button" data-drawer-close>关闭</button>
+    <button class="busi-btn busi-btn--primary" type="button" data-toast="success" data-toast-text="已复制 traceId，可在链路追踪中查看上下游">复制 traceId</button>
+  </div>
+</aside>
+
+<script src="assets/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>运行总览 · 统一日志分析平台</title>
+<link rel="stylesheet" href="../design-tokens.css">
+<link rel="stylesheet" href="assets/base.css">
+</head>
+<body class="busi-app" data-page="overview" data-cid="C-OVW-01">
+<div data-shell></div>
+<div class="busi-body">
+  <main class="busi-main">
+
+    <div class="busi-page-head">
+      <div class="busi-breadcrumb">
+        <span>概览</span><span class="busi-breadcrumb__sep">&gt;</span>
+        <span class="busi-breadcrumb__current">运行总览</span>
+      </div>
+      <div class="busi-page-head__bar">
+        <div>
+          <h1 class="busi-page-head__title">运行总览</h1>
+          <p class="busi-page-head__desc">数据截至 2026-11-11 09:45:00，每 60 秒自动刷新</p>
+        </div>
+        <div class="busi-page-head__actions">
+          <select class="busi-select" aria-label="时间范围" data-range>
+            <option>近 1 小时</option>
+            <option selected>近 24 小时</option>
+            <option>近 7 天</option>
+            <option>近 30 天</option>
+          </select>
+          <button class="busi-btn busi-btn--default" type="button" data-loading-btn data-done="指标已刷新">刷新</button>
+          <button class="busi-btn busi-btn--default" type="button" data-toast="success" data-toast-text="运行报表已导出，可在下载中心查看">导出报表</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="busi-page">
+
+      <section class="busi-grid-4" aria-label="核心指标">
+        <div class="busi-stat">
+          <div class="busi-stat__label"><span>今日写入日志</span><span class="busi-tag busi-tag--normal"><span class="busi-tag__dot"></span>正常</span></div>
+          <div class="busi-stat__value">12,486<span class="busi-stat__unit">万条</span></div>
+          <div class="busi-stat__desc"><span class="busi-stat__trend--up">↑ 8.4%</span><span>较昨日同一时刻</span></div>
+        </div>
+        <div class="busi-stat">
+          <div class="busi-stat__label"><span>活动告警</span><span class="busi-badge busi-badge--alarm">4</span></div>
+          <div class="busi-stat__value">36<span class="busi-stat__unit">条</span></div>
+          <div class="busi-stat__desc"><span>严重 4 · 警告 12 · 提示 20</span></div>
+        </div>
+        <div class="busi-stat">
+          <div class="busi-stat__label"><span>检索耗时 P95</span><span class="busi-tag busi-tag--normal"><span class="busi-tag__dot"></span>达标</span></div>
+          <div class="busi-stat__value">286<span class="busi-stat__unit">ms</span></div>
+          <div class="busi-stat__desc"><span class="busi-stat__trend--down">↓ 12.6%</span><span>目标 ≤ 800ms</span></div>
+        </div>
+        <div class="busi-stat">
+          <div class="busi-stat__label"><span>在线数据源</span><span class="busi-tag busi-tag--warning"><span class="busi-tag__dot"></span>2 个异常</span></div>
+          <div class="busi-stat__value">18<span class="busi-stat__unit">/ 20 个</span></div>
+          <div class="busi-stat__desc"><span>离线 1 · 异常 1</span></div>
+        </div>
+      </section>
+
+      <section class="busi-grid-2" aria-label="趋势与分布">
+        <div class="busi-card">
+          <div class="busi-card__head">
+            <div class="busi-card__title">日志写入趋势</div>
+            <div class="busi-card__extra"><span class="busi-hint">单位：万条</span></div>
+          </div>
+          <div class="busi-card__body">
+            <div class="busi-chart">
+              <div class="busi-chart__head">
+                <div class="busi-chart__legend">
+                  <span class="busi-chart__legend-item"><span class="busi-chart__dot"></span>写入量</span>
+                </div>
+                <span class="busi-hint">近 24 小时</span>
+              </div>
+              <svg class="busi-chart__canvas" viewBox="0 0 640 200" role="img" aria-label="近 24 小时日志写入趋势折线图，峰值 810 万条">
+                <text class="busi-chart__unit" x="0" y="12">万条</text>
+                <line class="busi-chart__grid" x1="40" y1="20" x2="620" y2="20"/>
+                <line class="busi-chart__grid" x1="40" y1="57" x2="620" y2="57"/>
+                <line class="busi-chart__grid" x1="40" y1="94" x2="620" y2="94"/>
+                <line class="busi-chart__grid" x1="40" y1="131" x2="620" y2="131"/>
+                <line class="busi-chart__grid" x1="40" y1="168" x2="620" y2="168"/>
+                <text class="busi-chart__axis" x="8" y="24">900</text>
+                <text class="busi-chart__axis" x="8" y="61">600</text>
+                <text class="busi-chart__axis" x="8" y="98">300</text>
+                <text class="busi-chart__axis" x="8" y="172">0</text>
+                <path class="busi-chart__area" d="M40,106.7 L84.6,83.3 L129.2,91.7 L173.8,68.3 L218.5,76.7 L263.1,53.3 L307.7,60 L352.3,40 L396.9,50 L441.5,55 L486.2,35 L530.8,43.3 L575.4,63.3 L620,73.3 L620,168 L40,168 Z"/>
+                <path class="busi-chart__line" d="M40,106.7 L84.6,83.3 L129.2,91.7 L173.8,68.3 L218.5,76.7 L263.1,53.3 L307.7,60 L352.3,40 L396.9,50 L441.5,55 L486.2,35 L530.8,43.3 L575.4,63.3 L620,73.3"/>
+                <circle class="busi-chart__point" cx="486.2" cy="35" r="4"/>
+                <text class="busi-chart__axis" x="470" y="24">810</text>
+                <text class="busi-chart__axis" x="34" y="190">00:00</text>
+                <text class="busi-chart__axis" x="210" y="190">06:00</text>
+                <text class="busi-chart__axis" x="390" y="190">12:00</text>
+                <text class="busi-chart__axis" x="560" y="190">18:00</text>
+              </svg>
+              <div class="busi-chart__foot">
+                <span>数据来源：日志检索 · 全量数据源</span>
+                <span>注：20:00 后写入量回落，与批量任务结束时间一致</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="busi-card">
+          <div class="busi-card__head">
+            <div class="busi-card__title">告警级别分布</div>
+            <div class="busi-card__extra"><a href="alarms.html">查看告警事件</a></div>
+          </div>
+          <div class="busi-card__body">
+            <div class="busi-chart">
+              <div class="busi-chart__head">
+                <div class="busi-chart__legend">
+                  <span class="busi-chart__legend-item"><span class="busi-chart__dot busi-chart__dot--error"></span>严重</span>
+                  <span class="busi-chart__legend-item"><span class="busi-chart__dot busi-chart__dot--warning"></span>警告</span>
+                  <span class="busi-chart__legend-item"><span class="busi-chart__dot busi-chart__dot--normal"></span>提示</span>
+                </div>
+                <span class="busi-hint">单位：条</span>
+              </div>
+              <svg class="busi-chart__canvas" viewBox="0 0 640 200" role="img" aria-label="告警级别分布环形图，共 36 条活动告警">
+                <circle class="busi-chart__donut-track" cx="150" cy="100" r="52"/>
+                <circle class="busi-chart__donut-a" cx="150" cy="100" r="52" stroke-dasharray="36.3 290.4" transform="rotate(-90 150 100)"/>
+                <circle class="busi-chart__donut-b" cx="150" cy="100" r="52" stroke-dasharray="108.9 217.8" stroke-dashoffset="-36.3" transform="rotate(-90 150 100)"/>
+                <circle class="busi-chart__donut-c" cx="150" cy="100" r="52" stroke-dasharray="181.5 145.2" stroke-dashoffset="-145.2" transform="rotate(-90 150 100)"/>
+                <text class="busi-chart__center-value" x="150" y="98" text-anchor="middle">36</text>
+                <text class="busi-chart__center-label" x="150" y="118" text-anchor="middle">活动告警</text>
+                <g>
+                  <text class="busi-chart__axis" x="260" y="62">严重</text>
+                  <text class="busi-chart__axis" x="520" y="62">4 条 · 11%</text>
+                  <text class="busi-chart__axis" x="260" y="104">警告</text>
+                  <text class="busi-chart__axis" x="520" y="104">12 条 · 33%</text>
+                  <text class="busi-chart__axis" x="260" y="146">提示</text>
+                  <text class="busi-chart__axis" x="520" y="146">20 条 · 56%</text>
+                </g>
+              </svg>
+              <div class="busi-chart__foot">
+                <span>数据来源：告警中心 · 近 24 小时</span>
+                <span>注：同一告警 30 分钟内合并计一次</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="busi-grid-2" aria-label="检索耗时与数据源健康">
+        <div class="busi-card">
+          <div class="busi-card__head">
+            <div class="busi-card__title">检索耗时分布</div>
+            <div class="busi-card__extra"><span class="busi-hint">单位：ms</span></div>
+          </div>
+          <div class="busi-card__body">
+            <div class="busi-chart">
+              <div class="busi-chart__head">
+                <div class="busi-chart__legend">
+                  <span class="busi-chart__legend-item"><span class="busi-chart__dot busi-chart__dot--normal"></span>P95 耗时</span>
+                  <span class="busi-chart__legend-item"><span class="busi-chart__dot busi-chart__dot--warning"></span>超过 800ms</span>
+                </div>
+              </div>
+              <svg class="busi-chart__canvas" viewBox="0 0 640 200" role="img" aria-label="各时段检索 P95 耗时柱状图，仅 20 时超过 800 毫秒">
+                <line class="busi-chart__grid" x1="40" y1="30" x2="620" y2="30"/>
+                <line class="busi-chart__grid" x1="40" y1="76" x2="620" y2="76"/>
+                <line class="busi-chart__grid" x1="40" y1="122" x2="620" y2="122"/>
+                <line class="busi-chart__grid" x1="40" y1="168" x2="620" y2="168"/>
+                <text class="busi-chart__axis" x="4" y="34">1000</text>
+                <text class="busi-chart__axis" x="12" y="80">750</text>
+                <text class="busi-chart__axis" x="12" y="126">500</text>
+                <text class="busi-chart__axis" x="12" y="172">250</text>
+                <rect class="busi-chart__bar" x="56" y="120" width="28" height="48" rx="2"/>
+                <rect class="busi-chart__bar" x="116" y="112" width="28" height="56" rx="2"/>
+                <rect class="busi-chart__bar" x="176" y="126" width="28" height="42" rx="2"/>
+                <rect class="busi-chart__bar" x="236" y="104" width="28" height="64" rx="2"/>
+                <rect class="busi-chart__bar" x="296" y="118" width="28" height="50" rx="2"/>
+                <rect class="busi-chart__bar" x="356" y="96" width="28" height="72" rx="2"/>
+                <rect class="busi-chart__bar busi-chart__bar--warning" x="416" y="58" width="28" height="110" rx="2"/>
+                <rect class="busi-chart__bar" x="476" y="110" width="28" height="58" rx="2"/>
+                <rect class="busi-chart__bar" x="536" y="128" width="28" height="40" rx="2"/>
+                <rect class="busi-chart__bar" x="596" y="134" width="20" height="34" rx="2"/>
+                <text class="busi-chart__axis" x="50" y="188">00</text>
+                <text class="busi-chart__axis" x="290" y="188">08</text>
+                <text class="busi-chart__axis" x="410" y="188">16</text>
+                <text class="busi-chart__axis" x="588" y="188">23</text>
+              </svg>
+              <div class="busi-chart__foot">
+                <span>数据来源：检索网关 · 近 24 小时</span>
+                <span>注：16 时批量检索导致 P95 升至 912ms</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="busi-card">
+          <div class="busi-card__head">
+            <div class="busi-card__title">数据源健康度</div>
+            <div class="busi-card__extra"><a href="data-sources.html">查看数据源</a></div>
+          </div>
+          <div class="busi-card__body busi-col">
+            <div>
+              <div class="busi-row busi-row--between"><span class="busi-strong">订单服务 Nginx</span><span class="busi-hint">3,240 万条/日</span></div>
+              <div class="busi-progress" style="margin-top:8px"><div class="busi-progress__bar busi-progress__bar--success" style="width:98%"></div></div>
+            </div>
+            <div>
+              <div class="busi-row busi-row--between"><span class="busi-strong">支付网关 Syslog</span><span class="busi-hint">1,180 万条/日</span></div>
+              <div class="busi-progress" style="margin-top:8px"><div class="busi-progress__bar busi-progress__bar--success" style="width:92%"></div></div>
+            </div>
+            <div>
+              <div class="busi-row busi-row--between"><span class="busi-strong">核心网关 Kafka</span><span class="busi-tag busi-tag--warning"><span class="busi-tag__dot"></span>告警中</span></div>
+              <div class="busi-progress" style="margin-top:8px"><div class="busi-progress__bar" style="width:76%"></div></div>
+            </div>
+            <div>
+              <div class="busi-row busi-row--between"><span class="busi-strong">数据库审计 HTTP</span><span class="busi-tag busi-tag--fault"><span class="busi-tag__dot"></span>异常</span></div>
+              <div class="busi-progress" style="margin-top:8px"><div class="busi-progress__bar busi-progress__bar--warning" style="width:41%"></div></div>
+            </div>
+            <p class="busi-hint">健康度 = 最近 1 小时实际接收量 / 近 7 天同时段均值，低于 70% 触发告警。</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="busi-card" aria-label="最近告警">
+        <div class="busi-card__head">
+          <div class="busi-card__title">最近告警</div>
+          <div class="busi-card__extra"><a href="alarms.html">查看全部告警</a></div>
+        </div>
+        <div class="busi-table-wrap" style="border:0">
+          <table class="busi-table">
+            <caption class="busi-sr-only">最近 5 条告警事件</caption>
+            <colgroup>
+              <col style="width:34%"><col style="width:12%"><col style="width:20%"><col style="width:16%"><col style="width:10%"><col style="width:8%">
+            </colgroup>
+            <thead>
+              <tr>
+                <th class="busi-table__th" scope="col">告警名称</th>
+                <th class="busi-table__th" scope="col">级别</th>
+                <th class="busi-table__th" scope="col">告警来源</th>
+                <th class="busi-table__th" scope="col">发生时间</th>
+                <th class="busi-table__th" scope="col">状态</th>
+                <th class="busi-table__th" scope="col">处理人</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr class="busi-table__row">
+                <td class="busi-table__cell busi-table__cell--name">订单服务错误率突增</td>
+                <td class="busi-table__cell"><span class="busi-level busi-level--critical"><span class="busi-level__dot"></span>严重</span></td>
+                <td class="busi-table__cell">order-service</td>
+                <td class="busi-table__cell">2026-11-11 09:42:18</td>
+                <td class="busi-table__cell"><span class="busi-tag busi-tag--warning"><span class="busi-tag__dot"></span>告警中</span></td>
+                <td class="busi-table__cell">陈立</td>
+              </tr>
+              <tr class="busi-table__row">
+                <td class="busi-table__cell busi-table__cell--name">网关 5xx 比例超阈值</td>
+                <td class="busi-table__cell"><span class="busi-level busi-level--critical"><span class="busi-level__dot"></span>严重</span></td>
+                <td class="busi-table__cell">api-gateway</td>
+                <td class="busi-table__cell">2026-11-11 09:38:02</td>
+                <td class="busi-table__cell"><span class="busi-tag busi-tag--warning"><span class="busi-tag__dot"></span>告警中</span></td>
+                <td class="busi-table__cell">值班一组</td>
+              </tr>
+              <tr class="busi-table__row">
+                <td class="busi-table__cell busi-table__cell--name">磁盘使用率超过 85%</td>
+                <td class="busi-table__cell"><span class="busi-level busi-level--warning"><span class="busi-level__dot"></span>警告</span></td>
+                <td class="busi-table__cell">host-10-24-8-16</td>
+                <td class="busi-table__cell">2026-11-11 09:21:44</td>
+                <td class="busi-table__cell"><span class="busi-tag busi-tag--warning"><span class="busi-tag__dot"></span>告警中</span></td>
+                <td class="busi-table__cell">周航</td>
+              </tr>
+              <tr class="busi-table__row">
+                <td class="busi-table__cell busi-table__cell--name">数据库慢查询数量上升</td>
+                <td class="busi-table__cell"><span class="busi-level busi-level--warning"><span class="busi-level__dot"></span>警告</span></td>
+                <td class="busi-table__cell">db-audit</td>
+                <td class="busi-table__cell">2026-11-11 08:56:31</td>
+                <td class="busi-table__cell"><span class="busi-muted">已恢复</span></td>
+                <td class="busi-table__cell">周航</td>
+              </tr>
+              <tr class="busi-table__row">
+                <td class="busi-table__cell busi-table__cell--name">Kafka 消费延迟升高</td>
+                <td class="busi-table__cell"><span class="busi-level busi-level--info"><span class="busi-level__dot"></span>提示</span></td>
+                <td class="busi-table__cell">kafka-core</td>
+                <td class="busi-table__cell">2026-11-11 08:31:09</td>
+                <td class="busi-table__cell"><span class="busi-muted">已恢复</span></td>
+                <td class="busi-table__cell">陈立</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+    </div>
+  </main>
+</div>
+<script src="assets/app.js"></script>
+</body>
+</html>

@@ -31,3 +31,6 @@ Thumbs.db
 *.log
 tmp/
 .cache/
+
+# ---- 第三方工具缓存 / 分享副本（非项目源码）----
+.trae-html-share-packages/

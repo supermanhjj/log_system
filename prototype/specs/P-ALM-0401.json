@@ -1,0 +1,323 @@
+{
+  "meta": {
+    "page_id": "P-ALM-0401",
+    "trace_id": "R-ALM-0401",
+    "spec_version": "1.0.0",
+    "design_tag": "sg-tokens-v3.1.0",
+    "owner": "产品-方案组 / 设计-UI组 / 研发-前端组"
+  },
+  "route": "/alarms/events",
+  "menu_code": "0301",
+  "page": {
+    "type": "list",
+    "layout": "header+sidebar+main",
+    "header": {
+      "breadcrumb": [
+        "告警中心",
+        "告警事件"
+      ],
+      "title": "告警事件",
+      "actions": [
+        "刷新",
+        "导出",
+        "批量关闭"
+      ]
+    },
+    "states": {
+      "empty": {
+        "desc": "暂无告警事件，新建规则后自动生成",
+        "action": "新建规则"
+      },
+      "loading": {
+        "type": "skeleton",
+        "delay_ms": 300
+      },
+      "error": {
+        "desc": "数据加载失败，请稍后重试",
+        "action": "重试",
+        "keep_filters": true
+      },
+      "noPermission": {
+        "desc": "您暂无该数据范围权限",
+        "action": "申请权限"
+      }
+    }
+  },
+  "components": [
+    {
+      "id": "C-ALM-01",
+      "type": "filter-bar",
+      "props": {
+        "labelWidth": 88,
+        "perRow": 4
+      },
+      "states": [
+        "default",
+        "hover",
+        "active",
+        "focus-visible",
+        "disabled"
+      ],
+      "rules": [
+        "FLT-001",
+        "FLT-003",
+        "FLT-004",
+        "FLT-005",
+        "INP-005"
+      ]
+    },
+    {
+      "id": "C-ALM-02",
+      "type": "table",
+      "size": "default",
+      "props": {
+        "stickyHeader": true,
+        "columns": [
+          "checkbox",
+          "alarmName",
+          "level",
+          "source",
+          "occurTime",
+          "status",
+          "owner",
+          "action"
+        ],
+        "batchBar": true,
+        "pagination": {
+          "pageSize": 20,
+          "options": [
+            20,
+            50,
+            100
+          ]
+        }
+      },
+      "states": [
+        "default",
+        "hover",
+        "active",
+        "focus-visible",
+        "disabled",
+        "loading"
+      ],
+      "states_omitted": {
+        "error": "表格层错误由页面级 error 态承接，单元格不单独出错误态"
+      },
+      "rules": [
+        "TBL-001",
+        "TBL-004",
+        "TBL-005",
+        "TBL-008",
+        "TBL-009",
+        "TBL-010",
+        "TBL-011",
+        "TBL-012"
+      ]
+    },
+    {
+      "id": "C-ALM-03",
+      "type": "pagination",
+      "props": {
+        "pageSize": 20,
+        "options": [
+          20,
+          50,
+          100
+        ]
+      },
+      "states": [
+        "default",
+        "hover",
+        "disabled",
+        "focus-visible"
+      ],
+      "states_omitted": {
+        "active": "按压与 hover 视觉一致",
+        "loading": "翻页加载由表格承接",
+        "error": "失败由页面级 error 承接"
+      },
+      "rules": [
+        "DSC-009",
+        "TBL-012"
+      ]
+    },
+    {
+      "id": "C-ALM-04",
+      "type": "drawer",
+      "size": 480,
+      "props": {
+        "title": "告警详情",
+        "fields": [
+          "alarmName",
+          "level",
+          "source",
+          "occurTime",
+          "status",
+          "owner",
+          "message"
+        ]
+      },
+      "states": [
+        "default",
+        "hover",
+        "active",
+        "focus-visible",
+        "disabled",
+        "loading",
+        "error"
+      ],
+      "rules": [
+        "OVL-013",
+        "OVL-004",
+        "OVL-005",
+        "DSC-001",
+        "DSC-003"
+      ]
+    },
+    {
+      "id": "C-ALM-05",
+      "type": "status-tag",
+      "variant": "warning",
+      "props": {
+        "text": "告警中",
+        "dot": true
+      },
+      "states": [
+        "default",
+        "hover"
+      ],
+      "states_omitted": {
+        "active": "只读元素无按压态",
+        "focus-visible": "不可聚焦元素，不参与 Tab 序列",
+        "disabled": "状态由数据决定，无禁用语义",
+        "loading": "数据加载由页面级 skeleton 承接",
+        "error": "错误由页面级 error 态承接，组件不叠加"
+      },
+      "rules": [
+        "DSC-004",
+        "DSC-005",
+        "DSC-006",
+        "DSC-007"
+      ]
+    },
+    {
+      "id": "C-ALM-06",
+      "type": "modal",
+      "variant": "confirm",
+      "size": 420,
+      "props": {
+        "title": "批量关闭告警",
+        "footer": [
+          "取消",
+          "关闭告警"
+        ]
+      },
+      "states": [
+        "default",
+        "hover",
+        "active",
+        "focus-visible",
+        "disabled",
+        "loading"
+      ],
+      "states_omitted": {
+        "error": "失败以 Message 逐条反馈，不保留弹窗错误态"
+      },
+      "rules": [
+        "OVL-002",
+        "OVL-003",
+        "OVL-004",
+        "OVL-005",
+        "OVL-006",
+        "OVL-007",
+        "OVL-008",
+        "TBL-013"
+      ]
+    }
+  ],
+  "data": [
+    {
+      "key": "alarmName",
+      "type": "string",
+      "max_chars": 40,
+      "empty": "--"
+    },
+    {
+      "key": "level",
+      "type": "enum",
+      "values": [
+        "严重",
+        "警告",
+        "提示"
+      ],
+      "empty": "--"
+    },
+    {
+      "key": "source",
+      "type": "string",
+      "empty": "--"
+    },
+    {
+      "key": "occurTime",
+      "type": "datetime",
+      "format": "YYYY-MM-DD HH:mm:ss",
+      "empty": "--"
+    },
+    {
+      "key": "status",
+      "type": "enum",
+      "values": [
+        "告警中",
+        "维护中",
+        "已恢复"
+      ],
+      "empty": "--"
+    },
+    {
+      "key": "owner",
+      "type": "string",
+      "empty": "--"
+    }
+  ],
+  "copy": {
+    "buttons": [
+      "查询",
+      "重置",
+      "刷新",
+      "导出",
+      "批量关闭",
+      "关闭告警"
+    ],
+    "messages": {
+      "success": "已关闭 3 条告警",
+      "partial": "成功 2 条 / 失败 1 条：告警【A-2041】已恢复无需关闭",
+      "error": "操作失败，请稍后重试",
+      "empty": "暂无告警事件"
+    }
+  },
+  "rules": {
+    "applied": [
+      "TOK-001",
+      "COL-005",
+      "AI-001",
+      "FLT-001",
+      "TBL-013",
+      "QLT-007",
+      "UX-012"
+    ],
+    "exceptions": []
+  },
+  "a11y": {
+    "keyboard_path": [
+      "侧边栏",
+      "页头操作",
+      "内容区",
+      "分页"
+    ],
+    "table_semantics": "th + scope=col"
+  },
+  "perf": {
+    "lcp_ms": 2000,
+    "api_p95_ms": 800
+  }
+}

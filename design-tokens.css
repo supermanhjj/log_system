@@ -1,0 +1,153 @@
+/* design-tokens.css —— 由 references/tokens.json 生成，勿手改（TOK-003）
+   智能一体化运维支撑平台 Design Token V3.1.0 */
+:root {
+  /* GLOBAL / NAV / DATA / FORM / FEEDBACK / CHART / STATE 七大类色标 */
+  /* GLOBAL */
+  --color-primary: #03857E;
+  --color-success: #005E53;
+  --color-warning: #EA720F;
+  --color-danger: #E53935;
+  --color-text-1: #333333;
+  --color-text-2: #666666;
+  --color-text-3: #999999;
+  --color-link: #2178D8;
+  --color-text-4: #CCCCCC;
+  --color-bg-page: #FFFFFF;
+  --color-bg-card: #FFFFFF;
+  --color-bg-hover: #1C7772;
+  --color-bg-selected: #258C89;
+  --color-bg-disabled: #E2E2E2;
+  --color-border-1: #E7ECF2;
+  --color-border-2: #CCCCCC;
+  --color-divider: #BFBFBF;
+  /* NAV */
+  --nav-bg: #005E53;
+  --nav-title-text: #FFFFFF;
+  --nav-item-text: #FFFFFF;
+  --nav-item-text-active: #FFFFFF;
+  --nav-item-bg-active: #19A5A0;
+  --nav-item-bg-hover: rgba(191,191,191,0.1);
+  --nav-item-text-disabled: #BFBFBF;
+  /* DATA */
+  --table-head-bg: #E6FCF8;
+  --table-head-text: #258C89;
+  --table-row-bg: #FFFFFF;
+  --table-row-bg-stripe: #F9F9F9;
+  --table-row-bg-hover: #E8F3F1;
+  --table-row-bg-selected: #E8F3F1;
+  --table-border: #E7ECF2;
+  --tag-normal-bg: #BEDDDC;
+  --tag-normal-text: #258C89;
+  --tag-warning-bg: #FFDFB8;
+  --tag-warning-text: #FE9311;
+  --tag-fault-bg: #F8BABA;
+  --tag-fault-text: #E81A1A;
+  --tag-unknown-bg: #EFF0F1;
+  --tag-unknown-text: #C9CDD1;
+  --tag-maintain-bg: #E8F3F1;
+  --tag-maintain-text: #03857E;
+  --badge-bg: #258C89;
+  --badge-alarm-bg: #E81A1A;
+  --progress-bar: #2EB9EF;
+  --progress-track: #EDF2F7;
+  --progress-success: #0CC6B4;
+  --progress-alarm: #E81A1A;
+  --progress-error: #FE9311;
+  --card-bg: #FFFFFF;
+  --card-title-text: #258C89;
+  --card-value-text: #258C89;
+  --card-desc-text: #333333;
+  --icon-normal: #00B7A9;
+  --icon-alarm: #E81A1A;
+  --icon-error: #CC3209;
+  --icon-info: #FE9311;
+  /* FORM */
+  --btn-primary-bg: #258C89;
+  --btn-primary-bg-hover: #1C7772;
+  --btn-primary-bg-active: #106864;
+  --btn-primary-bg-disabled: #ADADAD;
+  --btn-default-bg: #FFFFFF;
+  --btn-default-text: #666666;
+  --btn-default-border: #CCCCCC;
+  --btn-default-border-hover: #1C7772;
+  --btn-default-border-active: #1C7772;
+  --btn-default-bg-disabled: #EDEDED;
+  --btn-text-color: #258C89;
+  --btn-text-color-hover: #2DA59F;
+  --btn-text-color-active: #257C76;
+  --btn-text-color-disabled: #CCCCCC;
+  --btn-danger-bg: #E53935;
+  --input-bg: #FFFFFF;
+  --input-placeholder: #999999;
+  --input-border: #CCCCCC;
+  --input-border-hover: #258C89;
+  --input-border-focus: #258C89;
+  --input-bg-disabled: #EDEDED;
+  --input-text: #333333;
+  /* FEEDBACK */
+  --modal-mask: rgba(65,74,81,0.5);
+  --modal-bg: #FFFFFF;
+  --modal-title-text: #333333;
+  --modal-body-text: #666666;
+  --message-success-bg: #0DACBF;
+  --message-warning-bg: #FF8203;
+  --message-error-bg: #E81A1A;
+  --message-info-bg: #0DACBF;
+  --tooltip-bg: #333333;
+  /* CHART */
+  --chart-bg: #FFFFFF;
+  --chart-axis-text: #999999;
+  --chart-grid: #BFBFBF;
+  --chart-hover: rgba(37,140,137,0.1);
+  --chart-selected: rgba(37,140,137,0.1);
+  --chart-range-normal: #376FCC;
+  --chart-range-warning: #FF8203;
+  --chart-range-error: #E81A1A;
+  /* STATE */
+  --loading-bg: #FFFFFF;
+  --empty-text: #999999;
+  --empty-bg: #FFFFFF;
+  --pagination-text: #666666;
+  --pagination-active-bg: #EEFFFE;
+  --pagination-active-text: #258C89;
+  --pagination-active-border: #258C89;
+  --pagination-disabled-bg: #E2E2E2;
+  --pagination-disabled-text: #B7B7B7;
+  --topo-line-normal: #03857E;
+  --topo-line-fault: #E81A1A;
+  --topo-line-backup: #03857E;
+  --focus-ring-inner: #E8F3F1;
+  --focus-ring-outer: #258C89;
+  /* 排版 */
+  --font-size-xs: 12px;
+  --font-size-sm: 14px;
+  --font-size-md: 16px;
+  --font-size-lg: 18px;
+  --font-size-xl: 20px;
+  /* 间距 */
+  --spacing-xs: 4px;
+  --spacing-sm: 8px;
+  --spacing-md: 12px;
+  --spacing-lg: 16px;
+  --spacing-xl: 24px;
+  /* 圆角 */
+  --radius-sm: 2px;
+  --radius-md: 4px;
+  --radius-lg: 8px;
+  /* 阴影 */
+  --shadow-1: 0 1px 4px rgba(0,0,0,0.08);
+  --shadow-2: 0 4px 12px rgba(0,0,0,0.12);
+  --shadow-3: 0 16px 48px rgba(0,0,0,0.16);
+  --shadow-4: 0 8px 24px rgba(0,0,0,0.20);
+  /* 层级 */
+  --z-dropdown: 1000;
+  --z-mask: 1100;
+  --z-modal: 1200;
+  --z-drawer: 1200;
+  --z-popover: 1300;
+  --z-toast: 1500;
+  /* 动效 */
+  --duration-fast: 100ms;
+  --duration-normal: 200ms;
+  --duration-slow: 300ms;
+}

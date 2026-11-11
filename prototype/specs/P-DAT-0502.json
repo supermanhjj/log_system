@@ -1,0 +1,306 @@
+{
+  "meta": {
+    "page_id": "P-DAT-0502",
+    "trace_id": "R-DAT-0502",
+    "spec_version": "1.0.0",
+    "design_tag": "sg-tokens-v3.1.0",
+    "owner": "产品-方案组 / 设计-UI组 / 研发-前端组"
+  },
+  "route": "/agents",
+  "menu_code": "0402",
+  "page": {
+    "type": "list",
+    "layout": "header+sidebar+main",
+    "header": {
+      "breadcrumb": [
+        "数据接入",
+        "Agent 管理"
+      ],
+      "title": "Agent 管理",
+      "actions": [
+        "刷新",
+        "批量升级",
+        "下载安装包"
+      ]
+    },
+    "states": {
+      "empty": {
+        "desc": "暂无 Agent，请在目标主机安装后自动注册",
+        "action": "下载安装包"
+      },
+      "loading": {
+        "type": "skeleton",
+        "delay_ms": 300
+      },
+      "error": {
+        "desc": "数据加载失败，请稍后重试",
+        "action": "重试",
+        "keep_filters": true
+      },
+      "noPermission": {
+        "desc": "您暂无该数据范围权限",
+        "action": "申请权限"
+      }
+    }
+  },
+  "components": [
+    {
+      "id": "C-AGT-01",
+      "type": "filter-bar",
+      "props": {
+        "labelWidth": 88,
+        "perRow": 4
+      },
+      "states": [
+        "default",
+        "hover",
+        "active",
+        "focus-visible",
+        "disabled"
+      ],
+      "rules": [
+        "FLT-001",
+        "FLT-003",
+        "FLT-004",
+        "FLT-005",
+        "INP-005"
+      ]
+    },
+    {
+      "id": "C-AGT-02",
+      "type": "table",
+      "size": "default",
+      "props": {
+        "stickyHeader": true,
+        "columns": [
+          "checkbox",
+          "hostname",
+          "ip",
+          "version",
+          "status",
+          "heartbeat",
+          "throughput",
+          "action"
+        ],
+        "batchBar": true,
+        "pagination": {
+          "pageSize": 20,
+          "options": [
+            20,
+            50,
+            100
+          ]
+        }
+      },
+      "states": [
+        "default",
+        "hover",
+        "active",
+        "focus-visible",
+        "disabled",
+        "loading"
+      ],
+      "states_omitted": {
+        "error": "表格层错误由页面级 error 态承接，单元格不单独出错误态"
+      },
+      "rules": [
+        "TBL-001",
+        "TBL-004",
+        "TBL-005",
+        "TBL-008",
+        "TBL-009",
+        "TBL-010",
+        "TBL-011",
+        "TBL-012"
+      ]
+    },
+    {
+      "id": "C-AGT-03",
+      "type": "pagination",
+      "props": {
+        "pageSize": 20,
+        "options": [
+          20,
+          50,
+          100
+        ]
+      },
+      "states": [
+        "default",
+        "hover",
+        "disabled",
+        "focus-visible"
+      ],
+      "states_omitted": {
+        "active": "按压与 hover 视觉一致",
+        "loading": "翻页加载由表格承接",
+        "error": "失败由页面级 error 承接"
+      },
+      "rules": [
+        "DSC-009",
+        "TBL-012"
+      ]
+    },
+    {
+      "id": "C-AGT-04",
+      "type": "drawer",
+      "size": 480,
+      "props": {
+        "title": "Agent 详情",
+        "fields": [
+          "hostname",
+          "ip",
+          "version",
+          "status",
+          "heartbeat",
+          "throughput",
+          "config"
+        ]
+      },
+      "states": [
+        "default",
+        "hover",
+        "active",
+        "focus-visible",
+        "disabled",
+        "loading",
+        "error"
+      ],
+      "rules": [
+        "OVL-013",
+        "OVL-004",
+        "OVL-005",
+        "DSC-001",
+        "DSC-003"
+      ]
+    },
+    {
+      "id": "C-AGT-05",
+      "type": "status-tag",
+      "variant": "unknown",
+      "props": {
+        "text": "离线",
+        "dot": true
+      },
+      "states": [
+        "default",
+        "hover"
+      ],
+      "states_omitted": {
+        "active": "只读元素无按压态",
+        "focus-visible": "不可聚焦元素，不参与 Tab 序列",
+        "disabled": "状态由数据决定，无禁用语义",
+        "loading": "数据加载由页面级 skeleton 承接",
+        "error": "错误由页面级 error 态承接，组件不叠加"
+      },
+      "rules": [
+        "DSC-004",
+        "DSC-005",
+        "DSC-006"
+      ]
+    },
+    {
+      "id": "C-AGT-06",
+      "type": "progress",
+      "props": {
+        "value": 76,
+        "label": "升级进度",
+        "status": "normal"
+      },
+      "states": [
+        "default",
+        "loading"
+      ],
+      "states_omitted": {
+        "hover": "进度条不可交互",
+        "active": "不可按压",
+        "focus-visible": "不可聚焦",
+        "disabled": "无禁用语义",
+        "error": "超限用 --progress-error 填充表达，不叠加错误态"
+      },
+      "rules": [
+        "DSC-013"
+      ]
+    }
+  ],
+  "data": [
+    {
+      "key": "hostname",
+      "type": "string",
+      "max_chars": 32,
+      "empty": "--"
+    },
+    {
+      "key": "ip",
+      "type": "string",
+      "empty": "--"
+    },
+    {
+      "key": "version",
+      "type": "string",
+      "empty": "--"
+    },
+    {
+      "key": "status",
+      "type": "enum",
+      "values": [
+        "运行中",
+        "离线",
+        "维护中",
+        "异常"
+      ],
+      "empty": "--"
+    },
+    {
+      "key": "heartbeat",
+      "type": "datetime",
+      "format": "YYYY-MM-DD HH:mm:ss",
+      "empty": "--"
+    },
+    {
+      "key": "throughput",
+      "type": "number",
+      "unit": "条/秒",
+      "empty": "--"
+    }
+  ],
+  "copy": {
+    "buttons": [
+      "查询",
+      "重置",
+      "刷新",
+      "批量升级",
+      "下载安装包"
+    ],
+    "messages": {
+      "success": "升级任务已下发，进度可在列表中查看",
+      "error": "升级失败，请检查主机网络",
+      "empty": "暂无 Agent"
+    }
+  },
+  "rules": {
+    "applied": [
+      "TOK-001",
+      "COL-005",
+      "AI-001",
+      "FLT-001",
+      "TBL-011",
+      "DSC-013",
+      "QLT-007"
+    ],
+    "exceptions": []
+  },
+  "a11y": {
+    "keyboard_path": [
+      "侧边栏",
+      "页头操作",
+      "内容区",
+      "分页"
+    ],
+    "table_semantics": "th + scope=col"
+  },
+  "perf": {
+    "lcp_ms": 2000,
+    "api_p95_ms": 800
+  }
+}

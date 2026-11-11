@@ -1,0 +1,315 @@
+{
+  "meta": {
+    "page_id": "P-DSH-0302",
+    "trace_id": "R-DSH-0302",
+    "spec_version": "1.0.0",
+    "design_tag": "sg-tokens-v3.1.0",
+    "owner": "产品-方案组 / 设计-UI组 / 研发-前端组"
+  },
+  "route": "/dashboards/core-business",
+  "menu_code": "0202",
+  "page": {
+    "type": "dashboard",
+    "layout": "header+sidebar+main",
+    "header": {
+      "breadcrumb": [
+        "日志分析",
+        "仪表盘",
+        "核心业务日志看板"
+      ],
+      "title": "核心业务日志看板",
+      "actions": [
+        "返回",
+        "编辑",
+        "分享"
+      ]
+    },
+    "states": {
+      "empty": {
+        "desc": "该看板暂无图表，请先编辑并添加图表",
+        "action": "编辑看板"
+      },
+      "loading": {
+        "type": "skeleton",
+        "delay_ms": 300
+      },
+      "error": {
+        "desc": "数据加载失败，请稍后重试",
+        "action": "重试",
+        "keep_filters": true
+      },
+      "noPermission": {
+        "desc": "您暂无该数据范围权限",
+        "action": "申请权限"
+      }
+    }
+  },
+  "components": [
+    {
+      "id": "C-DSH-06",
+      "type": "select",
+      "props": {
+        "label": "时间范围",
+        "options": [
+          "近 1 小时",
+          "近 24 小时",
+          "近 7 天"
+        ],
+        "value": "近 24 小时"
+      },
+      "states": [
+        "default",
+        "hover",
+        "active",
+        "focus-visible",
+        "disabled",
+        "loading",
+        "error"
+      ],
+      "rules": [
+        "INP-002"
+      ]
+    },
+    {
+      "id": "C-DSH-07",
+      "type": "chart",
+      "props": {
+        "title": "订单服务日志量",
+        "unit": "条",
+        "legend": [
+          "INFO",
+          "WARN",
+          "ERROR"
+        ],
+        "source": "日志检索 · source:order-service"
+      },
+      "states": [
+        "default",
+        "hover",
+        "active"
+      ],
+      "states_omitted": {
+        "focus-visible": "图表不可聚焦，键盘用户走数据表格替代路径",
+        "disabled": "图表无禁用语义",
+        "loading": "加载态由容器 skeleton 承接",
+        "error": "请求失败由页面级 error 态承接"
+      },
+      "rules": [
+        "CHT-001",
+        "CHT-002",
+        "CHT-003"
+      ]
+    },
+    {
+      "id": "C-DSH-08",
+      "type": "chart",
+      "props": {
+        "title": "接口错误率",
+        "unit": "%",
+        "legend": [
+          "错误率"
+        ],
+        "source": "日志检索 · status>=500"
+      },
+      "states": [
+        "default",
+        "hover",
+        "active"
+      ],
+      "states_omitted": {
+        "focus-visible": "图表不可聚焦，键盘用户走数据表格替代路径",
+        "disabled": "图表无禁用语义",
+        "loading": "加载态由容器 skeleton 承接",
+        "error": "请求失败由页面级 error 态承接"
+      },
+      "rules": [
+        "CHT-001",
+        "CHT-002",
+        "CHT-006"
+      ]
+    },
+    {
+      "id": "C-DSH-09",
+      "type": "chart",
+      "props": {
+        "title": "Top10 异常来源主机",
+        "unit": "条",
+        "legend": [
+          "异常条数"
+        ],
+        "source": "日志检索 · level:ERROR"
+      },
+      "states": [
+        "default",
+        "hover",
+        "active"
+      ],
+      "states_omitted": {
+        "focus-visible": "图表不可聚焦，键盘用户走数据表格替代路径",
+        "disabled": "图表无禁用语义",
+        "loading": "加载态由容器 skeleton 承接",
+        "error": "请求失败由页面级 error 态承接"
+      },
+      "rules": [
+        "CHT-001",
+        "CHT-002"
+      ]
+    },
+    {
+      "id": "C-DSH-10",
+      "type": "chart",
+      "props": {
+        "title": "检索响应耗时",
+        "unit": "ms",
+        "legend": [
+          "P50",
+          "P95",
+          "P99"
+        ],
+        "source": "检索网关 · 近 24 小时"
+      },
+      "states": [
+        "default",
+        "hover",
+        "active"
+      ],
+      "states_omitted": {
+        "focus-visible": "图表不可聚焦，键盘用户走数据表格替代路径",
+        "disabled": "图表无禁用语义",
+        "loading": "加载态由容器 skeleton 承接",
+        "error": "请求失败由页面级 error 态承接"
+      },
+      "rules": [
+        "CHT-001",
+        "CHT-002",
+        "CHT-003"
+      ]
+    },
+    {
+      "id": "C-DSH-11",
+      "type": "tabs",
+      "props": {
+        "items": [
+          "总览",
+          "异常明细",
+          "变更记录"
+        ],
+        "active": "总览"
+      },
+      "states": [
+        "default",
+        "hover",
+        "active"
+      ],
+      "states_omitted": {
+        "focus-visible": "Tabs 走原生按钮焦点，视觉同 active",
+        "disabled": "无禁用页签",
+        "loading": "切换加载由内容区承接",
+        "error": "失败由页面级 error 承接"
+      },
+      "rules": [
+        "NAV-004"
+      ]
+    },
+    {
+      "id": "C-DSH-12",
+      "type": "table",
+      "size": "default",
+      "props": {
+        "stickyHeader": true,
+        "columns": [
+          "time",
+          "source",
+          "level",
+          "message"
+        ],
+        "pagination": false
+      },
+      "states": [
+        "default",
+        "hover",
+        "active",
+        "focus-visible",
+        "disabled",
+        "loading"
+      ],
+      "states_omitted": {
+        "error": "表格层错误由页面级 error 态承接，单元格不单独出错误态"
+      },
+      "rules": [
+        "TBL-001",
+        "TBL-005",
+        "TBL-007",
+        "TBL-008",
+        "TBL-011"
+      ]
+    }
+  ],
+  "data": [
+    {
+      "key": "time",
+      "type": "datetime",
+      "format": "YYYY-MM-DD HH:mm:ss",
+      "empty": "--"
+    },
+    {
+      "key": "source",
+      "type": "string",
+      "empty": "--"
+    },
+    {
+      "key": "level",
+      "type": "enum",
+      "values": [
+        "INFO",
+        "WARN",
+        "ERROR"
+      ],
+      "empty": "--"
+    },
+    {
+      "key": "message",
+      "type": "string",
+      "max_chars": 200,
+      "empty": "--"
+    }
+  ],
+  "copy": {
+    "buttons": [
+      "返回",
+      "编辑",
+      "分享",
+      "刷新"
+    ],
+    "messages": {
+      "success": "分享链接已复制",
+      "error": "图表数据加载失败，请重试",
+      "empty": "该看板暂无图表"
+    }
+  },
+  "rules": {
+    "applied": [
+      "TOK-001",
+      "COL-005",
+      "AI-001",
+      "CHT-001",
+      "NAV-004",
+      "QLT-007",
+      "UX-012"
+    ],
+    "exceptions": []
+  },
+  "a11y": {
+    "keyboard_path": [
+      "侧边栏",
+      "页头操作",
+      "内容区",
+      "分页"
+    ],
+    "table_semantics": "th + scope=col"
+  },
+  "perf": {
+    "lcp_ms": 2000,
+    "api_p95_ms": 800
+  }
+}

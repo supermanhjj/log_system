@@ -1,0 +1,309 @@
+{
+  "meta": {
+    "page_id": "P-OVW-0101",
+    "trace_id": "R-OVW-0101",
+    "spec_version": "1.0.0",
+    "design_tag": "sg-tokens-v3.1.0",
+    "owner": "产品-方案组 / 设计-UI组 / 研发-前端组"
+  },
+  "route": "/overview",
+  "menu_code": "0101",
+  "page": {
+    "type": "dashboard",
+    "layout": "header+sidebar+main",
+    "header": {
+      "breadcrumb": [
+        "概览",
+        "运行总览"
+      ],
+      "title": "运行总览",
+      "actions": [
+        "刷新",
+        "导出报表"
+      ]
+    },
+    "states": {
+      "empty": {
+        "desc": "暂无监控数据，接入数据源后自动生成",
+        "action": "接入数据源"
+      },
+      "loading": {
+        "type": "skeleton",
+        "delay_ms": 300
+      },
+      "error": {
+        "desc": "数据加载失败，请稍后重试",
+        "action": "重试",
+        "keep_filters": true
+      },
+      "noPermission": {
+        "desc": "您暂无该数据范围权限",
+        "action": "申请权限"
+      }
+    }
+  },
+  "components": [
+    {
+      "id": "C-OVW-01",
+      "type": "select",
+      "props": {
+        "label": "时间范围",
+        "options": [
+          "近 1 小时",
+          "近 24 小时",
+          "近 7 天",
+          "近 30 天"
+        ],
+        "value": "近 24 小时"
+      },
+      "states": [
+        "default",
+        "hover",
+        "active",
+        "focus-visible",
+        "disabled",
+        "loading",
+        "error"
+      ],
+      "rules": [
+        "INP-002"
+      ]
+    },
+    {
+      "id": "C-OVW-02",
+      "type": "chart",
+      "props": {
+        "title": "日志写入趋势",
+        "unit": "万条",
+        "legend": [
+          "写入量"
+        ],
+        "source": "日志检索 · 近 24 小时"
+      },
+      "states": [
+        "default",
+        "hover",
+        "active"
+      ],
+      "states_omitted": {
+        "focus-visible": "图表不可聚焦，键盘用户走数据表格替代路径",
+        "disabled": "图表无禁用语义",
+        "loading": "加载态由容器 skeleton 承接",
+        "error": "请求失败由页面级 error 态承接"
+      },
+      "rules": [
+        "CHT-001",
+        "CHT-002",
+        "CHT-005"
+      ]
+    },
+    {
+      "id": "C-OVW-03",
+      "type": "chart",
+      "props": {
+        "title": "告警级别分布",
+        "unit": "条",
+        "legend": [
+          "严重",
+          "警告",
+          "提示"
+        ],
+        "source": "告警中心 · 近 24 小时"
+      },
+      "states": [
+        "default",
+        "hover",
+        "active"
+      ],
+      "states_omitted": {
+        "focus-visible": "图表不可聚焦，键盘用户走数据表格替代路径",
+        "disabled": "图表无禁用语义",
+        "loading": "加载态由容器 skeleton 承接",
+        "error": "请求失败由页面级 error 态承接"
+      },
+      "rules": [
+        "CHT-001",
+        "CHT-003"
+      ]
+    },
+    {
+      "id": "C-OVW-04",
+      "type": "chart",
+      "props": {
+        "title": "检索耗时分布",
+        "unit": "ms",
+        "legend": [
+          "P50",
+          "P95"
+        ],
+        "source": "检索网关 · 近 24 小时"
+      },
+      "states": [
+        "default",
+        "hover",
+        "active"
+      ],
+      "states_omitted": {
+        "focus-visible": "图表不可聚焦，键盘用户走数据表格替代路径",
+        "disabled": "图表无禁用语义",
+        "loading": "加载态由容器 skeleton 承接",
+        "error": "请求失败由页面级 error 态承接"
+      },
+      "rules": [
+        "CHT-001",
+        "CHT-002",
+        "CHT-006"
+      ]
+    },
+    {
+      "id": "C-OVW-05",
+      "type": "table",
+      "size": "default",
+      "props": {
+        "stickyHeader": true,
+        "columns": [
+          "alarmName",
+          "level",
+          "source",
+          "occurTime",
+          "status"
+        ],
+        "pagination": false
+      },
+      "states": [
+        "default",
+        "hover",
+        "active",
+        "focus-visible",
+        "disabled",
+        "loading"
+      ],
+      "states_omitted": {
+        "error": "表格层错误由页面级 error 态承接，单元格不单独出错误态"
+      },
+      "rules": [
+        "TBL-001",
+        "TBL-005",
+        "TBL-008",
+        "TBL-011"
+      ]
+    },
+    {
+      "id": "C-OVW-06",
+      "type": "status-tag",
+      "variant": "fault",
+      "props": {
+        "text": "异常",
+        "dot": true
+      },
+      "states": [
+        "default",
+        "hover"
+      ],
+      "states_omitted": {
+        "active": "只读元素无按压态",
+        "focus-visible": "不可聚焦元素，不参与 Tab 序列",
+        "disabled": "状态由数据决定，无禁用语义",
+        "loading": "数据加载由页面级 skeleton 承接",
+        "error": "错误由页面级 error 态承接，组件不叠加"
+      },
+      "rules": [
+        "DSC-004",
+        "DSC-005",
+        "DSC-006",
+        "DSC-007"
+      ]
+    },
+    {
+      "id": "C-OVW-07",
+      "type": "badge",
+      "props": {
+        "type": "alarm",
+        "max": 99
+      },
+      "states": [
+        "default"
+      ],
+      "states_omitted": {
+        "active": "只读元素无按压态",
+        "focus-visible": "不可聚焦元素，不参与 Tab 序列",
+        "disabled": "状态由数据决定，无禁用语义",
+        "loading": "数据加载由页面级 skeleton 承接",
+        "error": "错误由页面级 error 态承接，组件不叠加"
+      },
+      "rules": [
+        "DSC-008"
+      ]
+    }
+  ],
+  "data": [
+    {
+      "key": "writeVolume",
+      "type": "number",
+      "unit": "万条",
+      "empty": "--"
+    },
+    {
+      "key": "activeAlarms",
+      "type": "number",
+      "unit": "条",
+      "empty": "--"
+    },
+    {
+      "key": "searchP95",
+      "type": "number",
+      "unit": "ms",
+      "empty": "--"
+    },
+    {
+      "key": "sourceCount",
+      "type": "number",
+      "unit": "个",
+      "empty": "--"
+    },
+    {
+      "key": "occurTime",
+      "type": "datetime",
+      "format": "YYYY-MM-DD HH:mm:ss",
+      "empty": "--"
+    }
+  ],
+  "copy": {
+    "buttons": [
+      "刷新",
+      "导出报表",
+      "接入数据源"
+    ],
+    "messages": {
+      "success": "报表已导出",
+      "error": "指标加载失败，请稍后重试",
+      "empty": "暂无监控数据，接入数据源后自动生成"
+    }
+  },
+  "rules": {
+    "applied": [
+      "TOK-001",
+      "COL-005",
+      "AI-001",
+      "CHT-001",
+      "TBL-011",
+      "QLT-007",
+      "NAV-005",
+      "NAV-006"
+    ],
+    "exceptions": []
+  },
+  "a11y": {
+    "keyboard_path": [
+      "侧边栏",
+      "页头操作",
+      "内容区",
+      "分页"
+    ],
+    "table_semantics": "th + scope=col"
+  },
+  "perf": {
+    "lcp_ms": 2000,
+    "api_p95_ms": 800
+  }
+}

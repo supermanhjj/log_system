@@ -1,0 +1,249 @@
+{
+  "meta": {
+    "page_id": "P-AUTH-0100",
+    "trace_id": "R-AUTH-0100",
+    "spec_version": "1.0.0",
+    "design_tag": "sg-tokens-v3.1.0",
+    "owner": "产品-方案组 / 设计-UI组 / 研发-前端组"
+  },
+  "route": "/login",
+  "menu_code": "0000",
+  "page": {
+    "type": "form",
+    "layout": "header+sidebar+main",
+    "header": {
+      "breadcrumb": [
+        "登录"
+      ],
+      "title": "登录日志分析平台",
+      "actions": []
+    },
+    "states": {
+      "empty": {
+        "desc": "请输入账号与密码",
+        "action": "登录"
+      },
+      "loading": {
+        "type": "button-loading",
+        "delay_ms": 300
+      },
+      "error": {
+        "desc": "账号或密码错误，请重新输入",
+        "action": "重试",
+        "keep_filters": true
+      },
+      "noPermission": {
+        "desc": "该账号未开通平台权限，请联系管理员",
+        "action": "申请权限"
+      }
+    }
+  },
+  "components": [
+    {
+      "id": "C-AUTH-01",
+      "type": "form",
+      "props": {
+        "labelWidth": 96,
+        "columns": 1
+      },
+      "states": [
+        "default",
+        "hover",
+        "active",
+        "focus-visible",
+        "disabled",
+        "loading",
+        "error"
+      ],
+      "rules": [
+        "FRM-001",
+        "FRM-005"
+      ]
+    },
+    {
+      "id": "C-AUTH-02",
+      "type": "input",
+      "props": {
+        "placeholder": "请输入账号",
+        "required": true
+      },
+      "states": [
+        "default",
+        "hover",
+        "active",
+        "focus-visible",
+        "disabled",
+        "loading",
+        "error"
+      ],
+      "rules": [
+        "INP-001",
+        "INP-005"
+      ]
+    },
+    {
+      "id": "C-AUTH-03",
+      "type": "input",
+      "props": {
+        "placeholder": "请输入密码",
+        "type": "password",
+        "required": true
+      },
+      "states": [
+        "default",
+        "hover",
+        "active",
+        "focus-visible",
+        "disabled",
+        "loading",
+        "error"
+      ],
+      "rules": [
+        "INP-001",
+        "INP-005"
+      ]
+    },
+    {
+      "id": "C-AUTH-04",
+      "type": "select",
+      "props": {
+        "placeholder": "请选择所属租户",
+        "options": [
+          "总部生产",
+          "省侧运维",
+          "测试租户"
+        ]
+      },
+      "states": [
+        "default",
+        "hover",
+        "active",
+        "focus-visible",
+        "disabled",
+        "loading",
+        "error"
+      ],
+      "rules": [
+        "INP-002"
+      ]
+    },
+    {
+      "id": "C-AUTH-05",
+      "type": "button",
+      "variant": "primary",
+      "size": "lg",
+      "props": {
+        "text": "登录",
+        "block": true,
+        "loadingText": "正在登录"
+      },
+      "states": [
+        "default",
+        "hover",
+        "active",
+        "focus-visible",
+        "disabled",
+        "loading",
+        "error"
+      ],
+      "rules": [
+        "BTN-001",
+        "BTN-002",
+        "BTN-005"
+      ]
+    },
+    {
+      "id": "C-AUTH-06",
+      "type": "checkbox",
+      "props": {
+        "text": "记住账号",
+        "size": 20
+      },
+      "states": [
+        "default",
+        "hover",
+        "active",
+        "focus-visible",
+        "disabled",
+        "loading",
+        "error"
+      ],
+      "rules": [
+        "DSC-012"
+      ]
+    },
+    {
+      "id": "C-AUTH-07",
+      "type": "message",
+      "props": {
+        "types": [
+          "success",
+          "error"
+        ]
+      },
+      "states": [
+        "default"
+      ],
+      "rules": [
+        "MSG-001",
+        "MSG-003"
+      ]
+    }
+  ],
+  "data": [
+    {
+      "key": "account",
+      "type": "string",
+      "empty": "--"
+    },
+    {
+      "key": "password",
+      "type": "string",
+      "empty": "--"
+    },
+    {
+      "key": "tenant",
+      "type": "enum",
+      "values": [
+        "总部生产",
+        "省侧运维",
+        "测试租户"
+      ],
+      "empty": "--"
+    }
+  ],
+  "copy": {
+    "buttons": [
+      "登录"
+    ],
+    "messages": {
+      "success": "登录成功，正在进入运行总览",
+      "error": "账号或密码错误，请重新输入",
+      "empty": "请输入账号与密码"
+    }
+  },
+  "rules": {
+    "applied": [
+      "TOK-001",
+      "COL-005",
+      "AI-001",
+      "QLT-007",
+      "COL-007",
+      "UX-004"
+    ],
+    "exceptions": []
+  },
+  "a11y": {
+    "keyboard_path": [
+      "侧边栏",
+      "页头操作",
+      "内容区",
+      "分页"
+    ],
+    "table_semantics": "th + scope=col"
+  },
+  "perf": {
+    "lcp_ms": 2000,
+    "api_p95_ms": 800
+  }
+}

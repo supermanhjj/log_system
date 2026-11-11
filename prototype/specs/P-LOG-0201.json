@@ -1,0 +1,375 @@
+{
+  "meta": {
+    "page_id": "P-LOG-0201",
+    "trace_id": "R-LOG-0201",
+    "spec_version": "1.0.0",
+    "design_tag": "sg-tokens-v3.1.0",
+    "owner": "产品-方案组 / 设计-UI组 / 研发-前端组"
+  },
+  "route": "/search",
+  "menu_code": "0201",
+  "page": {
+    "type": "list",
+    "layout": "header+sidebar+main",
+    "header": {
+      "breadcrumb": [
+        "日志分析",
+        "日志检索"
+      ],
+      "title": "日志检索",
+      "actions": [
+        "保存为视图",
+        "导出结果"
+      ]
+    },
+    "states": {
+      "empty": {
+        "desc": "暂无日志数据，请先接入数据源",
+        "action": "接入数据源"
+      },
+      "loading": {
+        "type": "skeleton",
+        "delay_ms": 300
+      },
+      "error": {
+        "desc": "数据加载失败，请稍后重试",
+        "action": "重试",
+        "keep_filters": true
+      },
+      "noPermission": {
+        "desc": "您暂无该数据范围权限",
+        "action": "申请权限"
+      }
+    }
+  },
+  "components": [
+    {
+      "id": "C-SRC-01",
+      "type": "datepicker",
+      "props": {
+        "label": "时间范围",
+        "quick": [
+          "近 1 小时",
+          "近 1 天",
+          "近 1 周",
+          "近 1 月",
+          "近 1 年"
+        ],
+        "value": "近 1 天"
+      },
+      "states": [
+        "default",
+        "hover",
+        "active",
+        "focus-visible",
+        "disabled",
+        "loading",
+        "error"
+      ],
+      "rules": [
+        "INP-002",
+        "INP-007"
+      ]
+    },
+    {
+      "id": "C-SRC-02",
+      "type": "input",
+      "props": {
+        "label": "检索语句",
+        "placeholder": "请输入 SPL 或关键词，例如 source:nginx AND status>=500",
+        "required": true
+      },
+      "states": [
+        "default",
+        "hover",
+        "active",
+        "focus-visible",
+        "disabled",
+        "loading",
+        "error"
+      ],
+      "rules": [
+        "INP-001",
+        "INP-005"
+      ]
+    },
+    {
+      "id": "C-SRC-03",
+      "type": "button",
+      "variant": "primary",
+      "props": {
+        "text": "查询",
+        "loadingText": "检索中"
+      },
+      "states": [
+        "default",
+        "hover",
+        "active",
+        "focus-visible",
+        "disabled",
+        "loading",
+        "error"
+      ],
+      "rules": [
+        "BTN-001",
+        "BTN-002",
+        "BTN-005"
+      ]
+    },
+    {
+      "id": "C-SRC-04",
+      "type": "chart",
+      "props": {
+        "title": "日志分布直方图",
+        "unit": "条",
+        "legend": [
+          "日志条数"
+        ],
+        "source": "检索结果 · 近 1 天"
+      },
+      "states": [
+        "default",
+        "hover",
+        "active"
+      ],
+      "states_omitted": {
+        "focus-visible": "图表不可聚焦，键盘用户走数据表格替代路径",
+        "disabled": "图表无禁用语义",
+        "loading": "加载态由容器 skeleton 承接",
+        "error": "请求失败由页面级 error 态承接"
+      },
+      "rules": [
+        "CHT-001",
+        "CHT-002",
+        "CHT-005"
+      ]
+    },
+    {
+      "id": "C-SRC-05",
+      "type": "table",
+      "size": "compact",
+      "props": {
+        "stickyHeader": true,
+        "columns": [
+          "checkbox",
+          "time",
+          "level",
+          "source",
+          "host",
+          "message"
+        ],
+        "batchBar": true
+      },
+      "states": [
+        "default",
+        "hover",
+        "active",
+        "focus-visible",
+        "disabled",
+        "loading"
+      ],
+      "states_omitted": {
+        "error": "表格层错误由页面级 error 态承接，单元格不单独出错误态"
+      },
+      "rules": [
+        "TBL-001",
+        "TBL-003",
+        "TBL-004",
+        "TBL-005",
+        "TBL-008",
+        "TBL-009",
+        "TBL-010",
+        "TBL-011"
+      ]
+    },
+    {
+      "id": "C-SRC-06",
+      "type": "pagination",
+      "props": {
+        "pageSize": 20,
+        "options": [
+          20,
+          50,
+          100
+        ]
+      },
+      "states": [
+        "default",
+        "hover",
+        "disabled",
+        "focus-visible"
+      ],
+      "states_omitted": {
+        "active": "页码按压与 hover 视觉一致，不单独出态",
+        "loading": "翻页加载由表格 loading 承接",
+        "error": "页码请求失败由页面级 error 承接"
+      },
+      "rules": [
+        "DSC-009",
+        "TBL-012"
+      ]
+    },
+    {
+      "id": "C-SRC-07",
+      "type": "drawer",
+      "size": 640,
+      "props": {
+        "title": "日志详情",
+        "fields": [
+          "time",
+          "level",
+          "source",
+          "host",
+          "traceId",
+          "message"
+        ]
+      },
+      "states": [
+        "default",
+        "hover",
+        "active",
+        "focus-visible",
+        "disabled",
+        "loading",
+        "error"
+      ],
+      "rules": [
+        "OVL-013",
+        "OVL-004",
+        "OVL-005",
+        "DSC-001",
+        "DSC-003"
+      ]
+    },
+    {
+      "id": "C-SRC-08",
+      "type": "status-tag",
+      "variant": "normal",
+      "props": {
+        "text": "运行中",
+        "dot": true
+      },
+      "states": [
+        "default",
+        "hover"
+      ],
+      "states_omitted": {
+        "active": "只读元素无按压态",
+        "focus-visible": "不可聚焦元素，不参与 Tab 序列",
+        "disabled": "状态由数据决定，无禁用语义",
+        "loading": "数据加载由页面级 skeleton 承接",
+        "error": "错误由页面级 error 态承接，组件不叠加"
+      },
+      "rules": [
+        "DSC-004",
+        "DSC-005",
+        "DSC-006"
+      ]
+    },
+    {
+      "id": "C-SRC-09",
+      "type": "empty",
+      "props": {
+        "scene": "noResult",
+        "text": "没有符合条件的日志，试试放宽时间范围或调整检索语句",
+        "action": "重置条件"
+      },
+      "states": [
+        "default"
+      ],
+      "states_omitted": {
+        "active": "只读元素无按压态",
+        "focus-visible": "不可聚焦元素，不参与 Tab 序列",
+        "disabled": "状态由数据决定，无禁用语义",
+        "loading": "数据加载由页面级 skeleton 承接",
+        "error": "错误由页面级 error 态承接，组件不叠加"
+      },
+      "rules": [
+        "DSC-010"
+      ]
+    }
+  ],
+  "data": [
+    {
+      "key": "time",
+      "type": "datetime",
+      "format": "YYYY-MM-DD HH:mm:ss",
+      "empty": "--"
+    },
+    {
+      "key": "level",
+      "type": "enum",
+      "values": [
+        "DEBUG",
+        "INFO",
+        "WARN",
+        "ERROR",
+        "FATAL"
+      ],
+      "empty": "--"
+    },
+    {
+      "key": "source",
+      "type": "string",
+      "max_chars": 40,
+      "empty": "--"
+    },
+    {
+      "key": "host",
+      "type": "string",
+      "empty": "--"
+    },
+    {
+      "key": "traceId",
+      "type": "string",
+      "empty": "--"
+    },
+    {
+      "key": "message",
+      "type": "string",
+      "max_chars": 200,
+      "empty": "--"
+    }
+  ],
+  "copy": {
+    "buttons": [
+      "查询",
+      "重置",
+      "保存为视图",
+      "导出结果"
+    ],
+    "messages": {
+      "success": "已导出 5,000 条日志",
+      "partial": "成功 4,980 条 / 失败 20 条：超出单次导出上限",
+      "empty": "暂无日志数据，请先接入数据源",
+      "error": "检索超时，请缩小时间范围后重试"
+    }
+  },
+  "rules": {
+    "applied": [
+      "TOK-001",
+      "COL-005",
+      "AI-001",
+      "INP-007",
+      "TBL-009",
+      "DSC-010",
+      "OVL-013",
+      "QLT-007",
+      "NAV-005"
+    ],
+    "exceptions": []
+  },
+  "a11y": {
+    "keyboard_path": [
+      "侧边栏",
+      "页头操作",
+      "内容区",
+      "分页"
+    ],
+    "table_semantics": "th + scope=col"
+  },
+  "perf": {
+    "lcp_ms": 2000,
+    "api_p95_ms": 800
+  }
+}

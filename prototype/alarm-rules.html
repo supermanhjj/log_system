@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>告警规则 · 统一日志分析平台</title>
+<link rel="stylesheet" href="../design-tokens.css">
+<link rel="stylesheet" href="assets/base.css">
+</head>
+<body class="busi-app" data-page="alarm-rules" data-cid="C-RUL-02">
+<div data-shell></div>
+<div class="busi-body">
+  <main class="busi-main">
+
+    <div class="busi-page-head">
+      <div class="busi-breadcrumb">
+        <span>告警中心</span><span class="busi-breadcrumb__sep">&gt;</span>
+        <span class="busi-breadcrumb__current">告警规则</span>
+      </div>
+      <div class="busi-page-head__bar">
+        <div>
+          <h1 class="busi-page-head__title">告警规则</h1>
+          <p class="busi-page-head__desc">规则基于检索语句实时判定，保存后 10 秒内生效</p>
+        </div>
+        <div class="busi-page-head__actions">
+          <button class="busi-btn busi-btn--default" type="button" data-loading-btn data-done="规则列表已刷新">刷新</button>
+          <button class="busi-btn busi-btn--primary" type="button" data-modal-open="rule-modal">新建规则</button>
+          <a class="busi-btn busi-btn--default" href="alarms.html">查看告警事件</a>
+        </div>
+      </div>
+    </div>
+
+    <div class="busi-page">
+
+      <section class="busi-filter" aria-label="筛选条件">
+        <div class="busi-field">
+          <label class="busi-field__label" for="rule-kw">规则名称</label>
+          <div class="busi-field__control"><input class="busi-input" id="rule-kw" type="text" placeholder="请输入规则名称"></div>
+        </div>
+        <div class="busi-field">
+          <label class="busi-field__label" for="rule-level">告警级别</label>
+          <div class="busi-field__control">
+            <select class="busi-select" id="rule-level" style="width:100%">
+              <option>全部级别</option><option>严重</option><option>警告</option><option>提示</option>
+            </select>
+          </div>
+        </div>
+        <div class="busi-field">
+          <label class="busi-field__label" for="rule-status">启用状态</label>
+          <div class="busi-field__control">
+            <select class="busi-select" id="rule-status" style="width:100%">
+              <option>全部状态</option><option>运行中</option><option>维护中</option><option>离线</option>
+            </select>
+          </div>
+        </div>
+        <div class="busi-field">
+          <label class="busi-field__label" for="rule-owner">更新人</label>
+          <div class="busi-field__control"><input class="busi-input" id="rule-owner" type="text" placeholder="请输入姓名"></div>
+        </div>
+        <div class="busi-filter__actions">
+          <button class="busi-btn busi-btn--primary" type="button" data-loading-btn data-done="筛选完成，共 5 条规则">查询</button>
+          <button class="busi-btn busi-btn--default" type="button" data-filter-reset>重置</button>
+        </div>
+      </section>
+
+      <section class="busi-table-wrap" aria-label="告警规则列表">
+        <table class="busi-table">
+          <caption class="busi-sr-only">告警规则列表，共 5 条</caption>
+          <colgroup>
+            <col style="width:19%"><col style="width:14%"><col style="width:24%"><col style="width:8%"><col style="width:13%"><col style="width:8%"><col style="width:14%">
+          </colgroup>
+          <thead>
+            <tr>
+              <th class="busi-table__th" scope="col">规则名称</th>
+              <th class="busi-table__th" scope="col">关联数据源</th>
+              <th class="busi-table__th" scope="col">判定条件</th>
+              <th class="busi-table__th" scope="col">级别</th>
+              <th class="busi-table__th" scope="col">通知方式</th>
+              <th class="busi-table__th" scope="col">启用</th>
+              <th class="busi-table__th" scope="col">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr class="busi-table__row">
+              <td class="busi-table__cell busi-table__cell--name">订单错误率突增</td>
+              <td class="busi-table__cell">order-service</td>
+              <td class="busi-table__cell" title="level:ERROR 5 分钟内超过 100 条">level:ERROR 5 分钟内超过 100 条</td>
+              <td class="busi-table__cell"><span class="busi-level busi-level--critical"><span class="busi-level__dot"></span>严重</span></td>
+              <td class="busi-table__cell"><span class="busi-tag busi-tag--normal"><span class="busi-tag__dot"></span>短信 + 企微</span></td>
+              <td class="busi-table__cell"><button class="busi-switch is-checked" type="button" role="switch" aria-checked="true" aria-label="启用 订单错误率突增"></button></td>
+              <td class="busi-table__cell busi-table__cell--op">
+                <button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-modal-open="rule-modal">编辑</button>
+                <button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-toast="success" data-toast-text="规则已删除，历史告警保留 30 天">删除</button>
+              </td>
+            </tr>
+            <tr class="busi-table__row">
+              <td class="busi-table__cell busi-table__cell--name">网关 5xx 比例</td>
+              <td class="busi-table__cell">api-gateway</td>
+              <td class="busi-table__cell" title="status>=500 占比 5 分钟内大于 1%">status&gt;=500 占比 5 分钟内大于 1%</td>
+              <td class="busi-table__cell"><span class="busi-level busi-level--critical"><span class="busi-level__dot"></span>严重</span></td>
+              <td class="busi-table__cell"><span class="busi-tag busi-tag--normal"><span class="busi-tag__dot"></span>企业微信</span></td>
+              <td class="busi-table__cell"><button class="busi-switch is-checked" type="button" role="switch" aria-checked="true" aria-label="启用 网关 5xx 比例"></button></td>
+              <td class="busi-table__cell busi-table__cell--op">
+                <button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-modal-open="rule-modal">编辑</button>
+                <button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-toast="success" data-toast-text="规则已删除，历史告警保留 30 天">删除</button>
+              </td>
+            </tr>
+            <tr class="busi-table__row">
+              <td class="busi-table__cell busi-table__cell--name">磁盘水位</td>
+              <td class="busi-table__cell">host-monitor</td>
+              <td class="busi-table__cell" title="磁盘使用率大于 85% 持续 10 分钟">磁盘使用率大于 85% 持续 10 分钟</td>
+              <td class="busi-table__cell"><span class="busi-level busi-level--warning"><span class="busi-level__dot"></span>警告</span></td>
+              <td class="busi-table__cell"><span class="busi-tag busi-tag--normal"><span class="busi-tag__dot"></span>邮件</span></td>
+              <td class="busi-table__cell"><button class="busi-switch is-checked" type="button" role="switch" aria-checked="true" aria-label="启用 磁盘水位"></button></td>
+              <td class="busi-table__cell busi-table__cell--op">
+                <button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-modal-open="rule-modal">编辑</button>
+                <button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-toast="success" data-toast-text="规则已删除，历史告警保留 30 天">删除</button>
+              </td>
+            </tr>
+            <tr class="busi-table__row">
+              <td class="busi-table__cell busi-table__cell--name">慢查询数量</td>
+              <td class="busi-table__cell">db-audit</td>
+              <td class="busi-table__cell" title="慢查询数 5 分钟内大于 20 条">慢查询数 5 分钟内大于 20 条</td>
+              <td class="busi-table__cell"><span class="busi-level busi-level--warning"><span class="busi-level__dot"></span>警告</span></td>
+              <td class="busi-table__cell"><span class="busi-tag busi-tag--normal"><span class="busi-tag__dot"></span>企业微信</span></td>
+              <td class="busi-table__cell"><button class="busi-switch is-checked" type="button" role="switch" aria-checked="true" aria-label="启用 慢查询数量"></button></td>
+              <td class="busi-table__cell busi-table__cell--op">
+                <button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-modal-open="rule-modal">编辑</button>
+                <button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-toast="success" data-toast-text="规则已删除，历史告警保留 30 天">删除</button>
+              </td>
+            </tr>
+            <tr class="busi-table__row">
+              <td class="busi-table__cell busi-table__cell--name">证书到期提醒</td>
+              <td class="busi-table__cell">cert-monitor</td>
+              <td class="busi-table__cell" title="证书剩余有效期小于 30 天">证书剩余有效期小于 30 天</td>
+              <td class="busi-table__cell"><span class="busi-level busi-level--info"><span class="busi-level__dot"></span>提示</span></td>
+              <td class="busi-table__cell"><span class="busi-tag busi-tag--normal"><span class="busi-tag__dot"></span>邮件</span></td>
+              <td class="busi-table__cell"><button class="busi-switch" type="button" role="switch" aria-checked="false" aria-label="启用 证书到期提醒"></button></td>
+              <td class="busi-table__cell busi-table__cell--op">
+                <button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-modal-open="rule-modal">编辑</button>
+                <button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-toast="success" data-toast-text="规则已删除，历史告警保留 30 天">删除</button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div class="busi-pagination">
+          <span class="busi-pagination__total">共 5 条</span>
+          <div class="busi-pagination__pages">
+            <button class="busi-pagination__item busi-pagination__item--arrow" type="button" disabled aria-label="上一页">&lt;</button>
+            <button class="busi-pagination__item is-active" type="button">1</button>
+            <button class="busi-pagination__item busi-pagination__item--arrow" type="button" disabled aria-label="下一页">&gt;</button>
+          </div>
+          <div class="busi-pagination__size">
+            <span>每页</span>
+            <select class="busi-pagination__select" aria-label="每页条数"><option selected>20</option><option>50</option><option>100</option></select>
+            <span>条</span>
+          </div>
+        </div>
+      </section>
+
+    </div>
+  </main>
+</div>
+
+<div class="busi-mask" data-mask="rule-modal"></div>
+<div class="busi-modal busi-modal--560" id="rule-modal" role="dialog" aria-modal="true" aria-labelledby="rule-modal-title">
+  <div class="busi-modal__head">
+    <div class="busi-modal__title" id="rule-modal-title">新建告警规则</div>
+    <button class="busi-icon-btn" type="button" data-modal-close aria-label="关闭">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M3 3l10 10M13 3L3 13"/></svg>
+    </button>
+  </div>
+  <form class="busi-modal__body" data-form data-done="规则已保存，10 秒内生效">
+    <div class="busi-form__row">
+      <label class="busi-form__label" for="rule-name"><span class="busi-form__required">*</span>规则名称</label>
+      <div class="busi-form__control">
+        <input class="busi-input" id="rule-name" type="text" placeholder="例如：订单错误率突增" style="width:100%">
+        <div class="busi-form__error">规则名称不可与已有规则重复</div>
+      </div>
+    </div>
+    <div class="busi-form__row">
+      <label class="busi-form__label" for="rule-source"><span class="busi-form__required">*</span>关联数据源</label>
+      <div class="busi-form__control">
+        <select class="busi-select" id="rule-source" style="width:100%">
+          <option>order-service</option><option>api-gateway</option><option>payment-gateway</option><option>host-monitor</option><option>db-audit</option>
+        </select>
+      </div>
+    </div>
+    <div class="busi-form__row">
+      <label class="busi-form__label" for="rule-expr"><span class="busi-form__required">*</span>判定条件</label>
+      <div class="busi-form__control">
+        <textarea class="busi-textarea" id="rule-expr" placeholder="请输入 SPL 片段，例如 level:ERROR | stats count() > 100" style="width:100%">level:ERROR | stats count() by host</textarea>
+      </div>
+    </div>
+    <div class="busi-form__row">
+      <label class="busi-form__label" for="rule-window">触发窗口</label>
+      <div class="busi-form__control busi-form__inline">
+        <select class="busi-select" id="rule-window"><option>5 分钟</option><option>10 分钟</option><option>1 小时</option></select>
+        <label class="busi-hint"><input class="busi-check" type="checkbox" checked> 窗口内累计判定</label>
+      </div>
+    </div>
+    <div class="busi-form__row">
+      <label class="busi-form__label" for="rule-level">告警级别</label>
+      <div class="busi-form__control">
+        <select class="busi-select" id="rule-level" style="width:100%">
+          <option>严重</option><option>警告</option><option>提示</option>
+        </select>
+      </div>
+    </div>
+    <div class="busi-form__row">
+      <span class="busi-form__label">通知方式</span>
+      <div class="busi-form__control busi-form__inline">
+        <label class="busi-login__check"><input class="busi-check" type="checkbox" checked> 企业微信</label>
+        <label class="busi-login__check"><input class="busi-check" type="checkbox" checked> 短信</label>
+        <label class="busi-login__check"><input class="busi-check" type="checkbox"> 邮件</label>
+      </div>
+    </div>
+    <div class="busi-form__row">
+      <span class="busi-form__label">启用</span>
+      <div class="busi-form__control busi-form__inline">
+        <button class="busi-switch is-checked" type="button" role="switch" aria-checked="true" aria-label="保存后立即启用"></button>
+        <span class="busi-hint">保存后立即启用，可在列表中随时停用</span>
+      </div>
+    </div>
+  </form>
+  <div class="busi-modal__foot">
+    <button class="busi-btn busi-btn--default" type="button" data-modal-close>取消</button>
+    <button class="busi-btn busi-btn--primary" type="button" data-toast="success" data-toast-text="规则已保存，10 秒内生效" data-modal-close>保存</button>
+  </div>
+</div>
+
+<script src="assets/app.js"></script>
+</body>
+</html>

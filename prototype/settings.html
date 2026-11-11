@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>用户与角色 · 统一日志分析平台</title>
+<link rel="stylesheet" href="../design-tokens.css">
+<link rel="stylesheet" href="assets/base.css">
+</head>
+<body class="busi-app" data-page="settings" data-cid="C-SYS-02">
+<div data-shell></div>
+<div class="busi-body">
+  <main class="busi-main">
+
+    <div class="busi-page-head">
+      <div class="busi-breadcrumb">
+        <span>平台管理</span><span class="busi-breadcrumb__sep">&gt;</span>
+        <span class="busi-breadcrumb__current">用户与角色</span>
+      </div>
+      <div class="busi-page-head__bar">
+        <div>
+          <h1 class="busi-page-head__title">用户与角色</h1>
+          <p class="busi-page-head__desc">按角色分配菜单与数据范围，变更实时生效</p>
+        </div>
+        <div class="busi-page-head__actions">
+          <button class="busi-btn busi-btn--default" type="button" data-loading-btn data-done="用户列表已刷新">刷新</button>
+          <button class="busi-btn busi-btn--primary" type="button" data-modal-open="user-modal">新建用户</button>
+          <button class="busi-btn busi-btn--default" type="button" data-toast="success" data-toast-text="已导出 24 个用户信息">导出</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="busi-page">
+
+      <section class="busi-card" data-tab-scope aria-label="平台管理配置">
+        <div class="busi-card__head">
+          <div class="busi-tabs" role="tablist" aria-label="平台管理页签">
+            <button class="busi-tabs__item is-active" type="button" role="tab" aria-selected="true" data-tab="users">用户管理</button>
+            <button class="busi-tabs__item" type="button" role="tab" aria-selected="false" data-tab="roles">角色权限</button>
+            <button class="busi-tabs__item" type="button" role="tab" aria-selected="false" data-tab="params">系统参数</button>
+            <button class="busi-tabs__item" type="button" role="tab" aria-selected="false" data-tab="audit">审计日志</button>
+          </div>
+          <div class="busi-card__extra"><span class="busi-hint">当前租户：总部生产</span></div>
+        </div>
+
+        <div data-panel="users">
+          <div class="busi-filter" style="border:0;border-bottom:1px solid var(--color-border-1);border-radius:0" aria-label="用户筛选">
+            <div class="busi-field">
+              <label class="busi-field__label" for="user-kw">用户名</label>
+              <div class="busi-field__control"><input class="busi-input" id="user-kw" type="text" placeholder="姓名或账号"></div>
+            </div>
+            <div class="busi-field">
+              <label class="busi-field__label" for="user-role">角色</label>
+              <div class="busi-field__control">
+                <select class="busi-select" id="user-role" style="width:100%">
+                  <option>全部角色</option><option>平台管理员</option><option>运维值班</option><option>只读用户</option><option>审计员</option>
+                </select>
+              </div>
+            </div>
+            <div class="busi-field">
+              <label class="busi-field__label" for="user-tenant">所属租户</label>
+              <div class="busi-field__control">
+                <select class="busi-select" id="user-tenant" style="width:100%">
+                  <option>全部租户</option><option>总部生产</option><option>省侧运维</option><option>演示租户</option>
+                </select>
+              </div>
+            </div>
+            <div class="busi-field">
+              <label class="busi-field__label" for="user-status">启用状态</label>
+              <div class="busi-field__control">
+                <select class="busi-select" id="user-status" style="width:100%">
+                  <option>全部状态</option><option>运行中</option><option>维护中</option><option>离线</option>
+                </select>
+              </div>
+            </div>
+            <div class="busi-filter__actions">
+              <button class="busi-btn busi-btn--primary" type="button" data-loading-btn data-done="筛选完成，共 24 个用户">查询</button>
+              <button class="busi-btn busi-btn--default" type="button" data-filter-reset>重置</button>
+            </div>
+          </div>
+
+          <div class="busi-table__batch">
+            <span>已选 <strong data-batch-count>0</strong> 项</span>
+            <div class="busi-table__batch-actions">
+              <button class="busi-btn busi-btn--text" type="button" data-toast="success" data-toast-text="已重置所选用户的密码，并通过短信下发">重置密码</button>
+              <button class="busi-btn busi-btn--text" type="button" data-toast="info" data-toast-text="已停用所选用户，会话将在 5 分钟内失效">批量停用</button>
+            </div>
+          </div>
+
+          <table class="busi-table">
+            <caption class="busi-sr-only">用户列表，共 24 个</caption>
+            <colgroup>
+              <col style="width:48px"><col style="width:13%"><col style="width:15%"><col style="width:14%"><col style="width:14%"><col style="width:9%"><col style="width:17%"><col style="width:18%">
+            </colgroup>
+            <thead>
+              <tr>
+                <th class="busi-table__th" scope="col"><input class="busi-check" type="checkbox" data-check-all aria-label="全选"></th>
+                <th class="busi-table__th" scope="col">姓名</th>
+                <th class="busi-table__th" scope="col">账号</th>
+                <th class="busi-table__th" scope="col">角色</th>
+                <th class="busi-table__th" scope="col">所属租户</th>
+                <th class="busi-table__th" scope="col">启用</th>
+                <th class="busi-table__th" scope="col">最近登录</th>
+                <th class="busi-table__th" scope="col">操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr class="busi-table__row">
+                <td class="busi-table__cell busi-table__cell--check"><input class="busi-check" type="checkbox" aria-label="选择 陈立"></td>
+                <td class="busi-table__cell busi-table__cell--name">陈立</td>
+                <td class="busi-table__cell">ops_chenli</td>
+                <td class="busi-table__cell">平台管理员</td>
+                <td class="busi-table__cell">总部生产</td>
+                <td class="busi-table__cell"><button class="busi-switch is-checked" type="button" role="switch" aria-checked="true" aria-label="启用 陈立"></button></td>
+                <td class="busi-table__cell">2026-11-11 09:41:22</td>
+                <td class="busi-table__cell busi-table__cell--op">
+                  <button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-modal-open="user-modal">编辑</button>
+                  <button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-toast="success" data-toast-text="已向该用户下发密码重置短信">重置密码</button>
+                </td>
+              </tr>
+              <tr class="busi-table__row">
+                <td class="busi-table__cell busi-table__cell--check"><input class="busi-check" type="checkbox" aria-label="选择 周航"></td>
+                <td class="busi-table__cell busi-table__cell--name">周航</td>
+                <td class="busi-table__cell">ops_zhouhang</td>
+                <td class="busi-table__cell">运维值班</td>
+                <td class="busi-table__cell">总部生产</td>
+                <td class="busi-table__cell"><button class="busi-switch is-checked" type="button" role="switch" aria-checked="true" aria-label="启用 周航"></button></td>
+                <td class="busi-table__cell">2026-11-11 08:52:10</td>
+                <td class="busi-table__cell busi-table__cell--op">
+                  <button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-modal-open="user-modal">编辑</button>
+                  <button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-toast="success" data-toast-text="已向该用户下发密码重置短信">重置密码</button>
+                </td>
+              </tr>
+              <tr class="busi-table__row">
+                <td class="busi-table__cell busi-table__cell--check"><input class="busi-check" type="checkbox" aria-label="选择 高远"></td>
+                <td class="busi-table__cell busi-table__cell--name">高远</td>
+                <td class="busi-table__cell">ops_gaoyuan</td>
+                <td class="busi-table__cell">只读用户</td>
+                <td class="busi-table__cell">省侧运维</td>
+                <td class="busi-table__cell"><button class="busi-switch is-checked" type="button" role="switch" aria-checked="true" aria-label="启用 高远"></button></td>
+                <td class="busi-table__cell">2026-11-10 19:20:44</td>
+                <td class="busi-table__cell busi-table__cell--op">
+                  <button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-modal-open="user-modal">编辑</button>
+                  <button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-toast="success" data-toast-text="已向该用户下发密码重置短信">重置密码</button>
+                </td>
+              </tr>
+              <tr class="busi-table__row">
+                <td class="busi-table__cell busi-table__cell--check"><input class="busi-check" type="checkbox" aria-label="选择 赵磊"></td>
+                <td class="busi-table__cell busi-table__cell--name">赵磊</td>
+                <td class="busi-table__cell">ops_zhaolei</td>
+                <td class="busi-table__cell">运维值班</td>
+                <td class="busi-table__cell">总部生产</td>
+                <td class="busi-table__cell"><button class="busi-switch" type="button" role="switch" aria-checked="false" aria-label="启用 赵磊"></button></td>
+                <td class="busi-table__cell">2026-11-08 10:12:31</td>
+                <td class="busi-table__cell busi-table__cell--op">
+                  <button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-modal-open="user-modal">编辑</button>
+                  <button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-toast="success" data-toast-text="已向该用户下发密码重置短信">重置密码</button>
+                </td>
+              </tr>
+              <tr class="busi-table__row">
+                <td class="busi-table__cell busi-table__cell--check"><input class="busi-check" type="checkbox" aria-label="选择 林静"></td>
+                <td class="busi-table__cell busi-table__cell--name">林静</td>
+                <td class="busi-table__cell">audit_linjing</td>
+                <td class="busi-table__cell">审计员</td>
+                <td class="busi-table__cell">总部生产</td>
+                <td class="busi-table__cell"><button class="busi-switch is-checked" type="button" role="switch" aria-checked="true" aria-label="启用 林静"></button></td>
+                <td class="busi-table__cell">2026-11-10 17:05:09</td>
+                <td class="busi-table__cell busi-table__cell--op">
+                  <button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-modal-open="user-modal">编辑</button>
+                  <button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-toast="success" data-toast-text="已向该用户下发密码重置短信">重置密码</button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+
+          <div class="busi-pagination">
+            <span class="busi-pagination__total">共 24 个</span>
+            <div class="busi-pagination__pages">
+              <button class="busi-pagination__item busi-pagination__item--arrow" type="button" disabled aria-label="上一页">&lt;</button>
+              <button class="busi-pagination__item is-active" type="button">1</button>
+              <button class="busi-pagination__item" type="button">2</button>
+              <button class="busi-pagination__item busi-pagination__item--arrow" type="button" aria-label="下一页">&gt;</button>
+            </div>
+            <div class="busi-pagination__size">
+              <span>每页</span>
+              <select class="busi-pagination__select" aria-label="每页条数"><option selected>20</option><option>50</option><option>100</option></select>
+              <span>条</span>
+            </div>
+          </div>
+        </div>
+
+        <div data-panel="roles" class="busi-is-hidden">
+          <table class="busi-table">
+            <caption class="busi-sr-only">角色权限列表</caption>
+            <colgroup><col style="width:20%"><col style="width:34%"><col style="width:12%"><col style="width:18%"><col style="width:16%"></colgroup>
+            <thead>
+              <tr>
+                <th class="busi-table__th" scope="col">角色名称</th>
+                <th class="busi-table__th" scope="col">权限范围</th>
+                <th class="busi-table__th" scope="col">成员数</th>
+                <th class="busi-table__th" scope="col">更新时间</th>
+                <th class="busi-table__th" scope="col">操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr class="busi-table__row">
+                <td class="busi-table__cell busi-table__cell--name">平台管理员</td>
+                <td class="busi-table__cell">全部菜单 · 全部数据源 · 用户管理</td>
+                <td class="busi-table__cell busi-table__cell--num">3</td>
+                <td class="busi-table__cell">2026-11-10 18:20:14</td>
+                <td class="busi-table__cell busi-table__cell--op"><button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-toast="info" data-toast-text="进入角色编辑：可调整菜单与数据范围">编辑</button></td>
+              </tr>
+              <tr class="busi-table__row">
+                <td class="busi-table__cell busi-table__cell--name">运维值班</td>
+                <td class="busi-table__cell">检索 · 告警处置 · 仪表盘查看</td>
+                <td class="busi-table__cell busi-table__cell--num">12</td>
+                <td class="busi-table__cell">2026-11-09 15:42:08</td>
+                <td class="busi-table__cell busi-table__cell--op"><button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-toast="info" data-toast-text="进入角色编辑：可调整菜单与数据范围">编辑</button></td>
+              </tr>
+              <tr class="busi-table__row">
+                <td class="busi-table__cell busi-table__cell--name">只读用户</td>
+                <td class="busi-table__cell">检索查看 · 仪表盘查看（只读）</td>
+                <td class="busi-table__cell busi-table__cell--num">7</td>
+                <td class="busi-table__cell">2026-11-06 10:12:30</td>
+                <td class="busi-table__cell busi-table__cell--op"><button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-toast="info" data-toast-text="进入角色编辑：可调整菜单与数据范围">编辑</button></td>
+              </tr>
+              <tr class="busi-table__row">
+                <td class="busi-table__cell busi-table__cell--name">审计员</td>
+                <td class="busi-table__cell">审计日志 · 操作记录导出</td>
+                <td class="busi-table__cell busi-table__cell--num">2</td>
+                <td class="busi-table__cell">2026-11-04 09:36:55</td>
+                <td class="busi-table__cell busi-table__cell--op"><button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-toast="info" data-toast-text="进入角色编辑：可调整菜单与数据范围">编辑</button></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div data-panel="params" class="busi-is-hidden">
+          <div class="busi-card__body">
+            <div class="busi-form__row">
+              <label class="busi-form__label" for="param-retain">日志保留</label>
+              <div class="busi-form__control busi-form__inline">
+                <select class="busi-select" id="param-retain"><option>30 天</option><option selected>90 天</option><option>180 天</option><option>365 天</option></select>
+                <span class="busi-hint">热数据 30 天，冷数据自动归档到对象存储</span>
+              </div>
+            </div>
+            <div class="busi-form__row">
+              <label class="busi-form__label" for="param-limit">单次检索上限</label>
+              <div class="busi-form__control busi-form__inline">
+                <input class="busi-input" id="param-limit" type="text" value="5000" style="width:96px" aria-label="单次检索上限条数">
+                <span class="busi-hint">条，超过上限请缩小时间范围或使用聚合语句</span>
+              </div>
+            </div>
+            <div class="busi-form__row">
+              <label class="busi-form__label" for="param-tz">默认时区</label>
+              <div class="busi-form__control">
+                <select class="busi-select" id="param-tz" style="width:280px"><option selected>(UTC+08:00) 北京</option><option>(UTC+00:00) UTC</option></select>
+              </div>
+            </div>
+            <div class="busi-form__row">
+              <label class="busi-form__label" for="param-session">会话超时</label>
+              <div class="busi-form__control busi-form__inline">
+                <input class="busi-input" id="param-session" type="text" value="30" style="width:96px" aria-label="会话超时分钟数">
+                <span class="busi-hint">分钟，超时后需重新登录</span>
+              </div>
+            </div>
+            <div class="busi-form__row">
+              <span class="busi-form__label">操作审计</span>
+              <div class="busi-form__control busi-form__inline">
+                <button class="busi-switch is-checked" type="button" role="switch" aria-checked="true" aria-label="开启操作审计"></button>
+                <span class="busi-hint">记录检索、导出、规则变更等操作，保留 180 天</span>
+              </div>
+            </div>
+            <div class="busi-form__row">
+              <span class="busi-form__label"></span>
+              <div class="busi-form__control busi-form__inline">
+                <button class="busi-btn busi-btn--primary" type="button" data-loading-btn data-done="系统参数已保存并生效">保存</button>
+                <button class="busi-btn busi-btn--default" type="button" data-filter-reset>重置</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div data-panel="audit" class="busi-is-hidden">
+          <table class="busi-table">
+            <caption class="busi-sr-only">审计日志</caption>
+            <colgroup><col style="width:20%"><col style="width:12%"><col style="width:18%"><col style="width:34%"><col style="width:16%"></colgroup>
+            <thead>
+              <tr>
+                <th class="busi-table__th" scope="col">操作时间</th>
+                <th class="busi-table__th" scope="col">操作人</th>
+                <th class="busi-table__th" scope="col">操作类型</th>
+                <th class="busi-table__th" scope="col">操作对象</th>
+                <th class="busi-table__th" scope="col">来源 IP</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr class="busi-table__row">
+                <td class="busi-table__cell">2026-11-11 09:41:22</td>
+                <td class="busi-table__cell">陈立</td>
+                <td class="busi-table__cell">登录</td>
+                <td class="busi-table__cell">平台 Web 端</td>
+                <td class="busi-table__cell">10.24.32.88</td>
+              </tr>
+              <tr class="busi-table__row">
+                <td class="busi-table__cell">2026-11-11 09:38:07</td>
+                <td class="busi-table__cell">周航</td>
+                <td class="busi-table__cell">关闭告警</td>
+                <td class="busi-table__cell">数据库慢查询数量上升</td>
+                <td class="busi-table__cell">10.24.32.91</td>
+              </tr>
+              <tr class="busi-table__row">
+                <td class="busi-table__cell">2026-11-11 09:12:40</td>
+                <td class="busi-table__cell">赵磊</td>
+                <td class="busi-table__cell">停用数据源</td>
+                <td class="busi-table__cell">安全设备 Syslog</td>
+                <td class="busi-table__cell">10.24.33.12</td>
+              </tr>
+              <tr class="busi-table__row">
+                <td class="busi-table__cell">2026-11-11 08:56:12</td>
+                <td class="busi-table__cell">陈立</td>
+                <td class="busi-table__cell">修改告警规则</td>
+                <td class="busi-table__cell">订单错误率突增</td>
+                <td class="busi-table__cell">10.24.32.88</td>
+              </tr>
+              <tr class="busi-table__row">
+                <td class="busi-table__cell">2026-11-11 08:30:55</td>
+                <td class="busi-table__cell">林静</td>
+                <td class="busi-table__cell">导出审计日志</td>
+                <td class="busi-table__cell">近 30 天操作记录</td>
+                <td class="busi-table__cell">10.24.34.20</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+    </div>
+  </main>
+</div>
+
+<div class="busi-mask" data-mask="user-modal"></div>
+<div class="busi-modal busi-modal--560" id="user-modal" role="dialog" aria-modal="true" aria-labelledby="user-modal-title">
+  <div class="busi-modal__head">
+    <div class="busi-modal__title" id="user-modal-title">新建用户</div>
+    <button class="busi-icon-btn" type="button" data-modal-close aria-label="关闭">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M3 3l10 10M13 3L3 13"/></svg>
+    </button>
+  </div>
+  <form class="busi-modal__body" data-form data-done="用户已保存，初始密码已通过短信下发">
+    <div class="busi-form__row">
+      <label class="busi-form__label" for="new-user-name"><span class="busi-form__required">*</span>姓名</label>
+      <div class="busi-form__control"><input class="busi-input" id="new-user-name" type="text" placeholder="请输入真实姓名" style="width:100%"></div>
+    </div>
+    <div class="busi-form__row">
+      <label class="busi-form__label" for="new-user-account"><span class="busi-form__required">*</span>账号</label>
+      <div class="busi-form__control">
+        <input class="busi-input" id="new-user-account" type="text" placeholder="小写字母、数字与下划线" style="width:100%">
+        <div class="busi-form__error">该账号已存在，请更换</div>
+      </div>
+    </div>
+    <div class="busi-form__row">
+      <label class="busi-form__label" for="new-user-role">角色</label>
+      <div class="busi-form__control">
+        <select class="busi-select" id="new-user-role" style="width:100%">
+          <option>运维值班</option><option>平台管理员</option><option>只读用户</option><option>审计员</option>
+        </select>
+      </div>
+    </div>
+    <div class="busi-form__row">
+      <label class="busi-form__label" for="new-user-tenant">所属租户</label>
+      <div class="busi-form__control">
+        <select class="busi-select" id="new-user-tenant" style="width:100%">
+          <option>总部生产</option><option>省侧运维</option><option>演示租户</option>
+        </select>
+      </div>
+    </div>
+    <div class="busi-form__row">
+      <label class="busi-form__label" for="new-user-phone">手机号</label>
+      <div class="busi-form__control"><input class="busi-input" id="new-user-phone" type="text" placeholder="用于接收告警短信与密码重置" style="width:100%"></div>
+    </div>
+    <div class="busi-form__row">
+      <span class="busi-form__label">启用</span>
+      <div class="busi-form__control busi-form__inline">
+        <button class="busi-switch is-checked" type="button" role="switch" aria-checked="true" aria-label="保存后立即启用"></button>
+        <span class="busi-hint">保存后立即生效，可随时在列表中停用</span>
+      </div>
+    </div>
+  </form>
+  <div class="busi-modal__foot">
+    <button class="busi-btn busi-btn--default" type="button" data-modal-close>取消</button>
+    <button class="busi-btn busi-btn--primary" type="button" data-toast="success" data-toast-text="用户已保存，初始密码已通过短信下发" data-modal-close>保存</button>
+  </div>
+</div>
+
+<script src="assets/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>告警事件 · 统一日志分析平台</title>
+<link rel="stylesheet" href="../design-tokens.css">
+<link rel="stylesheet" href="assets/base.css">
+</head>
+<body class="busi-app" data-page="alarms" data-cid="C-ALM-01">
+<div data-shell></div>
+<div class="busi-body">
+  <main class="busi-main">
+
+    <div class="busi-page-head">
+      <div class="busi-breadcrumb">
+        <span>告警中心</span><span class="busi-breadcrumb__sep">&gt;</span>
+        <span class="busi-breadcrumb__current">告警事件</span>
+      </div>
+      <div class="busi-page-head__bar">
+        <div>
+          <h1 class="busi-page-head__title">告警事件</h1>
+          <p class="busi-page-head__desc">按规则实时判定，30 分钟内同源告警自动合并</p>
+        </div>
+        <div class="busi-page-head__actions">
+          <button class="busi-btn busi-btn--default" type="button" data-loading-btn data-done="告警事件已刷新">刷新</button>
+          <button class="busi-btn busi-btn--default" type="button" data-toast="success" data-toast-text="已导出 36 条告警事件">导出</button>
+          <button class="busi-btn busi-btn--default" type="button" data-modal-open="close-batch-modal">批量关闭</button>
+          <a class="busi-btn busi-btn--primary" href="alarm-rules.html">新建规则</a>
+        </div>
+      </div>
+    </div>
+
+    <div class="busi-page">
+
+      <section class="busi-filter" aria-label="筛选条件">
+        <div class="busi-field">
+          <label class="busi-field__label" for="alarm-kw">关键词</label>
+          <div class="busi-field__control"><input class="busi-input" id="alarm-kw" type="text" placeholder="告警名称 / 来源"></div>
+        </div>
+        <div class="busi-field">
+          <label class="busi-field__label" for="alarm-level">告警级别</label>
+          <div class="busi-field__control">
+            <select class="busi-select" id="alarm-level" style="width:100%">
+              <option>全部级别</option><option>严重</option><option>警告</option><option>提示</option>
+            </select>
+          </div>
+        </div>
+        <div class="busi-field">
+          <label class="busi-field__label" for="alarm-status">处理状态</label>
+          <div class="busi-field__control">
+            <select class="busi-select" id="alarm-status" style="width:100%">
+              <option>全部状态</option><option>告警中</option><option>已恢复</option><option>维护中</option>
+            </select>
+          </div>
+        </div>
+        <div class="busi-field">
+          <label class="busi-field__label" for="alarm-source">告警来源</label>
+          <div class="busi-field__control"><input class="busi-input" id="alarm-source" type="text" placeholder="数据源或主机"></div>
+        </div>
+        <div class="busi-field">
+          <label class="busi-field__label" for="alarm-time">发生时间</label>
+          <div class="busi-field__control"><input class="busi-input" id="alarm-time" type="date"></div>
+        </div>
+        <div class="busi-field">
+          <label class="busi-field__label" for="alarm-duty">值班组</label>
+          <div class="busi-field__control">
+            <select class="busi-select" id="alarm-duty" style="width:100%">
+              <option>全部值班组</option><option>值班一组</option><option>值班二组</option><option>平台组</option>
+            </select>
+          </div>
+        </div>
+        <div class="busi-field">
+          <label class="busi-field__label" for="alarm-region">所属区域</label>
+          <div class="busi-field__control">
+            <select class="busi-select" id="alarm-region" style="width:100%">
+              <option>全部区域</option><option>华北</option><option>华东</option><option>华南</option>
+            </select>
+          </div>
+        </div>
+        <div class="busi-field">
+          <label class="busi-field__label" for="alarm-notify">通知状态</label>
+          <div class="busi-field__control">
+            <select class="busi-select" id="alarm-notify" style="width:100%">
+              <option>全部</option><option>已通知</option><option>未通知</option><option>通知失败</option>
+            </select>
+          </div>
+        </div>
+        <div class="busi-filter__actions">
+          <button class="busi-btn busi-btn--primary" type="button" data-loading-btn data-done="筛选完成，命中 36 条告警">查询</button>
+          <button class="busi-btn busi-btn--default" type="button" data-filter-reset>重置</button>
+        </div>
+      </section>
+
+      <section class="busi-table-wrap" aria-label="告警事件列表">
+        <div class="busi-table__batch">
+          <span>已选 <strong data-batch-count>0</strong> 项</span>
+          <div class="busi-table__batch-actions">
+            <button class="busi-btn busi-btn--text" type="button" data-modal-open="close-batch-modal">批量关闭</button>
+            <button class="busi-btn busi-btn--text" type="button" data-toast="success" data-toast-text="已将所选告警指派给值班一组">指派处理人</button>
+          </div>
+        </div>
+
+        <table class="busi-table">
+          <caption class="busi-sr-only">告警事件列表，共 36 条</caption>
+          <colgroup>
+            <col style="width:48px"><col style="width:25%"><col style="width:9%"><col style="width:15%"><col style="width:15%"><col style="width:13%"><col style="width:10%"><col style="width:13%">
+          </colgroup>
+          <thead>
+            <tr>
+              <th class="busi-table__th" scope="col"><input class="busi-check" type="checkbox" data-check-all aria-label="全选"></th>
+              <th class="busi-table__th" scope="col">告警名称</th>
+              <th class="busi-table__th" scope="col">级别</th>
+              <th class="busi-table__th" scope="col">告警来源</th>
+              <th class="busi-table__th" scope="col">首次发生</th>
+              <th class="busi-table__th" scope="col">持续时长</th>
+              <th class="busi-table__th" scope="col">状态</th>
+              <th class="busi-table__th" scope="col">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr class="busi-table__row is-clickable" data-detail="alarm-detail" data-detail-title="告警详情" data-raw="2026-11-11 09:42:18 ERROR order-service [host-10-24-8-21] Payment callback timeout after 3000ms, orderId=SO20261111094218 channel=UNIONPAY retry=2">
+              <td class="busi-table__cell busi-table__cell--check"><input class="busi-check" type="checkbox" aria-label="选择该行"></td>
+              <td class="busi-table__cell busi-table__cell--name">订单服务错误率突增</td>
+              <td class="busi-table__cell" data-label="级别"><span class="busi-level busi-level--critical"><span class="busi-level__dot"></span>严重</span></td>
+              <td class="busi-table__cell" data-label="告警来源">order-service</td>
+              <td class="busi-table__cell" data-label="首次发生">2026-11-11 09:42:18</td>
+              <td class="busi-table__cell" data-label="持续时长">2 分 42 秒</td>
+              <td class="busi-table__cell" data-label="状态"><span class="busi-tag busi-tag--warning"><span class="busi-tag__dot"></span>告警中</span></td>
+              <td class="busi-table__cell busi-table__cell--op">
+                <button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-drawer-open="alarm-detail" data-drawer-title="告警详情">详情</button>
+                <button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-toast="success" data-toast-text="告警已关闭，恢复通知已发送">关闭</button>
+              </td>
+            </tr>
+            <tr class="busi-table__row is-clickable" data-detail="alarm-detail" data-detail-title="告警详情" data-raw="2026-11-11 09:38:02 WARN api-gateway [host-10-24-8-16] 5xx ratio 3.2% exceeds threshold 1.0%, window=5m">
+              <td class="busi-table__cell busi-table__cell--check"><input class="busi-check" type="checkbox" aria-label="选择该行"></td>
+              <td class="busi-table__cell busi-table__cell--name">网关 5xx 比例超阈值</td>
+              <td class="busi-table__cell" data-label="级别"><span class="busi-level busi-level--critical"><span class="busi-level__dot"></span>严重</span></td>
+              <td class="busi-table__cell" data-label="告警来源">api-gateway</td>
+              <td class="busi-table__cell" data-label="首次发生">2026-11-11 09:38:02</td>
+              <td class="busi-table__cell" data-label="持续时长">6 分 58 秒</td>
+              <td class="busi-table__cell" data-label="状态"><span class="busi-tag busi-tag--warning"><span class="busi-tag__dot"></span>告警中</span></td>
+              <td class="busi-table__cell busi-table__cell--op">
+                <button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-drawer-open="alarm-detail" data-drawer-title="告警详情">详情</button>
+                <button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-toast="success" data-toast-text="告警已关闭，恢复通知已发送">关闭</button>
+              </td>
+            </tr>
+            <tr class="busi-table__row is-clickable" data-detail="alarm-detail" data-detail-title="告警详情" data-raw="2026-11-11 09:21:44 WARN host-monitor [host-10-24-8-16] disk usage /data 87.4% exceeds 85%">
+              <td class="busi-table__cell busi-table__cell--check"><input class="busi-check" type="checkbox" aria-label="选择该行"></td>
+              <td class="busi-table__cell busi-table__cell--name">磁盘使用率超过 85%</td>
+              <td class="busi-table__cell" data-label="级别"><span class="busi-level busi-level--warning"><span class="busi-level__dot"></span>警告</span></td>
+              <td class="busi-table__cell" data-label="告警来源">host-10-24-8-16</td>
+              <td class="busi-table__cell" data-label="首次发生">2026-11-11 09:21:44</td>
+              <td class="busi-table__cell" data-label="持续时长">23 分 16 秒</td>
+              <td class="busi-table__cell" data-label="状态"><span class="busi-tag busi-tag--warning"><span class="busi-tag__dot"></span>告警中</span></td>
+              <td class="busi-table__cell busi-table__cell--op">
+                <button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-drawer-open="alarm-detail" data-drawer-title="告警详情">详情</button>
+                <button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-toast="success" data-toast-text="告警已关闭，恢复通知已发送">关闭</button>
+              </td>
+            </tr>
+            <tr class="busi-table__row is-clickable" data-detail="alarm-detail" data-detail-title="告警详情" data-raw="2026-11-11 08:56:31 WARN db-audit [host-10-24-9-08] slow query 2.8s, rows=18204, threshold=1.5s">
+              <td class="busi-table__cell busi-table__cell--check"><input class="busi-check" type="checkbox" aria-label="选择该行"></td>
+              <td class="busi-table__cell busi-table__cell--name">数据库慢查询数量上升</td>
+              <td class="busi-table__cell" data-label="级别"><span class="busi-level busi-level--warning"><span class="busi-level__dot"></span>警告</span></td>
+              <td class="busi-table__cell" data-label="告警来源">db-audit</td>
+              <td class="busi-table__cell" data-label="首次发生">2026-11-11 08:56:31</td>
+              <td class="busi-table__cell" data-label="持续时长">48 分 05 秒</td>
+              <td class="busi-table__cell" data-label="状态"><span class="busi-muted">已恢复</span></td>
+              <td class="busi-table__cell busi-table__cell--op">
+                <button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-drawer-open="alarm-detail" data-drawer-title="告警详情">详情</button>
+                <button class="busi-btn busi-btn--text busi-btn--sm" type="button" disabled>关闭</button>
+              </td>
+            </tr>
+            <tr class="busi-table__row is-clickable" data-detail="alarm-detail" data-detail-title="告警详情" data-raw="2026-11-11 08:31:09 INFO kafka-core [kafka-broker-03] consumer lag 128,400 messages, topic=order-event">
+              <td class="busi-table__cell busi-table__cell--check"><input class="busi-check" type="checkbox" aria-label="选择该行"></td>
+              <td class="busi-table__cell busi-table__cell--name">Kafka 消费延迟升高</td>
+              <td class="busi-table__cell" data-label="级别"><span class="busi-level busi-level--info"><span class="busi-level__dot"></span>提示</span></td>
+              <td class="busi-table__cell" data-label="告警来源">kafka-core</td>
+              <td class="busi-table__cell" data-label="首次发生">2026-11-11 08:31:09</td>
+              <td class="busi-table__cell" data-label="持续时长">1 小时 13 分</td>
+              <td class="busi-table__cell" data-label="状态"><span class="busi-muted">已恢复</span></td>
+              <td class="busi-table__cell busi-table__cell--op">
+                <button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-drawer-open="alarm-detail" data-drawer-title="告警详情">详情</button>
+                <button class="busi-btn busi-btn--text busi-btn--sm" type="button" disabled>关闭</button>
+              </td>
+            </tr>
+            <tr class="busi-table__row is-clickable" data-detail="alarm-detail" data-detail-title="告警详情" data-raw="2026-11-11 08:12:55 ERROR payment-gateway [host-10-24-8-32] callback timeout count 42 in 5m, channel=WECHAT_PAY">
+              <td class="busi-table__cell busi-table__cell--check"><input class="busi-check" type="checkbox" aria-label="选择该行"></td>
+              <td class="busi-table__cell busi-table__cell--name">支付渠道回调超时</td>
+              <td class="busi-table__cell" data-label="级别"><span class="busi-level busi-level--critical"><span class="busi-level__dot"></span>严重</span></td>
+              <td class="busi-table__cell" data-label="告警来源">payment-gateway</td>
+              <td class="busi-table__cell" data-label="首次发生">2026-11-11 08:12:55</td>
+              <td class="busi-table__cell" data-label="持续时长">1 小时 32 分</td>
+              <td class="busi-table__cell" data-label="状态"><span class="busi-tag busi-tag--warning"><span class="busi-tag__dot"></span>告警中</span></td>
+              <td class="busi-table__cell busi-table__cell--op">
+                <button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-drawer-open="alarm-detail" data-drawer-title="告警详情">详情</button>
+                <button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-toast="success" data-toast-text="告警已关闭，恢复通知已发送">关闭</button>
+              </td>
+            </tr>
+            <tr class="busi-table__row is-clickable" data-detail="alarm-detail" data-detail-title="告警详情" data-raw="2026-11-11 07:48:20 WARN host-monitor [host-10-24-9-08] cpu usage 92.6% exceeds 90% for 10m">
+              <td class="busi-table__cell busi-table__cell--check"><input class="busi-check" type="checkbox" aria-label="选择该行"></td>
+              <td class="busi-table__cell busi-table__cell--name">主机 CPU 使用率超过 90%</td>
+              <td class="busi-table__cell" data-label="级别"><span class="busi-level busi-level--warning"><span class="busi-level__dot"></span>警告</span></td>
+              <td class="busi-table__cell" data-label="告警来源">host-10-24-9-08</td>
+              <td class="busi-table__cell" data-label="首次发生">2026-11-11 07:48:20</td>
+              <td class="busi-table__cell" data-label="持续时长">1 小时 56 分</td>
+              <td class="busi-table__cell" data-label="状态"><span class="busi-tag busi-tag--maintain"><span class="busi-tag__dot"></span>维护中</span></td>
+              <td class="busi-table__cell busi-table__cell--op">
+                <button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-drawer-open="alarm-detail" data-drawer-title="告警详情">详情</button>
+                <button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-toast="info" data-toast-text="维护窗口内不发送关闭通知">关闭</button>
+              </td>
+            </tr>
+            <tr class="busi-table__row is-clickable" data-detail="alarm-detail" data-detail-title="告警详情" data-raw="2026-11-11 07:20:06 INFO cert-monitor [cert-gateway] certificate expires in 28 days, domain=api.example-internal">
+              <td class="busi-table__cell busi-table__cell--check"><input class="busi-check" type="checkbox" aria-label="选择该行"></td>
+              <td class="busi-table__cell busi-table__cell--name">证书 30 天内到期</td>
+              <td class="busi-table__cell" data-label="级别"><span class="busi-level busi-level--info"><span class="busi-level__dot"></span>提示</span></td>
+              <td class="busi-table__cell" data-label="告警来源">cert-monitor</td>
+              <td class="busi-table__cell" data-label="首次发生">2026-11-11 07:20:06</td>
+              <td class="busi-table__cell" data-label="持续时长">2 小时 24 分</td>
+              <td class="busi-table__cell" data-label="状态"><span class="busi-tag busi-tag--warning"><span class="busi-tag__dot"></span>告警中</span></td>
+              <td class="busi-table__cell busi-table__cell--op">
+                <button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-drawer-open="alarm-detail" data-drawer-title="告警详情">详情</button>
+                <button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-toast="success" data-toast-text="告警已关闭，恢复通知已发送">关闭</button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div class="busi-pagination">
+          <span class="busi-pagination__total">共 36 条</span>
+          <div class="busi-pagination__pages">
+            <button class="busi-pagination__item busi-pagination__item--arrow" type="button" disabled aria-label="上一页">&lt;</button>
+            <button class="busi-pagination__item is-active" type="button">1</button>
+            <button class="busi-pagination__item" type="button">2</button>
+            <button class="busi-pagination__item busi-pagination__item--arrow" type="button" aria-label="下一页">&gt;</button>
+          </div>
+          <div class="busi-pagination__size">
+            <span>每页</span>
+            <select class="busi-pagination__select" aria-label="每页条数"><option selected>20</option><option>50</option><option>100</option></select>
+            <span>条</span>
+          </div>
+        </div>
+      </section>
+
+    </div>
+  </main>
+</div>
+
+<div class="busi-mask" data-mask="alarm-detail"></div>
+<aside class="busi-drawer busi-drawer--480" id="alarm-detail" role="dialog" aria-modal="true" aria-labelledby="alarm-detail-title">
+  <div class="busi-drawer__head">
+    <div class="busi-drawer__title" id="alarm-detail-title" data-drawer-title>告警详情</div>
+    <button class="busi-icon-btn" type="button" data-drawer-close aria-label="关闭详情">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M3 3l10 10M13 3L3 13"/></svg>
+    </button>
+  </div>
+  <div class="busi-drawer__body" data-drawer-body></div>
+  <div class="busi-drawer__foot">
+    <button class="busi-btn busi-btn--default" type="button" data-drawer-close>关闭</button>
+    <button class="busi-btn busi-btn--default" type="button" data-toast="info" data-toast-text="已跳转至日志检索，自动带入告警时间与来源">查看关联日志</button>
+    <button class="busi-btn busi-btn--primary" type="button" data-toast="success" data-toast-text="告警已关闭，恢复通知已发送">关闭告警</button>
+  </div>
+</aside>
+
+<div class="busi-mask" data-mask="close-batch-modal"></div>
+<div class="busi-modal busi-modal--420" id="close-batch-modal" role="alertdialog" aria-modal="true" aria-labelledby="close-batch-title">
+  <div class="busi-modal__head">
+    <div class="busi-modal__title" id="close-batch-title">批量关闭告警</div>
+    <button class="busi-icon-btn" type="button" data-modal-close aria-label="关闭">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M3 3l10 10M13 3L3 13"/></svg>
+    </button>
+  </div>
+  <div class="busi-modal__body">
+    <p class="busi-modal__desc">将关闭所选告警并停止重复通知，已恢复的告警会自动跳过。</p>
+    <p class="busi-hint" style="margin:0">关闭原因会记录到操作审计。</p>
+  </div>
+  <div class="busi-modal__foot">
+    <button class="busi-btn busi-btn--default" type="button" data-modal-close>取消</button>
+    <button class="busi-btn busi-btn--primary" type="button" data-toast="success" data-toast-text="成功关闭 3 条，跳过 1 条已恢复告警" data-modal-close>关闭告警</button>
+  </div>
+</div>
+
+<script src="assets/app.js"></script>
+</body>
+</html>

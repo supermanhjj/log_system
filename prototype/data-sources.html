@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>数据源 · 统一日志分析平台</title>
+<link rel="stylesheet" href="../design-tokens.css">
+<link rel="stylesheet" href="assets/base.css">
+</head>
+<body class="busi-app" data-page="data-sources" data-cid="C-DAT-01">
+<div data-shell></div>
+<div class="busi-body">
+  <main class="busi-main">
+
+    <div class="busi-page-head">
+      <div class="busi-breadcrumb">
+        <span>数据接入</span><span class="busi-breadcrumb__sep">&gt;</span>
+        <span class="busi-breadcrumb__current">数据源</span>
+      </div>
+      <div class="busi-page-head__bar">
+        <div>
+          <h1 class="busi-page-head__title">数据源</h1>
+          <p class="busi-page-head__desc">四类接入方式：Agent 采集、Syslog 转发、HTTP 推送、Kafka 订阅</p>
+        </div>
+        <div class="busi-page-head__actions">
+          <button class="busi-btn busi-btn--default" type="button" data-loading-btn data-done="数据源状态已刷新">刷新</button>
+          <button class="busi-btn busi-btn--primary" type="button" data-drawer-open="source-drawer" data-drawer-title="新建数据源">新建数据源</button>
+          <button class="busi-btn busi-btn--default" type="button" data-toast="success" data-toast-text="已导出 6 个数据源的接入配置">导出配置</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="busi-page">
+
+      <section class="busi-filter" aria-label="筛选条件">
+        <div class="busi-field">
+          <label class="busi-field__label" for="src-name">数据源名称</label>
+          <div class="busi-field__control"><input class="busi-input" id="src-name" type="text" placeholder="请输入名称关键词"></div>
+        </div>
+        <div class="busi-field">
+          <label class="busi-field__label" for="src-type">接入类型</label>
+          <div class="busi-field__control">
+            <select class="busi-select" id="src-type" style="width:100%">
+              <option>全部类型</option><option>Agent</option><option>Syslog</option><option>HTTP</option><option>Kafka</option>
+            </select>
+          </div>
+        </div>
+        <div class="busi-field">
+          <label class="busi-field__label" for="src-status">运行状态</label>
+          <div class="busi-field__control">
+            <select class="busi-select" id="src-status" style="width:100%">
+              <option>全部状态</option><option>运行中</option><option>告警中</option><option>异常</option><option>离线</option><option>维护中</option>
+            </select>
+          </div>
+        </div>
+        <div class="busi-field">
+          <label class="busi-field__label" for="src-region">所属区域</label>
+          <div class="busi-field__control">
+            <select class="busi-select" id="src-region" style="width:100%">
+              <option>全部区域</option><option>华北</option><option>华东</option><option>华南</option>
+            </select>
+          </div>
+        </div>
+        <div class="busi-filter__actions">
+          <button class="busi-btn busi-btn--primary" type="button" data-loading-btn data-done="筛选完成，共 6 个数据源">查询</button>
+          <button class="busi-btn busi-btn--default" type="button" data-filter-reset>重置</button>
+        </div>
+      </section>
+
+      <section class="busi-table-wrap" aria-label="数据源列表">
+        <div class="busi-table__batch">
+          <span>已选 <strong data-batch-count>0</strong> 项</span>
+          <div class="busi-table__batch-actions">
+            <button class="busi-btn busi-btn--text" type="button" data-toast="success" data-toast-text="已批量启用所选数据源">批量启用</button>
+            <button class="busi-btn busi-btn--text" type="button" data-toast="info" data-toast-text="已暂停所选数据源，数据保留 7 天">批量停用</button>
+          </div>
+        </div>
+
+        <table class="busi-table">
+          <caption class="busi-sr-only">数据源列表，共 6 个</caption>
+          <colgroup>
+            <col style="width:48px"><col style="width:26%"><col style="width:12%"><col style="width:11%"><col style="width:17%"><col style="width:14%"><col style="width:14%">
+          </colgroup>
+          <thead>
+            <tr>
+              <th class="busi-table__th" scope="col"><input class="busi-check" type="checkbox" data-check-all aria-label="全选"></th>
+              <th class="busi-table__th" scope="col">数据源名称</th>
+              <th class="busi-table__th" scope="col">接入类型</th>
+              <th class="busi-table__th" scope="col">状态</th>
+              <th class="busi-table__th" scope="col">最近接收</th>
+              <th class="busi-table__th" scope="col">日增量</th>
+              <th class="busi-table__th" scope="col">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr class="busi-table__row is-clickable" data-detail="source-detail" data-detail-title="数据源详情">
+              <td class="busi-table__cell busi-table__cell--check"><input class="busi-check" type="checkbox" aria-label="选择该行"></td>
+              <td class="busi-table__cell busi-table__cell--name" data-label="数据源名称">订单服务 Nginx</td>
+              <td class="busi-table__cell" data-label="接入类型">Agent</td>
+              <td class="busi-table__cell" data-label="状态"><span class="busi-tag busi-tag--normal"><span class="busi-tag__dot"></span>运行中</span></td>
+              <td class="busi-table__cell" data-label="最近接收">2026-11-11 09:45:02</td>
+              <td class="busi-table__cell busi-table__cell--num" data-label="日增量">3,240 万条</td>
+              <td class="busi-table__cell busi-table__cell--op">
+                <button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-drawer-open="source-detail" data-drawer-title="数据源详情">详情</button>
+                <button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-toast="info" data-toast-text="进入编辑：可修改解析规则与采样率">编辑</button>
+              </td>
+            </tr>
+            <tr class="busi-table__row is-clickable" data-detail="source-detail" data-detail-title="数据源详情">
+              <td class="busi-table__cell busi-table__cell--check"><input class="busi-check" type="checkbox" aria-label="选择该行"></td>
+              <td class="busi-table__cell busi-table__cell--name" data-label="数据源名称">支付网关 Syslog</td>
+              <td class="busi-table__cell" data-label="接入类型">Syslog</td>
+              <td class="busi-table__cell" data-label="状态"><span class="busi-tag busi-tag--normal"><span class="busi-tag__dot"></span>运行中</span></td>
+              <td class="busi-table__cell" data-label="最近接收">2026-11-11 09:44:58</td>
+              <td class="busi-table__cell busi-table__cell--num" data-label="日增量">1,180 万条</td>
+              <td class="busi-table__cell busi-table__cell--op">
+                <button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-drawer-open="source-detail" data-drawer-title="数据源详情">详情</button>
+                <button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-toast="info" data-toast-text="进入编辑：可修改解析规则与采样率">编辑</button>
+              </td>
+            </tr>
+            <tr class="busi-table__row is-clickable" data-detail="source-detail" data-detail-title="数据源详情">
+              <td class="busi-table__cell busi-table__cell--check"><input class="busi-check" type="checkbox" aria-label="选择该行"></td>
+              <td class="busi-table__cell busi-table__cell--name" data-label="数据源名称">核心网关 Kafka</td>
+              <td class="busi-table__cell" data-label="接入类型">Kafka</td>
+              <td class="busi-table__cell" data-label="状态"><span class="busi-tag busi-tag--warning"><span class="busi-tag__dot"></span>告警中</span></td>
+              <td class="busi-table__cell" data-label="最近接收">2026-11-11 09:44:51</td>
+              <td class="busi-table__cell busi-table__cell--num" data-label="日增量">2,760 万条</td>
+              <td class="busi-table__cell busi-table__cell--op">
+                <button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-drawer-open="source-detail" data-drawer-title="数据源详情">详情</button>
+                <button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-toast="info" data-toast-text="进入编辑：可修改解析规则与采样率">编辑</button>
+              </td>
+            </tr>
+            <tr class="busi-table__row is-clickable" data-detail="source-detail" data-detail-title="数据源详情">
+              <td class="busi-table__cell busi-table__cell--check"><input class="busi-check" type="checkbox" aria-label="选择该行"></td>
+              <td class="busi-table__cell busi-table__cell--name" data-label="数据源名称">数据库审计 HTTP</td>
+              <td class="busi-table__cell" data-label="接入类型">HTTP</td>
+              <td class="busi-table__cell" data-label="状态"><span class="busi-tag busi-tag--fault"><span class="busi-tag__dot"></span>异常</span></td>
+              <td class="busi-table__cell" data-label="最近接收">2026-11-11 09:31:12</td>
+              <td class="busi-table__cell busi-table__cell--num" data-label="日增量">24 万条</td>
+              <td class="busi-table__cell busi-table__cell--op">
+                <button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-drawer-open="source-detail" data-drawer-title="数据源详情">详情</button>
+                <button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-toast="info" data-toast-text="进入编辑：可修改解析规则与采样率">编辑</button>
+              </td>
+            </tr>
+            <tr class="busi-table__row is-clickable" data-detail="source-detail" data-detail-title="数据源详情">
+              <td class="busi-table__cell busi-table__cell--check"><input class="busi-check" type="checkbox" aria-label="选择该行"></td>
+              <td class="busi-table__cell busi-table__cell--name" data-label="数据源名称">安全设备 Syslog</td>
+              <td class="busi-table__cell" data-label="接入类型">Syslog</td>
+              <td class="busi-table__cell" data-label="状态"><span class="busi-tag busi-tag--maintain"><span class="busi-tag__dot"></span>维护中</span></td>
+              <td class="busi-table__cell" data-label="最近接收">2026-11-11 09:12:40</td>
+              <td class="busi-table__cell busi-table__cell--num" data-label="日增量">86 万条</td>
+              <td class="busi-table__cell busi-table__cell--op">
+                <button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-drawer-open="source-detail" data-drawer-title="数据源详情">详情</button>
+                <button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-toast="info" data-toast-text="维护中不可编辑，请先结束维护窗口">编辑</button>
+              </td>
+            </tr>
+            <tr class="busi-table__row is-clickable" data-detail="source-detail" data-detail-title="数据源详情">
+              <td class="busi-table__cell busi-table__cell--check"><input class="busi-check" type="checkbox" aria-label="选择该行"></td>
+              <td class="busi-table__cell busi-table__cell--name" data-label="数据源名称">边缘节点日志</td>
+              <td class="busi-table__cell" data-label="接入类型">Agent</td>
+              <td class="busi-table__cell" data-label="状态"><span class="busi-tag busi-tag--unknown"><span class="busi-tag__dot"></span>离线</span></td>
+              <td class="busi-table__cell" data-label="最近接收">2026-11-11 06:20:18</td>
+              <td class="busi-table__cell busi-table__cell--num" data-label="日增量">0 条</td>
+              <td class="busi-table__cell busi-table__cell--op">
+                <button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-drawer-open="source-detail" data-drawer-title="数据源详情">详情</button>
+                <button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-toast="info" data-toast-text="进入编辑：可修改解析规则与采样率">编辑</button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div class="busi-pagination">
+          <span class="busi-pagination__total">共 6 个</span>
+          <div class="busi-pagination__pages">
+            <button class="busi-pagination__item busi-pagination__item--arrow" type="button" disabled aria-label="上一页">&lt;</button>
+            <button class="busi-pagination__item is-active" type="button">1</button>
+            <button class="busi-pagination__item busi-pagination__item--arrow" type="button" disabled aria-label="下一页">&gt;</button>
+          </div>
+          <div class="busi-pagination__size">
+            <span>每页</span>
+            <select class="busi-pagination__select" aria-label="每页条数"><option selected>20</option><option>50</option><option>100</option></select>
+            <span>条</span>
+          </div>
+        </div>
+      </section>
+
+    </div>
+  </main>
+</div>
+
+<div class="busi-mask" data-mask="source-drawer"></div>
+<aside class="busi-drawer busi-drawer--480" id="source-drawer" role="dialog" aria-modal="true" aria-labelledby="source-drawer-title">
+  <div class="busi-drawer__head">
+    <div class="busi-drawer__title" id="source-drawer-title" data-drawer-title>新建数据源</div>
+    <button class="busi-icon-btn" type="button" data-drawer-close aria-label="关闭">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M3 3l10 10M13 3L3 13"/></svg>
+    </button>
+  </div>
+  <form class="busi-drawer__body" data-form>
+    <div class="busi-form__row">
+      <label class="busi-form__label" for="src-new-name"><span class="busi-form__required">*</span>名称</label>
+      <div class="busi-form__control"><input class="busi-input" id="src-new-name" type="text" placeholder="例如：订单服务 Nginx" style="width:100%"></div>
+    </div>
+    <div class="busi-form__row">
+      <label class="busi-form__label" for="src-new-type"><span class="busi-form__required">*</span>接入类型</label>
+      <div class="busi-form__control">
+        <select class="busi-select" id="src-new-type" style="width:100%">
+          <option>Agent</option><option>Syslog</option><option>HTTP</option><option>Kafka</option>
+        </select>
+      </div>
+    </div>
+    <div class="busi-form__row">
+      <label class="busi-form__label" for="src-new-addr"><span class="busi-form__required">*</span>接收地址</label>
+      <div class="busi-form__control"><input class="busi-input" id="src-new-addr" type="text" placeholder="10.24.8.100:5514" style="width:100%"></div>
+    </div>
+    <div class="busi-form__row">
+      <label class="busi-form__label" for="src-new-parse">解析规则</label>
+      <div class="busi-form__control">
+        <select class="busi-select" id="src-new-parse" style="width:100%">
+          <option>Nginx 默认</option><option>JSON 结构化</option><option>分隔符解析</option><option>正则提取</option>
+        </select>
+      </div>
+    </div>
+    <div class="busi-form__row">
+      <label class="busi-form__label" for="src-new-encode">字符编码</label>
+      <div class="busi-form__control">
+        <select class="busi-select" id="src-new-encode" style="width:100%"><option>UTF-8</option><option>GBK</option></select>
+      </div>
+    </div>
+    <div class="busi-form__row">
+      <label class="busi-form__label" for="src-new-region">所属区域</label>
+      <div class="busi-form__control">
+        <select class="busi-select" id="src-new-region" style="width:100%"><option>华北</option><option>华东</option><option>华南</option></select>
+      </div>
+    </div>
+    <div class="busi-form__row">
+      <span class="busi-form__label">采样率</span>
+      <div class="busi-form__control busi-form__inline">
+        <input class="busi-input" type="text" value="100" style="width:96px" aria-label="采样率百分比">
+        <span class="busi-hint">%，100 表示全量采集</span>
+      </div>
+    </div>
+    <p class="busi-hint">保存后平台会主动探测连通性，探测失败会在列表中以「异常」标识。</p>
+  </form>
+  <div class="busi-drawer__foot">
+    <button class="busi-btn busi-btn--default" type="button" data-drawer-close>取消</button>
+    <button class="busi-btn busi-btn--default" type="button" data-toast="success" data-toast-text="连通性正常，延迟 12ms">测试连通性</button>
+    <button class="busi-btn busi-btn--primary" type="button" data-toast="success" data-toast-text="数据源已创建，正在校验连通性" data-drawer-close>保存</button>
+  </div>
+</aside>
+
+<div class="busi-mask" data-mask="source-detail"></div>
+<aside class="busi-drawer busi-drawer--480" id="source-detail" role="dialog" aria-modal="true" aria-labelledby="source-detail-title">
+  <div class="busi-drawer__head">
+    <div class="busi-drawer__title" id="source-detail-title" data-drawer-title>数据源详情</div>
+    <button class="busi-icon-btn" type="button" data-drawer-close aria-label="关闭详情">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M3 3l10 10M13 3L3 13"/></svg>
+    </button>
+  </div>
+  <div class="busi-drawer__body" data-drawer-body></div>
+  <div class="busi-drawer__foot">
+    <button class="busi-btn busi-btn--default" type="button" data-drawer-close>关闭</button>
+    <button class="busi-btn busi-btn--default" type="button" data-toast="success" data-toast-text="连通性正常，延迟 12ms">测试连通性</button>
+    <button class="busi-btn busi-btn--primary" type="button" data-toast="info" data-toast-text="进入编辑：可修改解析规则与采样率">编辑配置</button>
+  </div>
+</aside>
+
+<script src="assets/app.js"></script>
+</body>
+</html>

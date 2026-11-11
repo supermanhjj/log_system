@@ -1,0 +1,305 @@
+{
+  "meta": {
+    "page_id": "P-ALM-0402",
+    "trace_id": "R-ALM-0402",
+    "spec_version": "1.0.0",
+    "design_tag": "sg-tokens-v3.1.0",
+    "owner": "产品-方案组 / 设计-UI组 / 研发-前端组"
+  },
+  "route": "/alarms/rules",
+  "menu_code": "0302",
+  "page": {
+    "type": "list",
+    "layout": "header+sidebar+main",
+    "header": {
+      "breadcrumb": [
+        "告警中心",
+        "告警规则"
+      ],
+      "title": "告警规则",
+      "actions": [
+        "刷新",
+        "新建规则"
+      ]
+    },
+    "states": {
+      "empty": {
+        "desc": "暂无告警规则，新建后即可对日志实时判定",
+        "action": "新建规则"
+      },
+      "loading": {
+        "type": "skeleton",
+        "delay_ms": 300
+      },
+      "error": {
+        "desc": "数据加载失败，请稍后重试",
+        "action": "重试",
+        "keep_filters": true
+      },
+      "noPermission": {
+        "desc": "您暂无该数据范围权限",
+        "action": "申请权限"
+      }
+    }
+  },
+  "components": [
+    {
+      "id": "C-RUL-01",
+      "type": "filter-bar",
+      "props": {
+        "labelWidth": 88,
+        "perRow": 4
+      },
+      "states": [
+        "default",
+        "hover",
+        "active",
+        "focus-visible",
+        "disabled"
+      ],
+      "rules": [
+        "FLT-001",
+        "FLT-003",
+        "FLT-004",
+        "FLT-005",
+        "INP-005"
+      ]
+    },
+    {
+      "id": "C-RUL-02",
+      "type": "table",
+      "size": "default",
+      "props": {
+        "stickyHeader": true,
+        "columns": [
+          "ruleName",
+          "dataSource",
+          "condition",
+          "level",
+          "notify",
+          "status",
+          "action"
+        ],
+        "pagination": {
+          "pageSize": 20,
+          "options": [
+            20,
+            50,
+            100
+          ]
+        }
+      },
+      "states": [
+        "default",
+        "hover",
+        "active",
+        "focus-visible",
+        "disabled",
+        "loading"
+      ],
+      "states_omitted": {
+        "error": "表格层错误由页面级 error 态承接，单元格不单独出错误态"
+      },
+      "rules": [
+        "TBL-001",
+        "TBL-004",
+        "TBL-005",
+        "TBL-007",
+        "TBL-008",
+        "TBL-009",
+        "TBL-011",
+        "TBL-012"
+      ]
+    },
+    {
+      "id": "C-RUL-03",
+      "type": "pagination",
+      "props": {
+        "pageSize": 20,
+        "options": [
+          20,
+          50,
+          100
+        ]
+      },
+      "states": [
+        "default",
+        "hover",
+        "disabled",
+        "focus-visible"
+      ],
+      "states_omitted": {
+        "active": "按压与 hover 视觉一致",
+        "loading": "翻页加载由表格承接",
+        "error": "失败由页面级 error 承接"
+      },
+      "rules": [
+        "DSC-009",
+        "TBL-012"
+      ]
+    },
+    {
+      "id": "C-RUL-04",
+      "type": "switch",
+      "props": {
+        "checked": true,
+        "label": "启用"
+      },
+      "states": [
+        "default",
+        "hover",
+        "active",
+        "focus-visible",
+        "disabled"
+      ],
+      "states_omitted": {
+        "loading": "开关切换为即时请求，无独立 loading 视觉",
+        "error": "失败后回滚并 Message 提示"
+      },
+      "rules": [
+        "DSC-012"
+      ]
+    },
+    {
+      "id": "C-RUL-05",
+      "type": "modal",
+      "variant": "dialog",
+      "size": 560,
+      "props": {
+        "title": "新建告警规则",
+        "footer": [
+          "取消",
+          "保存"
+        ]
+      },
+      "states": [
+        "default",
+        "hover",
+        "active",
+        "focus-visible",
+        "disabled",
+        "loading",
+        "error"
+      ],
+      "rules": [
+        "OVL-001",
+        "OVL-002",
+        "OVL-003",
+        "OVL-004",
+        "OVL-005",
+        "OVL-006",
+        "OVL-007",
+        "OVL-008",
+        "FRM-005"
+      ]
+    },
+    {
+      "id": "C-RUL-06",
+      "type": "status-tag",
+      "variant": "fault",
+      "props": {
+        "text": "异常",
+        "dot": true
+      },
+      "states": [
+        "default",
+        "hover"
+      ],
+      "states_omitted": {
+        "active": "只读元素无按压态",
+        "focus-visible": "不可聚焦元素，不参与 Tab 序列",
+        "disabled": "状态由数据决定，无禁用语义",
+        "loading": "数据加载由页面级 skeleton 承接",
+        "error": "错误由页面级 error 态承接，组件不叠加"
+      },
+      "rules": [
+        "DSC-004",
+        "DSC-005",
+        "DSC-006"
+      ]
+    }
+  ],
+  "data": [
+    {
+      "key": "ruleName",
+      "type": "string",
+      "max_chars": 40,
+      "empty": "--"
+    },
+    {
+      "key": "dataSource",
+      "type": "string",
+      "empty": "--"
+    },
+    {
+      "key": "condition",
+      "type": "string",
+      "max_chars": 60,
+      "empty": "--"
+    },
+    {
+      "key": "level",
+      "type": "enum",
+      "values": [
+        "严重",
+        "警告",
+        "提示"
+      ],
+      "empty": "--"
+    },
+    {
+      "key": "notify",
+      "type": "string",
+      "empty": "--"
+    },
+    {
+      "key": "status",
+      "type": "enum",
+      "values": [
+        "运行中",
+        "维护中",
+        "离线"
+      ],
+      "empty": "--"
+    }
+  ],
+  "copy": {
+    "buttons": [
+      "查询",
+      "重置",
+      "刷新",
+      "新建规则",
+      "保存"
+    ],
+    "messages": {
+      "success": "规则已保存并生效",
+      "error": "保存失败，请检查规则条件",
+      "empty": "暂无告警规则"
+    }
+  },
+  "rules": {
+    "applied": [
+      "TOK-001",
+      "COL-005",
+      "AI-001",
+      "FLT-001",
+      "OVL-002",
+      "QLT-007",
+      "FRM-001"
+    ],
+    "exceptions": []
+  },
+  "a11y": {
+    "keyboard_path": [
+      "侧边栏",
+      "页头操作",
+      "内容区",
+      "分页"
+    ],
+    "table_semantics": "th + scope=col"
+  },
+  "perf": {
+    "lcp_ms": 2000,
+    "api_p95_ms": 800
+  }
+}

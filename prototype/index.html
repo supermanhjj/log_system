@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>登录 · 统一日志分析平台</title>
+<link rel="stylesheet" href="../design-tokens.css">
+<link rel="stylesheet" href="assets/base.css">
+</head>
+<body class="busi-app" data-page="login" data-cid="C-AUTH-01">
+
+<main class="busi-login">
+  <section class="busi-login__brand">
+    <svg class="busi-login__art" viewBox="0 0 800 900" fill="none" stroke="currentColor" stroke-width="1" aria-hidden="true" preserveAspectRatio="none">
+      <path d="M0 120h800M0 240h800M0 360h800M0 480h800M0 600h800M0 720h800M0 840h800"/>
+      <path d="M100 0v900M200 0v900M300 0v900M400 0v900M500 0v900M600 0v900M700 0v900"/>
+      <circle cx="600" cy="240" r="120"/>
+      <circle cx="200" cy="600" r="160"/>
+    </svg>
+    <div class="busi-login__brand-inner">
+      <div class="busi-login__logo">
+        <span class="busi-login__mark"><img src="assets/logo.jpg" alt="国家电网标识"></span>
+        <span class="busi-login__name">统一日志分析平台</span>
+      </div>
+
+      <h1 class="busi-login__slogan">采集 · 检索 · 告警 · 可视化<br>一套平台管住全量日志</h1>
+      <p class="busi-login__sub">面向生产运维的日志中心：毫秒级检索定位故障，规则引擎实时告警，看板沉淀排障经验。</p>
+
+      <div class="busi-login__features">
+        <div class="busi-login__feature">
+          <span class="busi-login__feature-icon">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><path d="M2 11.5V7M5.4 11.5V4M8.8 11.5V9M12.2 11.5V2.5"/></svg>
+          </span>
+          <div>
+            <div class="busi-login__feature-title">百万级写入，秒级可查</div>
+            <div class="busi-login__feature-desc">Agent / Syslog / HTTP / Kafka 四类接入，落盘即可检索</div>
+          </div>
+        </div>
+        <div class="busi-login__feature">
+          <span class="busi-login__feature-icon">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><circle cx="7" cy="7" r="4.4"/><path d="M10.4 10.4L14 14"/></svg>
+          </span>
+          <div>
+            <div class="busi-login__feature-title">SPL 检索 + 字段分析</div>
+            <div class="busi-login__feature-desc">时间轴直方图联动字段侧栏，三步定位异常来源</div>
+          </div>
+        </div>
+        <div class="busi-login__feature">
+          <span class="busi-login__feature-icon">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><path d="M8 2a4 4 0 0 0-4 4v3l-1.4 2.4h10.8L12 9V6a4 4 0 0 0-4-4z"/><path d="M6.4 13a1.8 1.8 0 0 0 3.2 0"/></svg>
+          </span>
+          <div>
+            <div class="busi-login__feature-title">规则告警与值班闭环</div>
+            <div class="busi-login__feature-desc">阈值、频次、关键词三类判定，通知到人可追溯</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="busi-login__foot">© 2026 方案组 · 界面遵循 b-end-component-guard V3.1</div>
+  </section>
+
+  <section class="busi-login__panel">
+    <div class="busi-login__card">
+      <h2 class="busi-login__title">账号登录</h2>
+      <p class="busi-login__tip">请使用运维账号登录，支持统一身份认证</p>
+
+      <form data-login novalidate>
+        <div class="busi-login__field">
+          <label class="busi-login__field-label" for="account">账号</label>
+          <input class="busi-input" id="account" name="account" type="text" placeholder="请输入账号，如 ops_admin" value="ops_admin" autocomplete="username">
+        </div>
+        <div class="busi-login__field">
+          <label class="busi-login__field-label" for="password">密码</label>
+          <input class="busi-input" id="password" name="password" type="password" placeholder="请输入密码，至少 8 位" value="logplatform" autocomplete="current-password">
+        </div>
+        <div class="busi-login__field">
+          <label class="busi-login__field-label" for="tenant">所属租户</label>
+          <select class="busi-select" id="tenant" name="tenant">
+            <option>总部生产</option>
+            <option>省侧运维</option>
+            <option>演示租户</option>
+          </select>
+        </div>
+
+        <div class="busi-login__row">
+          <label class="busi-login__check">
+            <input class="busi-check" type="checkbox" checked>
+            <span>记住账号</span>
+          </label>
+          <span class="busi-hint">忘记密码请联系平台管理员</span>
+        </div>
+
+        <button class="busi-btn busi-btn--primary busi-btn--lg busi-btn--block" type="submit">登录</button>
+      </form>
+
+      <div class="busi-login__links">
+        <span>登录即代表同意平台使用约定</span>
+        <span>帮助文档</span>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script src="assets/app.js"></script>
+</body>
+</html>

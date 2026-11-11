@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>仪表盘 · 统一日志分析平台</title>
+<link rel="stylesheet" href="../design-tokens.css">
+<link rel="stylesheet" href="assets/base.css">
+</head>
+<body class="busi-app" data-page="dashboards" data-cid="C-DSH-01">
+<div data-shell></div>
+<div class="busi-body">
+  <main class="busi-main">
+
+    <div class="busi-page-head">
+      <div class="busi-breadcrumb">
+        <span>日志分析</span><span class="busi-breadcrumb__sep">&gt;</span>
+        <span class="busi-breadcrumb__current">仪表盘</span>
+      </div>
+      <div class="busi-page-head__bar">
+        <div>
+          <h1 class="busi-page-head__title">仪表盘</h1>
+          <p class="busi-page-head__desc">沉淀排障视图，支持按目录共享与订阅</p>
+        </div>
+        <div class="busi-page-head__actions">
+          <button class="busi-btn busi-btn--default" type="button" data-loading-btn data-done="仪表盘列表已刷新">刷新</button>
+          <button class="busi-btn busi-btn--primary" type="button" data-modal-open="dashboard-modal">新建仪表盘</button>
+          <button class="busi-btn busi-btn--default" type="button" data-toast="success" data-toast-text="已导出 12 个仪表盘的配置清单">导出</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="busi-page">
+
+      <section class="busi-filter" aria-label="筛选条件">
+        <div class="busi-field">
+          <label class="busi-field__label" for="dash-name">仪表盘名称</label>
+          <div class="busi-field__control"><input class="busi-input" id="dash-name" type="text" placeholder="请输入名称关键词"></div>
+        </div>
+        <div class="busi-field">
+          <label class="busi-field__label" for="dash-folder">所属目录</label>
+          <div class="busi-field__control">
+            <select class="busi-select" id="dash-folder" style="width:100%">
+              <option>全部目录</option><option>交易域</option><option>接入层</option><option>数据层</option><option>基础设施</option>
+            </select>
+          </div>
+        </div>
+        <div class="busi-field">
+          <label class="busi-field__label" for="dash-owner">负责人</label>
+          <div class="busi-field__control"><input class="busi-input" id="dash-owner" type="text" placeholder="请输入姓名"></div>
+        </div>
+        <div class="busi-field">
+          <label class="busi-field__label" for="dash-time">更新时间</label>
+          <div class="busi-field__control"><input class="busi-input" id="dash-time" type="date"></div>
+        </div>
+        <div class="busi-filter__actions">
+          <button class="busi-btn busi-btn--primary" type="button" data-loading-btn data-done="筛选完成，共 12 个仪表盘">查询</button>
+          <button class="busi-btn busi-btn--default" type="button" data-filter-reset>重置</button>
+        </div>
+      </section>
+
+      <section class="busi-table-wrap" aria-label="仪表盘列表">
+        <div class="busi-table__batch">
+          <span>已选 <strong data-batch-count>0</strong> 项</span>
+          <div class="busi-table__batch-actions">
+            <button class="busi-btn busi-btn--text" type="button" data-toast="success" data-toast-text="已导出所选仪表盘配置">导出所选</button>
+            <button class="busi-btn busi-btn--text" type="button" data-modal-open="delete-modal">批量删除</button>
+          </div>
+        </div>
+
+        <table class="busi-table">
+          <caption class="busi-sr-only">仪表盘列表，共 12 个</caption>
+          <colgroup>
+            <col style="width:48px"><col style="width:26%"><col style="width:12%"><col style="width:10%"><col style="width:9%"><col style="width:17%"><col style="width:10%"><col style="width:16%">
+          </colgroup>
+          <thead>
+            <tr>
+              <th class="busi-table__th" scope="col"><input class="busi-check" type="checkbox" data-check-all aria-label="全选"></th>
+              <th class="busi-table__th" scope="col">仪表盘名称</th>
+              <th class="busi-table__th" scope="col">所属目录</th>
+              <th class="busi-table__th" scope="col">负责人</th>
+              <th class="busi-table__th" scope="col">图表数</th>
+              <th class="busi-table__th" scope="col">更新时间</th>
+              <th class="busi-table__th" scope="col">状态</th>
+              <th class="busi-table__th" scope="col">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr class="busi-table__row">
+              <td class="busi-table__cell busi-table__cell--check"><input class="busi-check" type="checkbox" aria-label="选择 核心业务日志看板"></td>
+              <td class="busi-table__cell busi-table__cell--name"><a href="dashboard-detail.html">核心业务日志看板</a></td>
+              <td class="busi-table__cell">交易域</td>
+              <td class="busi-table__cell">陈立</td>
+              <td class="busi-table__cell busi-table__cell--num">6</td>
+              <td class="busi-table__cell">2026-11-10 18:24:11</td>
+              <td class="busi-table__cell"><span class="busi-tag busi-tag--normal"><span class="busi-tag__dot"></span>运行中</span></td>
+              <td class="busi-table__cell busi-table__cell--op">
+                <a class="busi-btn busi-btn--text busi-btn--sm" href="dashboard-detail.html">查看</a>
+                <button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-toast="info" data-toast-text="进入编辑模式：可拖拽调整图表布局">编辑</button>
+                <button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-modal-open="delete-modal">删除</button>
+              </td>
+            </tr>
+            <tr class="busi-table__row">
+              <td class="busi-table__cell busi-table__cell--check"><input class="busi-check" type="checkbox" aria-label="选择 网关访问质量看板"></td>
+              <td class="busi-table__cell busi-table__cell--name"><a href="dashboard-detail.html">网关访问质量看板</a></td>
+              <td class="busi-table__cell">接入层</td>
+              <td class="busi-table__cell">周航</td>
+              <td class="busi-table__cell busi-table__cell--num">5</td>
+              <td class="busi-table__cell">2026-11-10 11:08:42</td>
+              <td class="busi-table__cell"><span class="busi-tag busi-tag--normal"><span class="busi-tag__dot"></span>运行中</span></td>
+              <td class="busi-table__cell busi-table__cell--op">
+                <a class="busi-btn busi-btn--text busi-btn--sm" href="dashboard-detail.html">查看</a>
+                <button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-toast="info" data-toast-text="进入编辑模式：可拖拽调整图表布局">编辑</button>
+                <button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-modal-open="delete-modal">删除</button>
+              </td>
+            </tr>
+            <tr class="busi-table__row">
+              <td class="busi-table__cell busi-table__cell--check"><input class="busi-check" type="checkbox" aria-label="选择 支付渠道可用性"></td>
+              <td class="busi-table__cell busi-table__cell--name"><a href="dashboard-detail.html">支付渠道可用性</a></td>
+              <td class="busi-table__cell">交易域</td>
+              <td class="busi-table__cell">高远</td>
+              <td class="busi-table__cell busi-table__cell--num">8</td>
+              <td class="busi-table__cell">2026-11-09 20:12:05</td>
+              <td class="busi-table__cell"><span class="busi-tag busi-tag--maintain"><span class="busi-tag__dot"></span>维护中</span></td>
+              <td class="busi-table__cell busi-table__cell--op">
+                <a class="busi-btn busi-btn--text busi-btn--sm" href="dashboard-detail.html">查看</a>
+                <button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-toast="info" data-toast-text="维护中的仪表盘不可编辑，请先结束维护">编辑</button>
+                <button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-modal-open="delete-modal">删除</button>
+              </td>
+            </tr>
+            <tr class="busi-table__row">
+              <td class="busi-table__cell busi-table__cell--check"><input class="busi-check" type="checkbox" aria-label="选择 主机资源水位"></td>
+              <td class="busi-table__cell busi-table__cell--name"><a href="dashboard-detail.html">主机资源水位</a></td>
+              <td class="busi-table__cell">基础设施</td>
+              <td class="busi-table__cell">赵磊</td>
+              <td class="busi-table__cell busi-table__cell--num">4</td>
+              <td class="busi-table__cell">2026-11-09 16:45:33</td>
+              <td class="busi-table__cell"><span class="busi-tag busi-tag--normal"><span class="busi-tag__dot"></span>运行中</span></td>
+              <td class="busi-table__cell busi-table__cell--op">
+                <a class="busi-btn busi-btn--text busi-btn--sm" href="dashboard-detail.html">查看</a>
+                <button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-toast="info" data-toast-text="进入编辑模式：可拖拽调整图表布局">编辑</button>
+                <button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-modal-open="delete-modal">删除</button>
+              </td>
+            </tr>
+            <tr class="busi-table__row">
+              <td class="busi-table__cell busi-table__cell--check"><input class="busi-check" type="checkbox" aria-label="选择 数据库慢查询分析"></td>
+              <td class="busi-table__cell busi-table__cell--name"><a href="dashboard-detail.html">数据库慢查询分析</a></td>
+              <td class="busi-table__cell">数据层</td>
+              <td class="busi-table__cell">周航</td>
+              <td class="busi-table__cell busi-table__cell--num">3</td>
+              <td class="busi-table__cell">2026-11-08 09:30:17</td>
+              <td class="busi-table__cell"><span class="busi-tag busi-tag--normal"><span class="busi-tag__dot"></span>运行中</span></td>
+              <td class="busi-table__cell busi-table__cell--op">
+                <a class="busi-btn busi-btn--text busi-btn--sm" href="dashboard-detail.html">查看</a>
+                <button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-toast="info" data-toast-text="进入编辑模式：可拖拽调整图表布局">编辑</button>
+                <button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-modal-open="delete-modal">删除</button>
+              </td>
+            </tr>
+            <tr class="busi-table__row">
+              <td class="busi-table__cell busi-table__cell--check"><input class="busi-check" type="checkbox" aria-label="选择 安全审计事件概览"></td>
+              <td class="busi-table__cell busi-table__cell--name"><a href="dashboard-detail.html">安全审计事件概览</a></td>
+              <td class="busi-table__cell">安全域</td>
+              <td class="busi-table__cell">高远</td>
+              <td class="busi-table__cell busi-table__cell--num">6</td>
+              <td class="busi-table__cell">2026-11-07 14:52:48</td>
+              <td class="busi-table__cell"><span class="busi-tag busi-tag--normal"><span class="busi-tag__dot"></span>运行中</span></td>
+              <td class="busi-table__cell busi-table__cell--op">
+                <a class="busi-btn busi-btn--text busi-btn--sm" href="dashboard-detail.html">查看</a>
+                <button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-toast="info" data-toast-text="进入编辑模式：可拖拽调整图表布局">编辑</button>
+                <button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-modal-open="delete-modal">删除</button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div class="busi-pagination">
+          <span class="busi-pagination__total">共 12 个</span>
+          <div class="busi-pagination__pages">
+            <button class="busi-pagination__item busi-pagination__item--arrow" type="button" disabled aria-label="上一页">&lt;</button>
+            <button class="busi-pagination__item is-active" type="button">1</button>
+            <button class="busi-pagination__item" type="button">2</button>
+            <button class="busi-pagination__item busi-pagination__item--arrow" type="button" aria-label="下一页">&gt;</button>
+          </div>
+          <div class="busi-pagination__size">
+            <span>每页</span>
+            <select class="busi-pagination__select" aria-label="每页条数"><option selected>20</option><option>50</option><option>100</option></select>
+            <span>条</span>
+          </div>
+        </div>
+      </section>
+
+    </div>
+  </main>
+</div>
+
+<div class="busi-mask" data-mask="dashboard-modal"></div>
+<div class="busi-modal busi-modal--560" id="dashboard-modal" role="dialog" aria-modal="true" aria-labelledby="dashboard-modal-title">
+  <div class="busi-modal__head">
+    <div class="busi-modal__title" id="dashboard-modal-title">新建仪表盘</div>
+    <button class="busi-icon-btn" type="button" data-modal-close aria-label="关闭">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M3 3l10 10M13 3L3 13"/></svg>
+    </button>
+  </div>
+  <form class="busi-modal__body" data-form data-done="仪表盘已创建，可继续添加图表">
+    <div class="busi-form__row">
+      <label class="busi-form__label" for="dash-new-name"><span class="busi-form__required">*</span>名称</label>
+      <div class="busi-form__control"><input class="busi-input" id="dash-new-name" type="text" placeholder="请输入仪表盘名称，不超过 24 字" style="width:100%"></div>
+    </div>
+    <div class="busi-form__row">
+      <label class="busi-form__label" for="dash-new-folder">目录</label>
+      <div class="busi-form__control">
+        <select class="busi-select" id="dash-new-folder" style="width:100%">
+          <option>交易域</option><option>接入层</option><option>数据层</option><option>基础设施</option>
+        </select>
+      </div>
+    </div>
+    <div class="busi-form__row">
+      <label class="busi-form__label" for="dash-new-desc">描述</label>
+      <div class="busi-form__control"><textarea class="busi-textarea" id="dash-new-desc" placeholder="说明看板用途与适用场景" style="width:100%"></textarea></div>
+    </div>
+    <div class="busi-form__row">
+      <span class="busi-form__label">默认时间</span>
+      <div class="busi-form__control busi-form__inline">
+        <select class="busi-select"><option>近 1 小时</option><option selected>近 24 小时</option><option>近 7 天</option></select>
+        <span class="busi-hint">打开看板时默认使用该时间范围</span>
+      </div>
+    </div>
+  </form>
+  <div class="busi-modal__foot">
+    <button class="busi-btn busi-btn--default" type="button" data-modal-close>取消</button>
+    <button class="busi-btn busi-btn--primary" type="button" data-toast="success" data-toast-text="仪表盘已创建，可继续添加图表" data-modal-close>保存</button>
+  </div>
+</div>
+
+<div class="busi-mask" data-mask="delete-modal"></div>
+<div class="busi-modal busi-modal--420" id="delete-modal" role="alertdialog" aria-modal="true" aria-labelledby="delete-modal-title">
+  <div class="busi-modal__head">
+    <div class="busi-modal__title" id="delete-modal-title">删除仪表盘</div>
+    <button class="busi-icon-btn" type="button" data-modal-close aria-label="关闭">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M3 3l10 10M13 3L3 13"/></svg>
+    </button>
+  </div>
+  <div class="busi-modal__body">
+    <p class="busi-modal__desc">确认删除所选仪表盘？删除后图表配置与订阅关系一并失效，且不可恢复。</p>
+    <p class="busi-hint" style="margin:0">如需保留，可先导出仪表盘配置。</p>
+  </div>
+  <div class="busi-modal__foot">
+    <button class="busi-btn busi-btn--default" type="button" data-modal-close>取消</button>
+    <button class="busi-btn busi-btn--danger" type="button" data-toast="success" data-toast-text="已删除所选仪表盘" data-modal-close>删除</button>
+  </div>
+</div>
+
+<script src="assets/app.js"></script>
+</body>
+</html>

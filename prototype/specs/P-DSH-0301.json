@@ -1,0 +1,282 @@
+{
+  "meta": {
+    "page_id": "P-DSH-0301",
+    "trace_id": "R-DSH-0301",
+    "spec_version": "1.0.0",
+    "design_tag": "sg-tokens-v3.1.0",
+    "owner": "产品-方案组 / 设计-UI组 / 研发-前端组"
+  },
+  "route": "/dashboards",
+  "menu_code": "0202",
+  "page": {
+    "type": "list",
+    "layout": "header+sidebar+main",
+    "header": {
+      "breadcrumb": [
+        "日志分析",
+        "仪表盘"
+      ],
+      "title": "仪表盘",
+      "actions": [
+        "刷新",
+        "新建仪表盘",
+        "导出"
+      ]
+    },
+    "states": {
+      "empty": {
+        "desc": "暂无仪表盘，从检索结果保存为视图即可生成",
+        "action": "新建仪表盘"
+      },
+      "loading": {
+        "type": "skeleton",
+        "delay_ms": 300
+      },
+      "error": {
+        "desc": "数据加载失败，请稍后重试",
+        "action": "重试",
+        "keep_filters": true
+      },
+      "noPermission": {
+        "desc": "您暂无该数据范围权限",
+        "action": "申请权限"
+      }
+    }
+  },
+  "components": [
+    {
+      "id": "C-DSH-01",
+      "type": "filter-bar",
+      "props": {
+        "labelWidth": 88,
+        "perRow": 4
+      },
+      "states": [
+        "default",
+        "hover",
+        "active",
+        "focus-visible",
+        "disabled"
+      ],
+      "rules": [
+        "FLT-001",
+        "FLT-003",
+        "FLT-004",
+        "FLT-005",
+        "INP-005"
+      ]
+    },
+    {
+      "id": "C-DSH-02",
+      "type": "table",
+      "size": "default",
+      "props": {
+        "stickyHeader": true,
+        "columns": [
+          "checkbox",
+          "name",
+          "folder",
+          "owner",
+          "chartCount",
+          "updateTime",
+          "status",
+          "action"
+        ],
+        "batchBar": true,
+        "pagination": {
+          "pageSize": 20,
+          "options": [
+            20,
+            50,
+            100
+          ]
+        }
+      },
+      "states": [
+        "default",
+        "hover",
+        "active",
+        "focus-visible",
+        "disabled",
+        "loading"
+      ],
+      "states_omitted": {
+        "error": "表格层错误由页面级 error 态承接，单元格不单独出错误态"
+      },
+      "rules": [
+        "TBL-001",
+        "TBL-004",
+        "TBL-005",
+        "TBL-006",
+        "TBL-008",
+        "TBL-009",
+        "TBL-010",
+        "TBL-011",
+        "TBL-012"
+      ]
+    },
+    {
+      "id": "C-DSH-03",
+      "type": "pagination",
+      "props": {
+        "pageSize": 20,
+        "options": [
+          20,
+          50,
+          100
+        ]
+      },
+      "states": [
+        "default",
+        "hover",
+        "disabled",
+        "focus-visible"
+      ],
+      "states_omitted": {
+        "active": "按压与 hover 视觉一致",
+        "loading": "翻页加载由表格承接",
+        "error": "失败由页面级 error 承接"
+      },
+      "rules": [
+        "DSC-009",
+        "TBL-012"
+      ]
+    },
+    {
+      "id": "C-DSH-04",
+      "type": "status-tag",
+      "variant": "normal",
+      "props": {
+        "text": "运行中",
+        "dot": true
+      },
+      "states": [
+        "default",
+        "hover"
+      ],
+      "states_omitted": {
+        "active": "只读元素无按压态",
+        "focus-visible": "不可聚焦元素，不参与 Tab 序列",
+        "disabled": "状态由数据决定，无禁用语义",
+        "loading": "数据加载由页面级 skeleton 承接",
+        "error": "错误由页面级 error 态承接，组件不叠加"
+      },
+      "rules": [
+        "DSC-004",
+        "DSC-005",
+        "DSC-006"
+      ]
+    },
+    {
+      "id": "C-DSH-05",
+      "type": "modal",
+      "variant": "confirm",
+      "size": 420,
+      "props": {
+        "title": "删除仪表盘",
+        "footer": [
+          "取消",
+          "删除"
+        ]
+      },
+      "states": [
+        "default",
+        "hover",
+        "active",
+        "focus-visible",
+        "disabled",
+        "loading"
+      ],
+      "states_omitted": {
+        "error": "删除失败以 Message 提示，不保留弹窗错误态"
+      },
+      "rules": [
+        "OVL-002",
+        "OVL-003",
+        "OVL-004",
+        "OVL-005",
+        "OVL-006",
+        "OVL-007",
+        "OVL-008"
+      ]
+    }
+  ],
+  "data": [
+    {
+      "key": "name",
+      "type": "string",
+      "max_chars": 24,
+      "empty": "--"
+    },
+    {
+      "key": "folder",
+      "type": "string",
+      "empty": "--"
+    },
+    {
+      "key": "owner",
+      "type": "string",
+      "empty": "--"
+    },
+    {
+      "key": "chartCount",
+      "type": "number",
+      "unit": "个",
+      "empty": "--"
+    },
+    {
+      "key": "updateTime",
+      "type": "datetime",
+      "format": "YYYY-MM-DD HH:mm:ss",
+      "empty": "--"
+    },
+    {
+      "key": "status",
+      "type": "enum",
+      "values": [
+        "运行中",
+        "维护中"
+      ],
+      "empty": "--"
+    }
+  ],
+  "copy": {
+    "buttons": [
+      "查询",
+      "重置",
+      "刷新",
+      "新建仪表盘",
+      "导出",
+      "删除"
+    ],
+    "messages": {
+      "success": "已删除 2 个仪表盘",
+      "error": "删除失败，请稍后重试",
+      "empty": "暂无仪表盘"
+    }
+  },
+  "rules": {
+    "applied": [
+      "TOK-001",
+      "COL-005",
+      "AI-001",
+      "FLT-001",
+      "TBL-012",
+      "QLT-007"
+    ],
+    "exceptions": []
+  },
+  "a11y": {
+    "keyboard_path": [
+      "侧边栏",
+      "页头操作",
+      "内容区",
+      "分页"
+    ],
+    "table_semantics": "th + scope=col"
+  },
+  "perf": {
+    "lcp_ms": 2000,
+    "api_p95_ms": 800
+  }
+}

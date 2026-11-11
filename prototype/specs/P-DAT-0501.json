@@ -1,0 +1,281 @@
+{
+  "meta": {
+    "page_id": "P-DAT-0501",
+    "trace_id": "R-DAT-0501",
+    "spec_version": "1.0.0",
+    "design_tag": "sg-tokens-v3.1.0",
+    "owner": "产品-方案组 / 设计-UI组 / 研发-前端组"
+  },
+  "route": "/data-sources",
+  "menu_code": "0401",
+  "page": {
+    "type": "list",
+    "layout": "header+sidebar+main",
+    "header": {
+      "breadcrumb": [
+        "数据接入",
+        "数据源"
+      ],
+      "title": "数据源",
+      "actions": [
+        "刷新",
+        "新建数据源",
+        "导出入配置"
+      ]
+    },
+    "states": {
+      "empty": {
+        "desc": "暂无数据源，新建后开始接收日志",
+        "action": "新建数据源"
+      },
+      "loading": {
+        "type": "skeleton",
+        "delay_ms": 300
+      },
+      "error": {
+        "desc": "数据加载失败，请稍后重试",
+        "action": "重试",
+        "keep_filters": true
+      },
+      "noPermission": {
+        "desc": "您暂无该数据范围权限",
+        "action": "申请权限"
+      }
+    }
+  },
+  "components": [
+    {
+      "id": "C-DAT-01",
+      "type": "filter-bar",
+      "props": {
+        "labelWidth": 88,
+        "perRow": 4
+      },
+      "states": [
+        "default",
+        "hover",
+        "active",
+        "focus-visible",
+        "disabled"
+      ],
+      "rules": [
+        "FLT-001",
+        "FLT-003",
+        "FLT-004",
+        "FLT-005",
+        "INP-005"
+      ]
+    },
+    {
+      "id": "C-DAT-02",
+      "type": "table",
+      "size": "default",
+      "props": {
+        "stickyHeader": true,
+        "columns": [
+          "checkbox",
+          "name",
+          "type",
+          "status",
+          "lastReceive",
+          "dailyVolume",
+          "action"
+        ],
+        "batchBar": true,
+        "pagination": {
+          "pageSize": 20,
+          "options": [
+            20,
+            50,
+            100
+          ]
+        }
+      },
+      "states": [
+        "default",
+        "hover",
+        "active",
+        "focus-visible",
+        "disabled",
+        "loading"
+      ],
+      "states_omitted": {
+        "error": "表格层错误由页面级 error 态承接，单元格不单独出错误态"
+      },
+      "rules": [
+        "TBL-001",
+        "TBL-004",
+        "TBL-005",
+        "TBL-008",
+        "TBL-009",
+        "TBL-010",
+        "TBL-011",
+        "TBL-012"
+      ]
+    },
+    {
+      "id": "C-DAT-03",
+      "type": "pagination",
+      "props": {
+        "pageSize": 20,
+        "options": [
+          20,
+          50,
+          100
+        ]
+      },
+      "states": [
+        "default",
+        "hover",
+        "disabled",
+        "focus-visible"
+      ],
+      "states_omitted": {
+        "active": "按压与 hover 视觉一致",
+        "loading": "翻页加载由表格承接",
+        "error": "失败由页面级 error 承接"
+      },
+      "rules": [
+        "DSC-009",
+        "TBL-012"
+      ]
+    },
+    {
+      "id": "C-DAT-04",
+      "type": "drawer",
+      "size": 480,
+      "props": {
+        "title": "新建数据源",
+        "fields": [
+          "name",
+          "type",
+          "encoding",
+          "topic",
+          "region"
+        ]
+      },
+      "states": [
+        "default",
+        "hover",
+        "active",
+        "focus-visible",
+        "disabled",
+        "loading",
+        "error"
+      ],
+      "rules": [
+        "OVL-013",
+        "OVL-004",
+        "OVL-005",
+        "FRM-005"
+      ]
+    },
+    {
+      "id": "C-DAT-05",
+      "type": "status-tag",
+      "variant": "normal",
+      "props": {
+        "text": "运行中",
+        "dot": true
+      },
+      "states": [
+        "default",
+        "hover"
+      ],
+      "states_omitted": {
+        "active": "只读元素无按压态",
+        "focus-visible": "不可聚焦元素，不参与 Tab 序列",
+        "disabled": "状态由数据决定，无禁用语义",
+        "loading": "数据加载由页面级 skeleton 承接",
+        "error": "错误由页面级 error 态承接，组件不叠加"
+      },
+      "rules": [
+        "DSC-004",
+        "DSC-005",
+        "DSC-006"
+      ]
+    }
+  ],
+  "data": [
+    {
+      "key": "name",
+      "type": "string",
+      "max_chars": 32,
+      "empty": "--"
+    },
+    {
+      "key": "type",
+      "type": "enum",
+      "values": [
+        "Agent",
+        "Syslog",
+        "HTTP",
+        "Kafka"
+      ],
+      "empty": "--"
+    },
+    {
+      "key": "status",
+      "type": "enum",
+      "values": [
+        "运行中",
+        "告警中",
+        "异常",
+        "离线",
+        "维护中"
+      ],
+      "empty": "--"
+    },
+    {
+      "key": "lastReceive",
+      "type": "datetime",
+      "format": "YYYY-MM-DD HH:mm:ss",
+      "empty": "--"
+    },
+    {
+      "key": "dailyVolume",
+      "type": "number",
+      "unit": "万条",
+      "empty": "--"
+    }
+  ],
+  "copy": {
+    "buttons": [
+      "查询",
+      "重置",
+      "刷新",
+      "新建数据源",
+      "保存"
+    ],
+    "messages": {
+      "success": "数据源已创建，正在校验连通性",
+      "error": "连通性校验失败，请检查地址与端口",
+      "empty": "暂无数据源"
+    }
+  },
+  "rules": {
+    "applied": [
+      "TOK-001",
+      "COL-005",
+      "AI-001",
+      "FLT-001",
+      "TBL-011",
+      "OVL-013",
+      "QLT-007"
+    ],
+    "exceptions": []
+  },
+  "a11y": {
+    "keyboard_path": [
+      "侧边栏",
+      "页头操作",
+      "内容区",
+      "分页"
+    ],
+    "table_semantics": "th + scope=col"
+  },
+  "perf": {
+    "lcp_ms": 2000,
+    "api_p95_ms": 800
+  }
+}

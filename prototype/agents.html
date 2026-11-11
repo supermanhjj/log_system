@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent 管理 · 统一日志分析平台</title>
+<link rel="stylesheet" href="../design-tokens.css">
+<link rel="stylesheet" href="assets/base.css">
+</head>
+<body class="busi-app" data-page="agents" data-cid="C-AGT-01">
+<div data-shell></div>
+<div class="busi-body">
+  <main class="busi-main">
+
+    <div class="busi-page-head">
+      <div class="busi-breadcrumb">
+        <span>数据接入</span><span class="busi-breadcrumb__sep">&gt;</span>
+        <span class="busi-breadcrumb__current">Agent 管理</span>
+      </div>
+      <div class="busi-page-head__bar">
+        <div>
+          <h1 class="busi-page-head__title">Agent 管理</h1>
+          <p class="busi-page-head__desc">Agent 安装后自动注册，心跳超过 3 分钟标记离线</p>
+        </div>
+        <div class="busi-page-head__actions">
+          <button class="busi-btn busi-btn--default" type="button" data-loading-btn data-done="Agent 状态已刷新">刷新</button>
+          <button class="busi-btn busi-btn--default" type="button" data-modal-open="upgrade-modal">批量升级</button>
+          <button class="busi-btn busi-btn--primary" type="button" data-toast="success" data-toast-text="安装包已生成：log-agent-3.2.6.tar.gz">下载安装包</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="busi-page">
+
+      <section class="busi-card" aria-label="升级任务进度">
+        <div class="busi-card__head">
+          <div class="busi-card__title">Agent 升级任务</div>
+          <div class="busi-card__extra"><span class="busi-tag busi-tag--normal"><span class="busi-tag__dot"></span>运行中</span></div>
+        </div>
+        <div class="busi-card__body busi-col">
+          <div class="busi-row busi-row--between">
+            <span class="busi-strong">升级至 v3.2.6</span>
+            <span class="busi-hint">已完成 14 / 18 台 · 失败 0 台 · 预计 6 分钟</span>
+          </div>
+          <div class="busi-progress"><div class="busi-progress__bar" style="width:76%"></div></div>
+          <span class="busi-hint">升级采用滚动方式，单台重启期间采集不中断（断点续传）。</span>
+        </div>
+      </section>
+
+      <section class="busi-filter" aria-label="筛选条件">
+        <div class="busi-field">
+          <label class="busi-field__label" for="agent-host">主机名</label>
+          <div class="busi-field__control"><input class="busi-input" id="agent-host" type="text" placeholder="请输入主机名或 IP"></div>
+        </div>
+        <div class="busi-field">
+          <label class="busi-field__label" for="agent-version">Agent 版本</label>
+          <div class="busi-field__control">
+            <select class="busi-select" id="agent-version" style="width:100%">
+              <option>全部版本</option><option>v3.2.6</option><option>v3.2.4</option><option>v3.1.9</option>
+            </select>
+          </div>
+        </div>
+        <div class="busi-field">
+          <label class="busi-field__label" for="agent-status">运行状态</label>
+          <div class="busi-field__control">
+            <select class="busi-select" id="agent-status" style="width:100%">
+              <option>全部状态</option><option>运行中</option><option>告警中</option><option>离线</option><option>维护中</option>
+            </select>
+          </div>
+        </div>
+        <div class="busi-field">
+          <label class="busi-field__label" for="agent-region">所属区域</label>
+          <div class="busi-field__control">
+            <select class="busi-select" id="agent-region" style="width:100%">
+              <option>全部区域</option><option>华北</option><option>华东</option><option>华南</option>
+            </select>
+          </div>
+        </div>
+        <div class="busi-filter__actions">
+          <button class="busi-btn busi-btn--primary" type="button" data-loading-btn data-done="筛选完成，共 6 台主机">查询</button>
+          <button class="busi-btn busi-btn--default" type="button" data-filter-reset>重置</button>
+        </div>
+      </section>
+
+      <section class="busi-table-wrap" aria-label="Agent 列表">
+        <div class="busi-table__batch">
+          <span>已选 <strong data-batch-count>0</strong> 项</span>
+          <div class="busi-table__batch-actions">
+            <button class="busi-btn busi-btn--text" type="button" data-modal-open="upgrade-modal">批量升级</button>
+            <button class="busi-btn busi-btn--text" type="button" data-toast="info" data-toast-text="已拉取所选主机的最近 200 行采集日志">查看采集日志</button>
+          </div>
+        </div>
+
+        <table class="busi-table">
+          <caption class="busi-sr-only">Agent 主机列表，共 6 台</caption>
+          <colgroup>
+            <col style="width:48px"><col style="width:20%"><col style="width:15%"><col style="width:10%"><col style="width:10%"><col style="width:16%"><col style="width:14%"><col style="width:13%">
+          </colgroup>
+          <thead>
+            <tr>
+              <th class="busi-table__th" scope="col"><input class="busi-check" type="checkbox" data-check-all aria-label="全选"></th>
+              <th class="busi-table__th" scope="col">主机名</th>
+              <th class="busi-table__th" scope="col">IP 地址</th>
+              <th class="busi-table__th" scope="col">版本</th>
+              <th class="busi-table__th" scope="col">状态</th>
+              <th class="busi-table__th" scope="col">最近心跳</th>
+              <th class="busi-table__th" scope="col">采集速率</th>
+              <th class="busi-table__th" scope="col">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr class="busi-table__row is-clickable" data-detail="agent-detail" data-detail-title="Agent 详情">
+              <td class="busi-table__cell busi-table__cell--check"><input class="busi-check" type="checkbox" aria-label="选择该行"></td>
+              <td class="busi-table__cell busi-table__cell--name" data-label="主机名">host-10-24-8-21</td>
+              <td class="busi-table__cell" data-label="IP 地址">10.24.8.21</td>
+              <td class="busi-table__cell" data-label="版本">v3.2.6</td>
+              <td class="busi-table__cell" data-label="状态"><span class="busi-tag busi-tag--normal"><span class="busi-tag__dot"></span>运行中</span></td>
+              <td class="busi-table__cell" data-label="最近心跳">2026-11-11 09:45:03</td>
+              <td class="busi-table__cell busi-table__cell--num" data-label="采集速率">12,400 条/秒</td>
+              <td class="busi-table__cell busi-table__cell--op">
+                <button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-drawer-open="agent-detail" data-drawer-title="Agent 详情">详情</button>
+                <button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-toast="info" data-toast-text="已下发重启指令，采集将在 5 秒内恢复">重启</button>
+              </td>
+            </tr>
+            <tr class="busi-table__row is-clickable" data-detail="agent-detail" data-detail-title="Agent 详情">
+              <td class="busi-table__cell busi-table__cell--check"><input class="busi-check" type="checkbox" aria-label="选择该行"></td>
+              <td class="busi-table__cell busi-table__cell--name" data-label="主机名">host-10-24-8-22</td>
+              <td class="busi-table__cell" data-label="IP 地址">10.24.8.22</td>
+              <td class="busi-table__cell" data-label="版本">v3.2.6</td>
+              <td class="busi-table__cell" data-label="状态"><span class="busi-tag busi-tag--normal"><span class="busi-tag__dot"></span>运行中</span></td>
+              <td class="busi-table__cell" data-label="最近心跳">2026-11-11 09:45:01</td>
+              <td class="busi-table__cell busi-table__cell--num" data-label="采集速率">9,860 条/秒</td>
+              <td class="busi-table__cell busi-table__cell--op">
+                <button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-drawer-open="agent-detail" data-drawer-title="Agent 详情">详情</button>
+                <button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-toast="info" data-toast-text="已下发重启指令，采集将在 5 秒内恢复">重启</button>
+              </td>
+            </tr>
+            <tr class="busi-table__row is-clickable" data-detail="agent-detail" data-detail-title="Agent 详情">
+              <td class="busi-table__cell busi-table__cell--check"><input class="busi-check" type="checkbox" aria-label="选择该行"></td>
+              <td class="busi-table__cell busi-table__cell--name" data-label="主机名">host-10-24-8-32</td>
+              <td class="busi-table__cell" data-label="IP 地址">10.24.8.32</td>
+              <td class="busi-table__cell" data-label="版本">v3.2.4</td>
+              <td class="busi-table__cell" data-label="状态"><span class="busi-tag busi-tag--warning"><span class="busi-tag__dot"></span>告警中</span></td>
+              <td class="busi-table__cell" data-label="最近心跳">2026-11-11 09:44:58</td>
+              <td class="busi-table__cell busi-table__cell--num" data-label="采集速率">18,200 条/秒</td>
+              <td class="busi-table__cell busi-table__cell--op">
+                <button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-drawer-open="agent-detail" data-drawer-title="Agent 详情">详情</button>
+                <button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-toast="info" data-toast-text="已下发重启指令，采集将在 5 秒内恢复">重启</button>
+              </td>
+            </tr>
+            <tr class="busi-table__row is-clickable" data-detail="agent-detail" data-detail-title="Agent 详情">
+              <td class="busi-table__cell busi-table__cell--check"><input class="busi-check" type="checkbox" aria-label="选择该行"></td>
+              <td class="busi-table__cell busi-table__cell--name" data-label="主机名">host-10-24-9-08</td>
+              <td class="busi-table__cell" data-label="IP 地址">10.24.9.08</td>
+              <td class="busi-table__cell" data-label="版本">v3.2.6</td>
+              <td class="busi-table__cell" data-label="状态"><span class="busi-tag busi-tag--normal"><span class="busi-tag__dot"></span>运行中</span></td>
+              <td class="busi-table__cell" data-label="最近心跳">2026-11-11 09:44:55</td>
+              <td class="busi-table__cell busi-table__cell--num" data-label="采集速率">6,420 条/秒</td>
+              <td class="busi-table__cell busi-table__cell--op">
+                <button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-drawer-open="agent-detail" data-drawer-title="Agent 详情">详情</button>
+                <button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-toast="info" data-toast-text="已下发重启指令，采集将在 5 秒内恢复">重启</button>
+              </td>
+            </tr>
+            <tr class="busi-table__row is-clickable" data-detail="agent-detail" data-detail-title="Agent 详情">
+              <td class="busi-table__cell busi-table__cell--check"><input class="busi-check" type="checkbox" aria-label="选择该行"></td>
+              <td class="busi-table__cell busi-table__cell--name" data-label="主机名">host-10-24-9-12</td>
+              <td class="busi-table__cell" data-label="IP 地址">10.24.9.12</td>
+              <td class="busi-table__cell" data-label="版本">v3.1.9</td>
+              <td class="busi-table__cell" data-label="状态"><span class="busi-tag busi-tag--maintain"><span class="busi-tag__dot"></span>维护中</span></td>
+              <td class="busi-table__cell" data-label="最近心跳">2026-11-11 09:30:12</td>
+              <td class="busi-table__cell busi-table__cell--num" data-label="采集速率">0 条/秒</td>
+              <td class="busi-table__cell busi-table__cell--op">
+                <button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-drawer-open="agent-detail" data-drawer-title="Agent 详情">详情</button>
+                <button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-toast="info" data-toast-text="维护窗口内不可重启，请先结束维护">重启</button>
+              </td>
+            </tr>
+            <tr class="busi-table__row is-clickable" data-detail="agent-detail" data-detail-title="Agent 详情">
+              <td class="busi-table__cell busi-table__cell--check"><input class="busi-check" type="checkbox" aria-label="选择该行"></td>
+              <td class="busi-table__cell busi-table__cell--name" data-label="主机名">edge-10-32-4-11</td>
+              <td class="busi-table__cell" data-label="IP 地址">10.32.4.11</td>
+              <td class="busi-table__cell" data-label="版本">v3.2.6</td>
+              <td class="busi-table__cell" data-label="状态"><span class="busi-tag busi-tag--unknown"><span class="busi-tag__dot"></span>离线</span></td>
+              <td class="busi-table__cell" data-label="最近心跳">2026-11-11 06:20:18</td>
+              <td class="busi-table__cell busi-table__cell--num" data-label="采集速率">0 条/秒</td>
+              <td class="busi-table__cell busi-table__cell--op">
+                <button class="busi-btn busi-btn--text busi-btn--sm" type="button" data-drawer-open="agent-detail" data-drawer-title="Agent 详情">详情</button>
+                <button class="busi-btn busi-btn--text busi-btn--sm" type="button" disabled>重启</button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div class="busi-pagination">
+          <span class="busi-pagination__total">共 6 台</span>
+          <div class="busi-pagination__pages">
+            <button class="busi-pagination__item busi-pagination__item--arrow" type="button" disabled aria-label="上一页">&lt;</button>
+            <button class="busi-pagination__item is-active" type="button">1</button>
+            <button class="busi-pagination__item busi-pagination__item--arrow" type="button" disabled aria-label="下一页">&gt;</button>
+          </div>
+          <div class="busi-pagination__size">
+            <span>每页</span>
+            <select class="busi-pagination__select" aria-label="每页条数"><option selected>20</option><option>50</option><option>100</option></select>
+            <span>条</span>
+          </div>
+        </div>
+      </section>
+
+    </div>
+  </main>
+</div>
+
+<div class="busi-mask" data-mask="agent-detail"></div>
+<aside class="busi-drawer busi-drawer--480" id="agent-detail" role="dialog" aria-modal="true" aria-labelledby="agent-detail-title">
+  <div class="busi-drawer__head">
+    <div class="busi-drawer__title" id="agent-detail-title" data-drawer-title>Agent 详情</div>
+    <button class="busi-icon-btn" type="button" data-drawer-close aria-label="关闭详情">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M3 3l10 10M13 3L3 13"/></svg>
+    </button>
+  </div>
+  <div class="busi-drawer__body" data-drawer-body></div>
+  <div class="busi-drawer__foot">
+    <button class="busi-btn busi-btn--default" type="button" data-drawer-close>关闭</button>
+    <button class="busi-btn busi-btn--default" type="button" data-toast="info" data-toast-text="已拉取该主机的采集配置">查看配置</button>
+    <button class="busi-btn busi-btn--primary" type="button" data-toast="info" data-toast-text="已下发重启指令，采集将在 5 秒内恢复">重启 Agent</button>
+  </div>
+</aside>
+
+<div class="busi-mask" data-mask="upgrade-modal"></div>
+<div class="busi-modal busi-modal--420" id="upgrade-modal" role="alertdialog" aria-modal="true" aria-labelledby="upgrade-modal-title">
+  <div class="busi-modal__head">
+    <div class="busi-modal__title" id="upgrade-modal-title">批量升级 Agent</div>
+    <button class="busi-icon-btn" type="button" data-modal-close aria-label="关闭">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M3 3l10 10M13 3L3 13"/></svg>
+    </button>
+  </div>
+  <div class="busi-modal__body">
+    <p class="busi-modal__desc">将所选主机升级至 v3.2.6，采用滚动升级，单台重启期间断点续传。</p>
+    <p class="busi-hint" style="margin:0">离线主机会被自动跳过，可在升级结束后重试。</p>
+  </div>
+  <div class="busi-modal__foot">
+    <button class="busi-btn busi-btn--default" type="button" data-modal-close>取消</button>
+    <button class="busi-btn busi-btn--primary" type="button" data-toast="success" data-toast-text="升级任务已下发，进度可在列表上方查看" data-modal-close>开始升级</button>
+  </div>
+</div>
+
+<script src="assets/app.js"></script>
+</body>
+</html>
