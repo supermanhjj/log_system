@@ -9,7 +9,7 @@
 
 ## Docker 开发环境（骨架）
 
-技术路线见 `docs/tech-stack-mapping.md`（v1.5：Vue3 + FastAPI + Fluent Bit +
+技术路线见 `docs/tech-stack-selection.md`（v1.5：Vue3 + FastAPI + Fluent Bit +
 OpenSearch/PPL + Kafka + Flink + PostgreSQL + Redis）。
 
 ```bash
@@ -33,4 +33,4 @@ docker compose down -v
 生产/演示编排见 `docker-compose.prod.yml`（数据层改为云托管）。
 
 > Apple Silicon 注意：OpenSearch 若报架构错误可加 `platform: linux/amd64`；Flink 已默认以 amd64 模拟运行。
-> 详见 `docs/tech-stack-mapping.md` 第 7 章与各服务 `services/<name>/app/main.py` 骨架注释。
+> 详见 `docs/tech-stack-selection.md` 第 7 章与各服务 `services/<name>/app/main.py` 骨架注释。

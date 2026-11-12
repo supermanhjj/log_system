@@ -1,7 +1,7 @@
 # log_system —— Docker 开发 / 运行环境编排（基础定义）
 # 数据层 + 应用层 + 采集层 全在容器内（开发联调，无生产数据）
 # 开发覆盖（bind mount / 热更 / 端口映射）见 compose.override.yml，运行 `docker compose up` 自动叠加
-# 技术路线：docs/tech-stack-mapping.md v1.5（采集层 = Fluent Bit；agent-service 管控面纳入一阶段）
+# 技术路线：docs/tech-stack-selection.md v1.5（采集层 = Fluent Bit；agent-service 管控面纳入一阶段）
 
 name: log_system
 
@@ -160,7 +160,7 @@ services:
 
   # ===================== 采集层（Fluent Bit，模拟业务主机 agent） =====================
   # 业务主机只部署单一 Fluent Bit 进程；管控脚本随包部署、由 exec 插件调起（不另起进程）
-  # 见 docs/tech-stack-mapping.md 3.2(8) / 9.1
+  # 见 docs/tech-stack-selection.md 3.2(8) / 9.1
   fluentbit:
     image: log_system-fluentbit
     depends_on: [opensearch, kafka, agent-service]
@@ -172,7 +172,7 @@ services:
   # ===================== 测试业务系统模拟器（log-generator） =====================
   # 无真实业务，持续输出 [LEVEL] <msg> tenant=<id> 日志到共享卷 app_logs，
   # 由 fluentbit 的 tail 输入采集，构成完整"业务系统→采集→多租户索引"链路。
-  # 见 docs/tech-stack-mapping.md 9.x 测试 harness。
+  # 见 docs/tech-stack-selection.md 9.x 测试 harness。
   log-generator:
     image: log_system-log-generator
     environment:

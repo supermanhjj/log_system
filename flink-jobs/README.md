@@ -1,7 +1,7 @@
 # Flink 实时告警 Job（占位）
 
 实时判定逻辑：消费 Kafka 日志流 → 匹配 `alarm_rules` 规则 `condition` → 触发 →
-写告警事件（PostgreSQL）+ 通知（`notify` 渠道）。对应 docs/tech-stack-mapping.md 3.2(6) / ALM-0402。
+写告警事件（PostgreSQL）+ 通知（`notify` 渠道）。对应 docs/tech-stack-selection.md 3.2(6) / ALM-0402。
 
 ## 本骨架状态
 
