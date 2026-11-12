@@ -1,6 +1,6 @@
 # 统一日志分析平台 —— 功能点 × 技术栈映射、检索语言(PPL)方案与容器化设计方案
 
-> 文档状态：设计草案（v1.2，已纳入 2026-11-11 确认的架构决策；检索语言本版直接采用 OpenSearch PPL、不做 SPL→PPL 转换层；纯文档层，未落地任何代码/Docker 配置）
+> 文档状态：设计草案（v1.5，已纳入 2026-11-11 确认的架构决策 + 采集层采用 Fluent Bit 替换自研 Go 采集器、Agent 管控面纳入一阶段；**关键约束：业务主机仅部署单一 Fluent Bit 进程，管控逻辑以随包管控脚本（exec 插件调用）+ 配置热重载承载，不另起 Supervisor 守护进程**；检索语言本版直接采用 OpenSearch PPL、不做 SPL→PPL 转换层；纯文档层，未落地任何代码/Docker 配置）
 > 关联资产：`prototype/`（高保真原型，10 个页面规格 + `agents.html`）、`prototype/specs/*.json`
 > 适用范围：本仓库 `log_system` 的后续开发环境与云上微服务部署
 
@@ -25,7 +25,7 @@
 | 层 | 选型 | 角色 |
 |----|------|------|
 | 前端 | **Vue3**（已确认，放弃 React 备选） | 全部页面 UI，承接现有原型交互 |
-| 采集器 | **Go**（已确认） | 轻量日志采集 Agent / 接入网关，对标云智慧 Golang 采集器 |
+| 采集器 | **Fluent Bit**（开源 C agent，已确认替换原自研 Go 采集器） | 主机侧**唯一部署组件**（单进程）；日志采集与转发，原生对接 Kafka / OpenSearch，信创友好、极轻量；**管控逻辑以随包附带的管控脚本（由 Fluent Bit `exec` 输入插件定时调用）+ 配置热重载承载，主机侧不另起独立进程**，服务端 `agent-service`(FastAPI+PG+Redis) 本版一并纳入，见 3.2(8) |
 | 检索引擎（主） | **OpenSearch**（已确认） | 日志存储、全文检索、聚合分析（ES 的开源分支，信创友好） |
 | 实时计算 | **Flink**（已确认） | 日志流实时处理：告警实时判定、趋势计算 |
 | 消息队列 | **Kafka**（已确认） | 采集与消费解耦、缓冲（日志易/云智慧共同选择） |
@@ -40,7 +40,7 @@
 | **API 网关 / LB** | 必选（生产） | 统一入口、鉴权、限流；微服务多无状态服务需要前置路由。 |
 | **对象存储 OSS/S3** | 按需（后期） | 原始日志归档（规格未显式要求，但生产必备；原型未涉及）。见第 9 章后期可引入清单。 |
 
-> 结论：以 **Vue3 前端 + Python/FastAPI 应用微服务 + Go 采集器 + OpenSearch(主) + Kafka + Flink + PostgreSQL + Redis** 为主体。ClickHouse、对象存储列为后期可引入项（见第 9 章），避免遗忘。下面映射按此组合展开。
+> 结论：以 **Vue3 前端 + Python/FastAPI 应用微服务 + Fluent Bit（主机侧唯一采集/管控组件）+ OpenSearch(主) + Kafka + Flink + PostgreSQL + Redis** 为主体。ClickHouse、对象存储列为后期可引入项（见第 9 章），避免遗忘。采集层已确定采用开源 Fluent Bit 替换原自研 Go 采集器，且**业务主机只部署这一个 Fluent Bit 进程**——其"管控客户端"能力（心跳上报/配置拉取/重启/升级）通过随包附带的管控脚本（`exec` 插件定时调用）+ 配置热重载实现，不另起 Supervisor 守护进程；服务端 `agent-service` 纳入一阶段。下面映射按此组合展开。
 
 ---
 
@@ -60,7 +60,7 @@
 | 告警事件 `ALM-0401` | `/alarms/events` | 列表、批量关闭、详情抽屉、状态机（告警中/已恢复） | Vue3 + FastAPI(告警服务) + PG(事件) + OpenSearch(溯源) | ✅ |
 | 告警规则 `ALM-0402` | `/alarms/rules` | 规则 CRUD、启用开关、**实时判定**、保存生效 | Vue3 + FastAPI(规则管理) + **Flink**(实时判定 Job) + PG(规则) + Kafka(日志流) | ✅ Flink 核心用武之地 |
 | 数据源 `DAT-0501` | `/data-sources` | 数据源 CRUD、类型(Agent/Syslog/HTTP/Kafka)、连通性校验、导出配置 | Vue3 + FastAPI(接入服务) + PG + Kafka topic 管理 | ✅ |
-| Agent 管理 `DAT-0502` | `/agents` | 主机列表、**心跳(>3min 离线)**、批量升级(滚动/断点续传)、重启、进度 | Vue3 + **Go Agent**(采集端) + FastAPI(Agent 管理服务) + PG(主机元数据) + Redis(心跳) | ✅ |
+| Agent 管理 `DAT-0502` | `/agents` | 主机列表、**心跳(>3min 离线)**、批量升级(滚动/断点续传)、重启、进度 | Vue3 + **Fluent Bit**(主机侧唯一进程，管控脚本随包部署、`exec` 插件调起) + FastAPI(`agent-service`) + PG(主机元数据) + Redis(心跳) | ✅ 本版纳入，见 3.2(8) |
 | 用户与角色 `SYS-0601` | `/settings/users` | Tabs(用户/角色/系统参数/审计)、用户 CRUD、启用开关、导出 | Vue3 + FastAPI(系统服务) + **PostgreSQL**(RBAC/审计) | ✅ 部分待细化 |
 
 ### 3.2 逐模块细化（含规格原文要点）
@@ -106,13 +106,25 @@
 #### （7）数据源 `DAT-0501`
 - 功能点：数据源表（name/type/status/lastReceive/dailyVolume/action）；新建数据源 drawer（name/type/encoding/topic/region）；连通性校验；导出配置。
 - `type`：Agent / Syslog / HTTP / Kafka；`status`：运行中/告警中/异常/离线/维护中。
-- 落点：FastAPI 接入服务 + PG（数据源配置）+ Kafka（topic 创建/校验）+ Go 采集器（实际拉取）。
+- 落点：FastAPI 接入服务 + PG（数据源配置）+ Kafka（topic 创建/校验）+ **Fluent Bit**（实际采集，替代原自研 Go 采集器）。
 
-#### （8）Agent 管理 `DAT-0502` —— Go 采集器核心场景
-- 功能点：主机表（hostname/ip/version/status/heartbeat/throughput/action）；筛选（主机名/版本/状态/区域）；**心跳超过 3 分钟标记离线**；批量升级（**滚动升级 + 断点续传**，进度 76% 示例）；下载安装包；重启指令；Agent 详情抽屉（含 config）。
-- 落点：
-  - **Go 采集器**：部署在目标主机，定时上报心跳、采集日志推 Kafka、接收升级/重启指令、支持断点续传。
-  - FastAPI Agent 管理服务：主机元数据（PG）、心跳超时判定（**Redis 存最近心跳时间戳**，定时任务扫超时）、升级任务编排（滚动，逐台重启不中断采集）、安装包托管。
+#### （8）Agent 管理 `DAT-0502` —— 本版（一阶段）纳入（业务主机仅部署单一 Fluent Bit 进程）
+- 功能点（原型定义）：主机表（hostname/ip/version/status/heartbeat/throughput/action）；筛选（主机名/版本/状态/区域）；**心跳超过 3 分钟标记离线**；批量升级（**滚动升级 + 断点续传**，进度 76% 示例）；下载安装包；重启指令；Agent 详情抽屉（含 config）。
+- **本版决策（采集层选型 + 管控面范围，满足"主机只部署一个 Fluent Bit"约束）**：
+  - **采集器采用开源 Fluent Bit**（CNCF 毕业，C 语言，<1MB、10–30MB RAM，原生对接 Kafka/OpenSearch），自带采集、重试、磁盘缓冲、多输出，无需自研采集逻辑；信创友好、可静态编译移植到国产 OS/ARM。
+  - **⚠️ 关键约束：业务主机只部署一个 Fluent Bit 进程，不另起 Supervisor 守护进程。** Fluent Bit 不提供集中管控（心跳/配置下发/灰度升级），因此把"管控客户端"能力**下沉到随 Fluent Bit 安装包一同分发的「管控脚本」**，由 Fluent Bit 自身的 `exec` 输入插件按 `interval_sec` 定时调用，脚本在 Fluent Bit 同一进程上下文内完成管控动作。具体机制：
+    - **心跳上报**：管控脚本定时（如每 30s）向 `agent-service` 上报主机状态（版本、吞吐、运行态、最近日志量）；服务端 Redis 存最近心跳时间戳，定时任务扫 **>3min 无心跳**标记离线。Fluent Bit 进程若异常退出，心跳自然停止 → 自动判定离线（语义正确）。
+    - **配置拉取与下发**：服务端下发新采集配置，`agent-service` 写入主机侧配置；管控脚本拉取后落盘，并触发 Fluent Bit **配置热重载**（v2.1+ 支持 `SIGHUP` 信号或 `POST /api/v2/reload` HTTP 端点），**无需重启进程**即可生效。
+    - **接收重启/升级指令**：脚本轮询服务端指令队列；重启 = 触发热重载或重启 systemd 单元；升级 = HTTP `Range` 断点续传下载新 Fluent Bit 二进制 + 替换 + 重启服务（滚动调度由服务端编排，逐台执行不中断整体采集）。
+  - **服务端 `agent-service`（FastAPI + PG + Redis）**：主机元数据 CRUD、心跳超时判定、升级任务编排（滚动、逐台调度）、安装包托管与版本管理。
+- **部署与镜像约束**：
+  - ⚠️ **实测修正（2026-11-12）**：fluent/fluent-bit:5.2.0 官方 distroless 镜像**未编译 `exec` 输入插件**（仅含 `exec_wasi`，不适用 shell 脚本）。开发镜像即采用 distroless 基底，仅通过多阶段构建从 debian:trixie-slim 注入 `/bin/sh`+`curl`（供容器内网连通性校验与 `control.sh` 备选）；心跳改用 **dummy 输入 + http 输出原生上报** agent-service（等效 exec 调脚本语义）。**生产若仍需 `exec` 管控脚本**，须换用含 `exec` 插件的 Fluent Bit 构建（非官方 distroless 版）。
+  - **K8s 场景**：agent 升级直接走 DaemonSet 滚动更新（更新镜像即升级），无需脚本自升级；脚本自升级路径主要适用于**裸金属 / systemd** 主机。
+- **本版即做（落地顺序）**：
+  1. Fluent Bit 部署配置接入 OpenSearch（systemd / K8s DaemonSet，`tail`+`systemd` 输入 → `out_opensearch` 输出）；多租户 `tenant_id` 由 `app_log` 正则解析器**直接产出**（`record_modifier` 仅支持字面量、无法引用其他字段），再经 `rewrite_tag` 把租户注入 tag、按 tag 路由到 `logs-<tenant>` 三个固定索引（opensearch 输出 `Index` 参数不支持运行时 record accessor，`${tenant_id}` 会被当环境变量展开为空），日志流从业务主机直达 OpenSearch 可检索。
+  2. `agent-service` + 随包管控脚本打通**心跳上报 / 离线判定 / 配置拉取 / 远程重启**，全程单进程。
+  3. 批量升级做**基础版**（服务端滚动调度 + 断点续传下载替换），"零中断极致编排"作为后续优化。
+- 落点：FastAPI `agent-service` + PG（主机元数据/升级任务）+ Redis（心跳时间戳）+ 随包管控脚本（exec 插件调起）+ 单一 Fluent Bit 进程。详见第 9 章「采集层选型结论」。
 
 #### （9）用户与角色 `SYS-0601`
 - 功能点：Tabs（**用户管理 / 角色权限 / 系统参数 / 审计日志**——原型只细化了「用户管理」，其余三个 Tab 为同级待实现）；用户表（userName/account/role/tenant/status/lastLogin/action）；新建用户 modal；启用开关；导出。
@@ -187,7 +199,7 @@ source=* | where level = 'ERROR' | stats count() by host
 | OpenSearch | 日志索引、全文检索、聚合 | **本版必带** |
 | Kafka | 采集→消费解耦缓冲，Flink 输入源 | **本版必带**（支撑实时告警） |
 | Flink | 实时告警判定、趋势计算 | **本版必带**（否则告警规则无法「实时生效」） |
-| **Redis** | Agent 心跳时间戳与超时判定、检索结果缓存、会话 | **本版引入**（与 Agent 管理同期开发） |
+| **Redis** | Agent 心跳时间戳与超时判定、检索结果缓存、会话 | **本版引入**（检索缓存/会话 + Agent 心跳，随 Agent 管理纳入一阶段） |
 | ClickHouse | 大日志量聚合加速 | **后期可引入**（见第 9 章） |
 | 对象存储 | 原始日志归档 | **后期可引入**（见第 9 章） |
 
@@ -211,16 +223,16 @@ source=* | where level = 'ERROR' | stats count() by host
 | `dashboard-service` | FastAPI | 无状态 | 看板/图表配置 CRUD、取数编排 | DSH |
 | `alarm-service` | FastAPI | 无状态 | 告警事件管理、状态机、通知 | ALM-01 |
 | `ingest-service` | FastAPI | 无状态 | 数据源管理、连通性校验、Kafka topic | DAT-01 |
-| `agent-service` | FastAPI | 无状态 | Agent 主机元数据、心跳超时、升级编排 | DAT-02 |
+| `agent-service` | FastAPI | 无状态 | Agent 主机元数据、心跳超时、升级编排（本版纳入一阶段，见 3.2(8)） | DAT-02 |
 | `system-service` | FastAPI | 无状态 | 用户/角色/参数/审计 | SYS |
-| `log-agent` (采集器) | **Go** | 无状态(部署在主机) | 采集、心跳、升级/重启、断点续传 | DAT-02 |
+| `log-agent` (采集器) | **Fluent Bit**（开源 C agent，**主机侧唯一进程**） | 有状态(部署在主机侧) | 主机日志采集与转发：tail/systemd/syslog/http → Kafka / OpenSearch；**管控脚本随包部署、由 `exec` 插件调起，不另起进程**（替代原自研 Go 采集器） | DAT-01/02 |
 | `alarm-flink-job` | Flink | 有状态 | 实时消费 Kafka → 匹配规则 → 触发告警 | ALM-02 |
 | OpenSearch | 托管/容器 | 有状态 | 日志索引与检索 | 全局 |
 | PostgreSQL | 托管/容器 | 有状态 | 主数据 | 全局 |
 | Kafka | 托管/容器 | 有状态 | 日志流缓冲 | 全局 |
-| Redis | 容器/托管 | 有状态 | 心跳/缓存 | DAT-02/性能 |
+| Redis | 容器/托管 | 有状态 | 检索缓存/会话；Agent 心跳（本版） | 性能/DAT-02 |
 
-> 微服务允许分服务选型，但本方案统一后端为 **FastAPI（Python）** 以复用 AI/数据生态（智能体、pandas 分析）；仅采集器与实时判定分别用 Go / Flink。
+> 微服务允许分服务选型，但本方案统一后端为 **FastAPI（Python）** 以复用 AI/数据生态（智能体、pandas 分析）；仅实时判定用 Flink，采集器改用开源 Fluent Bit（不再自研 Go 采集器）。
 
 ---
 
@@ -247,12 +259,12 @@ log_system/
 ```
 
 ### 7.3 多阶段 Dockerfile 思路
-- **builder 阶段**：装全工具链（Python/Node 构建依赖、编译采集器所需的 Go 工具链如需要）、装依赖、构建前端产物（Vue `npm run build` → `dist/`）、跑后端依赖安装。
+- **builder 阶段**：装全工具链（Python/Node 构建依赖）、装依赖、构建前端产物（Vue `npm run build` → `dist/`）、跑后端依赖安装。**采集器已改用 Fluent Bit（官方镜像/二进制，无需在镜像内编译 Go 工具链）**；如后续自研管控面亦用 FastAPI，不引入 Go 构建链。
 - **runtime 阶段**：用精简基础镜像（如 `python:3.11-slim` / `node:20-alpine` / `nginx:alpine`），只拷运行所需产物 + 依赖，**非 root 用户**运行，镜像尽量小、可移植。
 - dev 与 prod 通过 `target` 选择：dev 用 builder（带热更），prod 用 runtime。
 
 ### 7.4 docker-compose 思路
-- **dev profile**：应用服务源码 bind mount 进容器 + 开热重载（uvicorn `--reload` / vite dev server）+ 映射端口到本机浏览器；**数据层全部以 sidecar 容器拉起联调**：PostgreSQL、OpenSearch、Kafka、Flink（单机 `flink:1.18-scala_2.12` 或本地 standalone）、**Redis（与 Agent 管理同期）**。此环境仅含开发/测试数据，不上生产。
+- **dev profile**：应用服务源码 bind mount 进容器 + 开热重载（uvicorn `--reload` / vite dev server）+ 映射端口到本机浏览器；**数据层全部以 sidecar 容器拉起联调**：PostgreSQL、OpenSearch、Kafka、Flink（单机 `flink:1.18-scala_2.12` 或本地 standalone）、**Redis（本版用于检索缓存/会话与 Agent 心跳）**。此环境仅含开发/测试数据，不上生产。
 - **prod profile**：镜像化应用服务（不带源码挂载、不带 dev 依赖）、Nginx 反代；**数据层改为云托管**（OpenSearch 服务 / RDS(PostgreSQL) / Kafka 实例 / Redis 实例），compose 内不再自建数据层（若需演示可自建但标注「仅演示」）；健康检查 + 重启策略。
 - 两套编排不冲突：开发期容器化数据层联调，生产期数据层优先托管。
 
@@ -271,7 +283,7 @@ log_system/
 1. **先立静态前端骨架**：Nginx + 多阶段 Dockerfile + compose dev/prod + .dockerignore，把现有原型直接托管进容器跑通 dev。
 2. 逐步加 `auth-service` / `search-service` 等 FastAPI 容器，接 PostgreSQL。
 3. 引入 OpenSearch / Kafka / Flink sidecar，把检索与实时告警跑通。
-4. Go 采集器独立镜像，接入 Kafka。
+4. 引入 **Fluent Bit** 完成日志采集配置接入 Kafka / OpenSearch；`agent-service`（服务端管控面）+ **随包管控脚本（exec 插件调起，不另起进程）** 打通 Agent 管理（心跳/配置拉取/重启/批量升级），完成 DAT-01/02。
 
 ---
 
@@ -285,7 +297,8 @@ log_system/
 | 4 | 角色权限模型 | ✅ 已确认（角色）/ ⚠️ 待细化（参数·审计 PRD） | 三类角色：超级管理员 / 运维人员 / 查看人员（详见 3.2(9)） |
 | 5 | AI 智能体模块 | ✅ 已确认 | **一阶段不引入**，列为后期可引入（第 9 章） |
 | 6 | 生产数据层部署 | ✅ 已确认 | 开发期全容器内；上线后数据层云托管 |
-| 7 | Redis / ClickHouse 引入 | ✅ 已确认 | **Redis 本版引入（与 Agent 管理同期）**；ClickHouse 列后期 |
+| 7 | Redis / ClickHouse 引入 | ✅ 已确认 | **Redis 本版引入**（检索缓存/会话 + Agent 心跳，随 Agent 管理纳入一阶段）；ClickHouse 列后期 |
+| 8 | 采集器选型 + 主机部署约束 | ✅ 已确认 | **采用开源 Fluent Bit 替换原自研 Go 采集器**；**业务主机仅部署单一 Fluent Bit 进程**，管控客户端以随包脚本（exec 插件）+ 配置热重载承载，不另起 Supervisor；Agent 管理（管控面）评估为中等工作量、**纳入一阶段** |
 
 > 未关闭项：系统参数的具体项、审计日志的字段与保留期（不影响一阶段开发，补 PRD 即可）。
 
@@ -306,6 +319,94 @@ log_system/
 | **告警通知渠道扩展** | 邮件 / 短信 / 钉钉 / 企业微信 / Webhook 等 | ALM-02 `notify` 字段 | 规则表已预留 `notify` 字段 |
 | **多集群 / 异地容灾** | 国网高可用、等保要求 | 数据层、部署层 | 生产云托管自带部分能力 |
 
+### 9.1 采集层选型结论（Fluent Bit 已采纳，非后期项）
+- **决策**：放弃原自研 Go 采集器，采用开源 **Fluent Bit**（CNCF 毕业项目，C 语言，<1MB、10–30MB RAM，信创友好、可静态编译移植到国产 OS/ARM）作为主机侧采集 agent。
+- **可覆盖的采集对象与下游**：文件 `tail`、systemd、syslog、http/tcp/udp、K8s、Windows 事件等；下游原生对接 **Kafka / OpenSearch / 对象存储**（`out_kafka` / `out_opensearch` 等插件），覆盖本平台所需的全部采集与接入（对应原型 DAT-0501 四类接入）。
+- **管控面自研（本版纳入一阶段，且主机不另起进程）**：Fluent Bit **不提供**集中管控面（心跳采集 / 配置下发 / 灰度升级），对应原型 `agents.html` 的 Agent 管理模块（DAT-0502）**本版一并纳入**。落实方式满足"主机只部署一个 Fluent Bit"约束：**管控客户端不单独成守护进程**，而是随 Fluent Bit 安装包一同分发的「管控脚本」，由 Fluent Bit 的 **`exec` 输入插件**按 `interval_sec` 定时调用，在 Fluent Bit 进程内完成①心跳上报②配置/版本轮询③接收重启/升级指令④执行断点续传升级；配置下发靠 Fluent Bit **配置热重载**（`SIGHUP` 或 `POST /api/v2/reload`）无需重启。服务端仍以 FastAPI + PG + Redis 心跳做 `agent-service`。**部署约束**：`exec` 插件需 `/bin/sh`，Fluent Bit 镜像不得用 distroless（须 Debian/Ubuntu/Alpine 等带 shell 镜像）；K8s 场景升级走 DaemonSet 滚动更新、无需脚本自升级，脚本自升级路径仅面向裸金属/systemd 主机。**⚠️ 实测补充（2026-11-12）**：fluent/fluent-bit:5.2.0 官方 distroless 镜像**未编译 `exec` 输入插件**（仅含 `exec_wasi`，无法以 sh 调起管控脚本），故开发环境心跳改为 **dummy 输入 + http 输出原生上报** agent-service（等效语义、零额外进程）；若生产环境坚持用 `exec` 调 `control.sh`，须改用含 `exec` 插件的 Fluent Bit 构建（非官方 distroless 版）。
+- **本版即做**：① Fluent Bit 的**部署与配置接入 OpenSearch**（主机侧以 systemd 服务 / K8s DaemonSet 部署，`tail`+`systemd` 输入 → `out_opensearch` 输出，`tenant_id` 经 `record_modifier` 打标），使日志流从业务主机直达 OpenSearch 可检索；② `agent-service` + 随包管控脚本打通心跳上报/离线判定/配置拉取/远程重启（全程单进程）；③ 批量升级做基础版（服务端滚动调度 + 断点续传下载替换），"零中断极致编排"作后续优化。
+- **自研 Go 采集器能力对照**：Fluent Bit 可覆盖本平台实际场景子集且生态成熟；完全自研难以短期达到其十年级生产打磨水位，且需永久承担维护债。仅在出现 Fluent Bit 覆盖不了的私有协议源时，再在其前后挂轻量 Go 服务做二次处理（非二选一）。
+
+---
+
+## 10. 已落地 Docker 骨架文件清单（2026-11-11，依 v1.5 路线）
+
+> 本骨架已按第 2/5/6/7 章落地，采集层采用 Fluent Bit（非自研 Go），`agent-service` 管控面纳入一阶段。GitHub 上原仅为 v1.2（Go 采集器）旧版；本骨架与下列文件已随文档更新于 2026-11-12 提交并推送至 `main` 分支（镜像与运行服务现状见第 11 节）。
+
+| 文件 / 目录 | 角色 |
+|------------|------|
+| `docker-compose.yml` | 基础编排：数据层 + 7 个 FastAPI 微服务 + Nginx + Fluent Bit（服务名 DNS：`log_net`） |
+| `compose.override.yml` | 开发覆盖：bind mount 源码、`uvicorn --reload`、映射端口到本机 |
+| `docker-compose.prod.yml` | 生产/演示占位：数据层改云托管（profile `local-data`）、应用层无挂载 |
+| `Dockerfile` | FastAPI 多阶段镜像（builder 装依赖 → runtime slim，非 root） |
+| `.env.example` / `.env` | 配置与密钥分离（`.env` 已 gitignore） |
+| `.dockerignore` | 排除 `.git`/`.env`/依赖目录等，绝不把密钥打进镜像 |
+| `nginx/nginx.conf` | 托管前端 + `/api/*` 反代到各微服务（前缀路由去前缀） |
+| `services/<name>/app/main.py` | 7 个微服务骨架（auth/search/dashboard/alarm/ingest/agent/system），含 `/health` 与 `agent-service` `/heartbeat` |
+| `services/requirements.txt` | 后端共用依赖（fastapi/uvicorn/psycopg2/redis/kafka-python/opensearch-py/jose…） |
+| `fluentbit/` | Fluent Bit **distroless 多阶段镜像**（debian:trixie-slim 注入 shell/curl，因官方 5.2.0-arm64 distroless 无 `/bin/sh`/curl 且库须 glibc 2.38+/OpenSSL 3.4+ 匹配基底）+ `fluent-bit.conf`（tail→OpenSearch；**心跳用 dummy 输入+http 输出上报 agent-service**，因 distroless 无 exec 插件）+ `scripts/control.sh`（保留作含 exec 版 Fluent Bit 的管控脚本备选） |
+| `fluentbit/sample/app.log` | 样例日志（参考用；实时采集源已改为 log-generator，见下） |
+| `tools/log-generator/` | **测试业务系统模拟器**：持续输出 `[LEVEL] <msg> tenant=<id>` 多租户日志到共享卷 `app_logs`，由 Fluent Bit `tail` 采集，构成"业务系统→采集→多租户索引"完整测试链路（无真实业务时可反复测） |
+| `flink-jobs/README.md` | 实时告警 Job 占位说明（Java/Scala 或 PyFlink 待定） |
+
+**应用层镜像基底**：`python:3.11-slim`（7 服务共用）；**采集器**：`fluent/fluent-bit:5.2.0-arm64`（Apple Silicon 原生，免 QEMU 模拟；生产 x86_64 主机改多架构 tag `5.2.0`）；**数据层**：`postgres:16-alpine` / `opensearchproject/opensearch:3.9.0` / `opensearch-dashboards:3.9.0` / `redis:7-alpine` / `bitnami/kafka:3.7` / `flink:1.18-scala_2.12`（amd64 模拟）。
+
+**多租户测试链路（log-generator）**：生成器写到 `app_logs` 卷的日志经 Fluent Bit `app_log` 解析器**直接产出 `tenant_id` 字段**（正则捕获组 `(?<tenant_id>...)`），再由 `rewrite_tag` 把租户注入 tag（`tenant.<id>`），按 tag 路由到 `logs-default` / `logs-acme` / `logs-gp` 三个独立索引（opensearch 输出 `Index` 不支持运行时 `${tenant_id}` record accessor，故用 tag 路由），直接验证 3.2(9) 的行级多租户隔离。`scripts/validate-chain.sh` 的 T2 已升级为跨租户索引计数校验；**T4 PPL 探测当前 ⚠️ 未就绪**（需装 `opensearch-sql` 插件，主链路用 `_search` 不受影响）；**T6 Kafka 判定已修正**（broker 可达即 PASS，Kafka 3.7 默认无 topic 不算不可达）。
+
+---
+
+## 11. 容器化部署镜像与运行服务现状（2026-11-12）
+
+> 截至 2026-11-12，全栈 17 个 `log_system-*` 容器全部运行（Up），全链路验证 T1–T6 全绿。以下为当时实际落地的镜像与容器清单。已清理首轮并发构建竞态产生的 3 个孤儿镜像 `log_system-{agent,system,dashboard}-service` 及构建残留 `debian:bookworm-slim` / `alpine:latest` / `fluent/fluent-bit:5.2.0`，仅保留可用镜像。
+
+### 11.1 基础镜像（Registry 拉取，未改动）
+
+| 镜像 | 大小 | 用途 |
+|------|------|------|
+| `postgres:16-alpine` | 288MB | 关系型库（用户/角色/配置持久化），`log_system-postgres` 直接运行 |
+| `opensearchproject/opensearch:3.9.0` | 1.31GB | 日志检索引擎，`log_system-opensearch` 直接运行 |
+| `opensearchproject/opensearch-dashboards:3.9.0` | 1.75GB | 可视化，`log_system-opensearch-dashboards` 直接运行 |
+| `redis:7-alpine` | 39.9MB | 缓存 / 会话 / 心跳时间戳，`log_system-redis` 直接运行 |
+| `bitnami/kafka:3.7` | 668MB | 消息缓冲，`log_system-kafka` 直接运行（当前无 topic 属正常） |
+| `nginx:1.27-alpine` | 49.7MB | 反向代理，`log_system-web` 直接运行（`/api/*` 转发微服务） |
+| `flink:1.18-scala_2.12` | 782MB | 流计算，`log_system-flink-{job,task}manager` 直接运行（本地 arm64，免 QEMU） |
+| `python:3.11-slim` | 150MB | **构建父镜像**：`log_system-backend` 与 `log_system-log-generator` 的 FROM |
+| `fluent/fluent-bit:5.2.0-arm64` | 134MB | **构建父镜像**：`log_system-fluentbit` 的 FROM（Apple Silicon 原生） |
+| `debian:trixie-slim` | 101MB | **构建辅助**：多阶段向 distroless Fluent Bit 注入 shell/curl（glibc 2.38+ / OpenSSL 3.4+ 匹配基底） |
+
+### 11.2 自建镜像（Dockerfile 实际构建，承载本平台代码）
+
+| 镜像 | 大小 | 基于 | 承载内容 |
+|------|------|------|----------|
+| `log_system-backend:latest` | 258MB | `python:3.11-slim` + `requirements.txt` | 7 个 FastAPI 微服务（共用一份代码层，不同 `command` 启动） |
+| `log_system-fluentbit:latest` | 144MB | `fluent/fluent-bit:5.2.0-arm64` + trixie 注入 | Fluent Bit 采集器（配置/脚本 bind mount 热更） |
+| `log_system-log-generator:latest` | 150MB | `python:3.11-slim` | 测试业务系统，持续吐多租户日志到 `app_logs` 卷 |
+
+> 已清理的残留：`log_system-{agent,system,dashboard}-service:latest`（首轮并发构建同一 Dockerfile 竞态产出，引用数 0、内容等同 backend，约 774MB）、`debian:bookworm-slim`、`alpine:latest`、`fluent/fluent-bit:5.2.0`（非 arm64 测试拉取），均不再保留。
+
+### 11.3 运行服务情况（17 个 `log_system-*` 容器，全部 Up）
+
+| 容器 | 镜像 | 用途 |
+|------|------|------|
+| `log_system-postgres-1` | `postgres:16-alpine` | 关系型库：用户/角色/配置等持久化 |
+| `log_system-opensearch-1` | `opensearch:3.9.0` | 日志检索引擎，存多租户索引 `logs-{default,acme,gp}` |
+| `log_system-opensearch-dashboards-1` | `opensearch-dashboards:3.9.0` | OpenSearch 可视化 Web 界面 |
+| `log_system-redis-1` | `redis:7-alpine` | 缓存 / 会话 / 心跳时间戳 |
+| `log_system-kafka-1` | `bitnami/kafka:3.7` | 日志缓冲消息队列（P2 实时告警接入用，当前无 topic） |
+| `log_system-web-1` | `nginx:1.27-alpine` | 反向代理，`/api/*` 转发到各微服务 |
+| `log_system-flink-jobmanager-1` | `flink:1.18` | 流计算作业管理（P2 告警作业） |
+| `log_system-flink-taskmanager-1` | `flink:1.18` | 流计算任务执行 |
+| `log_system-auth-service-1` | `log_system-backend` | 认证 / 鉴权 |
+| `log_system-search-service-1` | `log_system-backend` | 日志检索（→ OpenSearch `_search`） |
+| `log_system-dashboard-service-1` | `log_system-backend` | 看板聚合 |
+| `log_system-alarm-service-1` | `log_system-backend` | 告警（→ Kafka） |
+| `log_system-ingest-service-1` | `log_system-backend` | 采集接入（→ Kafka） |
+| `log_system-agent-service-1` | `log_system-backend` | 管控面 / 心跳接收（`/heartbeat`） |
+| `log_system-system-service-1` | `log_system-backend` | 系统 / 健康检查 |
+| `log_system-fluentbit-1` | `log_system-fluentbit` | 采集器：`tail` 读日志 → 解析多租户 → `rewrite_tag` 路由 → OpenSearch |
+| `log_system-log-generator-1` | `log_system-log-generator` | 测试业务系统，持续写多租户日志供采集 |
+
+> 另有一套外部 Dify 项目栈（`docker-*` 容器 + `langgenius/dify-*` 等镜像）与本平台无关，未纳入、未改动。
+
 ---
 
 ## 附：原型功能点索引（备查）
@@ -322,3 +423,33 @@ log_system/
 | P-DAT-0501 | 数据源 | /data-sources |
 | P-DAT-0502 | Agent 管理 | /agents |
 | P-SYS-0601 | 用户与角色 | /settings/users |
+
+---
+
+## 12. 全链路验证踩坑与关键决策（2026-11-12）
+
+> 本段记录 v1.5 路线下「Docker 部署 + 全链路验证」跑通过程中实测推翻原假设的 4 个关键点，供后续迭代与移植生产环境时对照。
+
+### 12.1 Fluent Bit 5.2.0 官方 distroless 镜像无 `exec` 输入插件
+- **现象**：`fluent-bit.conf` 用 `[INPUT] exec ... Command sh control.sh` 启动即报 `section 'exec' tried to instance a plugin name that doesn't exist`，容器 Exited(1)。
+- **根因**：`fluent/fluent-bit:5.2.0` 与 `5.2.0-arm64` 均为 distroless，**只含 `exec_wasi`（WASM），不含 `exec` shell 插件**。
+- **决策**：心跳改为 fluent-bit 原生 `dummy` 输入 + `http` 输出 POST `agent-service:8000/heartbeat`，等效"主机侧 Fluent Bit 定时上报"语义，且不依赖 shell 脚本。`scripts/control.sh` 保留，作为"换用含 exec 插件的 Fluent Bit 构建"时的管控脚本备选。
+- **移植提示**：生产若坚持 `exec` 调管控脚本，须改用含 exec 插件的 Fluent Bit 构建（非官方 distroless 版，或自编译开启 `FLB_IN_EXEC`）。
+
+### 12.2 distroless 镜像无 shell/curl，需多阶段注入且库版本须匹配
+- **现象**：直用 `fluent/fluent-bit:5.2.0-arm64` 跑 `sh`/`curl` 报 `exec /bin/sh: no such file`；自注入 debian:bookworm 的 shell/curl 后又报 `GLIBC_2.38` / `OPENSSL_3.4.0 not found`。
+- **根因**：该镜像底层是 glibc 2.38+/OpenSSL 3.4+（Debian trixie 级），bookworm(2.36/3.0) 工具链版本过低且被优先加载（路径 `/lib/aarch64-linux-gnu` 优先于 `/usr/lib/...`）。
+- **决策**：helper 用 `debian:trixie-slim`（glibc 2.38+/OpenSSL 3.4+）收集 `/bin/sh`+`/usr/bin/curl`+动态库+链接器，按原绝对路径 `COPY --from=helper /staging/ /` 进 distroless；脚本可执行位在 helper 阶段 `chmod`（目标镜像无 chmod）。
+
+### 12.3 OpenSearch 输出 `Index` 不支持运行时 record accessor
+- **现象**：`Index logs-${tenant_id}` 实际落索引 `logs-`（空），所有日志进同一字面量索引，多租户隔离失效。
+- **根因**：`${tenant_id}` 在配置加载时被当**环境变量**展开（未定义→空），opensearch 输出 `Index` 参数不支持每条记录运行时取值。
+- **决策**：`app_log` 正则解析器直接产出 `tenant_id` 字段（捕获组 `(?<tenant_id>...)`，因 `record_modifier` 仅支持字面量、无法引用其他字段）；再用 `rewrite_tag` 把租户注入 tag（`tenant.<id>`，前缀刻意避开 rewrite_tag 自身 `Match log.*` 以免 emitter 循环），三租户各配一个 `Match tenant.<id>` + 固定 `Index logs-<id>` 的 output 路由。
+
+### 12.4 Kafka 3.7 默认无 topic，validate T6 判定修正
+- **现象**：`kafka-topics.sh --list` 返回空，旧脚本据此判"Kafka 不可达" FAIL。
+- **根因**：Kafka 3.7 默认 `auto.create.topics.enable=false`，无 topic 属正常，不等于 broker 不可达（命令无连接错误）。
+- **决策**：T6 改为检查"命令无连接/超时错误即 broker 可达"，无 topic 时给 info 提示而非 FAIL。
+
+### 12.5 PPL 插件未就绪（informational）
+- OpenSearch 3.9.0 默认未装 `opensearch-sql` 插件，T4 PPL 探测返回 `'OpenSearch' object has no attribute 'sql'`。主链路检索走 `_search` 不受影响；如需 PPL/SPL 类查询需单独安装该插件（生产可选）。

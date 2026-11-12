@@ -1,0 +1,51 @@
+# 生产 / 演示编排（骨架占位）：数据层改为云托管，应用层用构建镜像、无源码挂载
+# 用法：docker compose -f docker-compose.yml -f docker-compose.prod.yml up
+# 注意：本文件仅示意，不含真实云托管连接串；上线前由运维补齐（OpenSearch 服务 / RDS / Kafka 实例 / Redis 实例）
+
+services:
+  # 数据层：默认不启动自建容器，改为云托管实例
+  postgres:
+    profiles: ["local-data"]
+  opensearch:
+    profiles: ["local-data"]
+  opensearch-dashboards:
+    profiles: ["local-data"]
+  redis:
+    profiles: ["local-data"]
+  kafka:
+    profiles: ["local-data"]
+  flink-jobmanager:
+    profiles: ["local-data"]
+  flink-taskmanager:
+    profiles: ["local-data"]
+
+  # 应用层：去掉源码挂载与 --reload，直接跑镜像内代码
+  web:
+    volumes:
+      - ./frontend/dist:/usr/share/nginx/html:ro   # Vue3 构建产物
+    ports: ["80:80"]
+  auth-service:
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    volumes: []
+  search-service:
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    volumes: []
+  dashboard-service:
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    volumes: []
+  alarm-service:
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    volumes: []
+  ingest-service:
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    volumes: []
+  agent-service:
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    volumes: []
+  system-service:
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    volumes: []
+
+  # 采集层：生产由业务主机 / K8s DaemonSet 部署，不在本编排内
+  fluentbit:
+    profiles: ["local-agent"]

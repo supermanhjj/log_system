@@ -1,0 +1,59 @@
+# 开发期覆盖：挂源码 + 开热更 + 映射端口到本机浏览器
+# 运行 `docker compose up` 时本文件自动叠加（无需额外 -f 参数）
+
+services:
+  web:
+    volumes:
+      # 当前为静态原型；Vue3 建成后改挂 ./frontend/dist
+      - ./prototype:/usr/share/nginx/html:ro
+    ports:
+      - "${WEB_PORT:-8080}:80"
+
+  postgres:
+    ports: ["5432:5432"]
+  opensearch:
+    ports: ["9200:9200", "9600:9600"]
+  opensearch-dashboards:
+    ports: ["5601:5601"]
+  redis:
+    ports: ["6379:6379"]
+  kafka:
+    ports: ["9092:9092"]
+  flink-jobmanager:
+    ports: ["8081:8081"]
+
+  auth-service:
+    volumes: ["./services/auth-service:/app/services/auth-service"]
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    ports: ["8001:8000"]
+  search-service:
+    volumes: ["./services/search-service:/app/services/search-service"]
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    ports: ["8002:8000"]
+  dashboard-service:
+    volumes: ["./services/dashboard-service:/app/services/dashboard-service"]
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    ports: ["8003:8000"]
+  alarm-service:
+    volumes: ["./services/alarm-service:/app/services/alarm-service"]
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    ports: ["8004:8000"]
+  ingest-service:
+    volumes: ["./services/ingest-service:/app/services/ingest-service"]
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    ports: ["8005:8000"]
+  agent-service:
+    volumes: ["./services/agent-service:/app/services/agent-service"]
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    ports: ["8006:8000"]
+  system-service:
+    volumes: ["./services/system-service:/app/services/system-service"]
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    ports: ["8007:8000"]
+
+  fluentbit:
+    volumes:
+      - ./fluentbit/fluent-bit.conf:/fluent-bit/etc/fluent-bit.conf:ro
+      - ./fluentbit/parsers.conf:/fluent-bit/config/parsers.conf:ro
+      - ./fluentbit/scripts:/fluent-bit/scripts:ro
+      # 注：不再挂载 ./fluentbit/sample 覆盖 /var/log/app，保留主 compose 的 app_logs 命名卷（与 log-generator 共享实时多租户日志）

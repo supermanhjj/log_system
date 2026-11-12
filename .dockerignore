@@ -1,0 +1,35 @@
+# ---- 版本控制 / 缓存 ----
+.git
+.gitignore
+.DS_Store
+.screenshots
+.trae-html-share-packages
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ---- Node / 前端 ----
+node_modules/
+frontend/node_modules/
+frontend/dist/
+
+# ---- 环境 / 密钥（绝不进镜像） ----
+.env
+.env.*
+!.env.example
+
+# ---- 文档 / 原型（非构建产物） ----
+docs/
+prototype/
+*.md
+
+# ---- 运行时数据 ----
+*.log
+tmp/
