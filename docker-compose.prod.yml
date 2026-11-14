@@ -45,6 +45,9 @@ services:
   system-service:
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
     volumes: []
+  ai-service:
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    volumes: []
 
   # 采集层：生产由业务主机 / K8s DaemonSet 部署，不在本编排内
   fluentbit:

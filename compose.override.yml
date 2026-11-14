@@ -4,8 +4,8 @@
 services:
   web:
     volumes:
-      # 当前为静态原型；Vue3 建成后改挂 ./frontend/dist
-      - ./prototype:/usr/share/nginx/html:ro
+      # Vue3 构建产物（npm run build → ./frontend/dist）；开发期由 web 容器托管 SPA
+      - ./frontend/dist:/usr/share/nginx/html:ro
     ports:
       - "${WEB_PORT:-8080}:80"
 
@@ -15,6 +15,8 @@ services:
     ports: ["9200:9200", "9600:9600"]
   opensearch-dashboards:
     ports: ["5601:5601"]
+    volumes:
+      - ./opensearch-dashboards.yml:/usr/share/opensearch-dashboards/config/opensearch_dashboards.yml:ro
   redis:
     ports: ["6379:6379"]
   kafka:
@@ -50,6 +52,14 @@ services:
     volumes: ["./services/system-service:/app/services/system-service"]
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     ports: ["8007:8000"]
+  ai-service:
+    volumes:
+      - "./services/ai-service:/app/services/ai-service"
+      # 宿主 CLI 入口（真身副本，见 services/ai-service/vendor/cli/codebuddy）只读映射到容器内 ~/.local/bin。
+      # 源路径位于 /Users（Docker Desktop 默认共享），无需改动系统级 File Sharing 设置，也不暴露凭据目录。
+      - "./services/ai-service/vendor/cli:/home/appuser/.local/bin:ro"
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    ports: ["8008:8000"]
 
   fluentbit:
     volumes:
@@ -57,3 +67,8 @@ services:
       - ./fluentbit/parsers.conf:/fluent-bit/config/parsers.conf:ro
       - ./fluentbit/scripts:/fluent-bit/scripts:ro
       # 注：不再挂载 ./fluentbit/sample 覆盖 /var/log/app，保留主 compose 的 app_logs 命名卷（与 log-generator 共享实时多租户日志）
+
+  # dev 期挂本地 generate.py（与后端服务同模式），免去重建镜像即可热更日志格式
+  log-generator:
+    volumes:
+      - ./tools/log-generator/generate.py:/app/generate.py:ro

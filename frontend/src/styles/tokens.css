@@ -1,0 +1,50 @@
+/* design-tokens.css —— 由 references/tokens.json 生成，勿手改（TOK-003）
+   智能一体化运维支撑平台 Design Token V3.1.0 */
+:root {
+  /* GLOBAL */
+  --color-primary: #03857E;
+  --color-success: #005E53;
+  --color-warning: #EA720F;
+  --color-danger: #E53935;
+  --color-text-1: #333333;
+  --color-text-2: #666666;
+  --color-text-3: #999999;
+  --color-link: #2178D8;
+  --color-text-4: #CCCCCC;
+  --color-bg-page: #FFFFFF;
+  --color-bg-card: #FFFFFF;
+  --color-border-1: #E7ECF2;
+  --color-border-2: #CCCCCC;
+  --color-divider: #BFBFBF;
+  /* NAV */
+  --nav-bg: #005E53;
+  --nav-title-text: #FFFFFF;
+  --nav-item-text: #FFFFFF;
+  --nav-item-bg-active: #19A5A0;
+  --nav-item-bg-hover: rgba(191,191,191,0.1);
+  /* DATA */
+  --table-head-bg: #E6FCF8;
+  --table-head-text: #258C89;
+  --table-row-bg-hover: #E8F3F1;
+  --table-border: #E7ECF2;
+  --tag-normal-bg: #BEDDDC;
+  --tag-normal-text: #258C89;
+  --tag-warning-bg: #FFDFB8;
+  --tag-warning-text: #FE9311;
+  --tag-fault-bg: #F8BABA;
+  --tag-fault-text: #E81A1A;
+  /* FORM */
+  --btn-primary-bg: #258C89;
+  /* CHART */
+  --chart-axis-text: #999999;
+  --chart-grid: #BFBFBF;
+  /* 间距 */
+  --spacing-xs: 4px;
+  --spacing-sm: 8px;
+  --spacing-md: 12px;
+  --spacing-lg: 16px;
+  --spacing-xl: 24px;
+  --radius-sm: 2px;
+  --radius-md: 4px;
+  --radius-lg: 8px;
+}

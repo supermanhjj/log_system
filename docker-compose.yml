@@ -5,12 +5,19 @@
 
 name: log_system
 
+# 统一时区：所有容器时钟对齐本机（东八区 / Asia/Shanghai）。
+# 注意：OpenSearch 写入时仍会把日期归一化为 UTC 存储，故面板显示还需在
+# opensearch-dashboards.yml 中设 dateFormat:tz 覆盖（见该文件），二者配合才能与本地时间完全一致。
+x-timezone: &tz
+  TZ: Asia/Shanghai
+
 services:
   # ===================== 数据 / 中间件层 =====================
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
+      <<: *tz
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
@@ -25,6 +32,7 @@ services:
     # 开发期安全插件已关闭（DISABLE_SECURITY_PLUGIN=true）。
     restart: unless-stopped
     environment:
+      <<: *tz
       discovery.type: single-node
       bootstrap.memory_lock: "true"
       OPENSEARCH_JAVA_OPTS: ${OPENSEARCH_JAVA_OPTS}
@@ -41,20 +49,24 @@ services:
     image: opensearchproject/opensearch-dashboards:3.9.0
     restart: unless-stopped
     environment:
+      <<: *tz
       OPENSEARCH_HOSTS: '["http://opensearch:9200"]'
-      DISABLE_SECURITY_DASHBOARDS: "true"
+      DISABLE_SECURITY_DASHBOARDS_PLUGIN: "true"
     depends_on: [opensearch]
     networks: [log_net]
 
   redis:
     image: redis:7-alpine
     restart: unless-stopped
+    environment:
+      <<: *tz
     networks: [log_net]
 
   kafka:
     image: bitnami/kafka:3.7
     restart: unless-stopped
     environment:
+      <<: *tz
       KAFKA_CFG_NODE_ID: "1"
       KAFKA_CFG_PROCESS_ROLES: "broker,controller"
       KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: "1@kafka:9093"
@@ -73,6 +85,7 @@ services:
     # 本地已拉取 arm64 原生镜像，Apple Silicon 上原生运行（无需 linux/amd64 模拟/重新拉取）
     command: jobmanager
     environment:
+      <<: *tz
       FLINK_PROPERTIES: "jobmanager.rpc.address: flink-jobmanager"
     networks: [log_net]
 
@@ -82,6 +95,7 @@ services:
     command: taskmanager
     depends_on: [flink-jobmanager]
     environment:
+      <<: *tz
       FLINK_PROPERTIES: "jobmanager.rpc.address: flink-jobmanager"
     networks: [log_net]
 
@@ -90,6 +104,8 @@ services:
   # 开发期源码 bind mount + uvicorn --reload（见 compose.override.yml）
   web:
     image: nginx:1.27-alpine
+    environment:
+      <<: *tz
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
     depends_on:
@@ -100,12 +116,15 @@ services:
       - ingest-service
       - agent-service
       - system-service
+      - ai-service
     networks: [log_net]
 
   auth-service:
     image: log_system-backend
     working_dir: /app/services/auth-service
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    environment:
+      <<: *tz
     env_file: .env
     depends_on: [postgres, redis]
     networks: [log_net]
@@ -114,6 +133,8 @@ services:
     image: log_system-backend
     working_dir: /app/services/search-service
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    environment:
+      <<: *tz
     env_file: .env
     depends_on: [opensearch, postgres, redis]
     networks: [log_net]
@@ -122,6 +143,8 @@ services:
     image: log_system-backend
     working_dir: /app/services/dashboard-service
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    environment:
+      <<: *tz
     env_file: .env
     depends_on: [opensearch, postgres]
     networks: [log_net]
@@ -130,6 +153,8 @@ services:
     image: log_system-backend
     working_dir: /app/services/alarm-service
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    environment:
+      <<: *tz
     env_file: .env
     depends_on: [postgres, opensearch, kafka]
     networks: [log_net]
@@ -138,6 +163,8 @@ services:
     image: log_system-backend
     working_dir: /app/services/ingest-service
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    environment:
+      <<: *tz
     env_file: .env
     depends_on: [postgres, kafka]
     networks: [log_net]
@@ -146,6 +173,8 @@ services:
     image: log_system-backend
     working_dir: /app/services/agent-service
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    environment:
+      <<: *tz
     env_file: .env
     depends_on: [postgres, redis]
     networks: [log_net]
@@ -154,8 +183,20 @@ services:
     image: log_system-backend
     working_dir: /app/services/system-service
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    environment:
+      <<: *tz
     env_file: .env
     depends_on: [postgres]
+    networks: [log_net]
+
+  ai-service:
+    image: log_system-backend
+    working_dir: /app/services/ai-service
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    environment:
+      <<: *tz
+    env_file: .env
+    depends_on: [postgres, ingest-service]
     networks: [log_net]
 
   # ===================== 采集层（Fluent Bit，模拟业务主机 agent） =====================
@@ -163,6 +204,8 @@ services:
   # 见 docs/tech-stack-selection.md 3.2(8) / 9.1
   fluentbit:
     image: log_system-fluentbit
+    environment:
+      <<: *tz
     depends_on: [opensearch, kafka, agent-service]
     volumes:
       # 开发期与 log-generator 共享命名卷 app_logs，tail 采集其输出的多租户日志
@@ -176,6 +219,7 @@ services:
   log-generator:
     image: log_system-log-generator
     environment:
+      <<: *tz
       TENANTS: "default,acme,gp"
       LOG_INTERVAL: "1.0"
       ERROR_RATE: "0.2"

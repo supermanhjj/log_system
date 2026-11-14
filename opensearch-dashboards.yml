@@ -1,0 +1,16 @@
+# OpenSearch Dashboards 开发期配置
+# 开发环境后端 OpenSearch 安全插件已禁用（9200 不需认证），此处同步让 Dashboards 免登录。
+# 注意：OpenSearch 3.x 已移除 `opensearch_security.disabled` 配置键，
+# Dashboards 安全禁用统一由 docker-compose.yml 的环境变量 DISABLE_SECURITY_DASHBOARDS=true 控制。
+# 本文件仅纠正镜像默认 config 里写死的 https://localhost:9200（容器内 localhost 连不上真正的 opensearch 服务）。
+server.host: '0.0.0.0'
+opensearch.hosts: ["http://opensearch:9200"]
+opensearch.ssl.verificationMode: none
+
+# 时区：强制所有时间戳按东八区(Asia/Shanghai)显示，与本地时间对齐。
+# 背景：ES date 字段写入时一律归一化为 UTC，日志行本身不带时间戳，
+# fluentbit 采集时按容器(UTC)时钟打 @timestamp；故面板默认按 UTC 显示会差 8 小时。
+# 此处显式锁定时区，避免依赖浏览器探测（默认 Browser 在部分环境下探测为 UTC）。
+uiSettings:
+  overrides:
+    "dateFormat:tz": "Asia/Shanghai"
