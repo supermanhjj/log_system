@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>智能检索 · 自然语言转 PPL — 设计稿</title>
+<!--
+  design_tag : 智能一体化运维支撑平台 / V3.1 / 2026-11-16
+  trace_id   : R-AI-0316
+  page       : 日志检索（SearchView）内含 dialog 弹窗
+  说明        : 令牌全部来自 ../../design-tokens.css（由 references/tokens.json 生成），
+               本文件与 busi-nl2ppl-modal.css 中不出现任何 hex / rgb 字面量。
+  规则覆盖    : OVL-001/002/003/005/007/010/012、BTN-001/002/003/005/006/007/009、
+               INP-001/002/005、TOK-001、COL-003/007、AI-001/002/003、QLT-007
+-->
+<link rel="stylesheet" href="../../design-tokens.css" />
+<link rel="stylesheet" href="./busi-nl2ppl-modal.css" />
+</head>
+<body class="busi-nl2ppl-page">
+
+<!-- ============ 背景页（遮罩下的真实语境，仅作衬底） ============ -->
+<div class="busi-logpage" aria-hidden="true">
+  <header class="busi-logpage__top">
+    <div class="busi-logpage__brand">
+      <img class="busi-logpage__logo" src="../../prototype/assets/logo.jpg" alt="" />
+      <span class="busi-logpage__brand-text">智能一体化运维支撑平台</span>
+    </div>
+    <div class="busi-logpage__top-right">
+      <span class="busi-logpage__tenant">国网山西 · 生产环境</span>
+      <span class="busi-logpage__avatar">运</span>
+    </div>
+  </header>
+
+  <nav class="busi-logpage__side">
+    <span class="busi-logpage__nav-item">总览</span>
+    <span class="busi-logpage__nav-item is-active">日志检索</span>
+    <span class="busi-logpage__nav-item">告警中心</span>
+    <span class="busi-logpage__nav-item">仪表盘</span>
+    <span class="busi-logpage__nav-item">数据源</span>
+    <span class="busi-logpage__nav-item">智能体</span>
+    <span class="busi-logpage__nav-item">AI 管理</span>
+    <span class="busi-logpage__nav-item">系统设置</span>
+  </nav>
+
+  <main class="busi-logpage__main">
+    <div class="busi-logpage__pagehead">
+      <div>
+        <div class="busi-logpage__crumb">运维中心 &gt; 日志检索</div>
+        <h1 class="busi-logpage__title">日志检索</h1>
+      </div>
+      <div class="busi-logpage__head-actions">
+        <span class="busi-logpage__ghost-btn">时间范围</span>
+        <span class="busi-logpage__ghost-btn">导出</span>
+      </div>
+    </div>
+
+    <div class="busi-logpage__card">
+      <div class="busi-logpage__search">
+        <span class="busi-logpage__search-prefix">检索</span>
+        <span class="busi-logpage__search-text">where service = 'order-service' and level = 'ERROR'</span>
+      </div>
+      <table class="busi-logpage__table">
+        <thead>
+          <tr>
+            <th style="width:112px">时间</th>
+            <th style="width:88px">级别</th>
+            <th style="width:160px">服务</th>
+            <th style="width:120px">主机</th>
+            <th>日志内容</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>09:38:12.418</td>
+            <td><span class="busi-logpage__tag busi-logpage__tag--fault">ERROR</span></td>
+            <td>order-service</td>
+            <td>node-07</td>
+            <td>调用支付网关超时：timeout 3000ms exceeded</td>
+          </tr>
+          <tr>
+            <td>09:37:55.902</td>
+            <td><span class="busi-logpage__tag busi-logpage__tag--warn">WARN</span></td>
+            <td>order-service</td>
+            <td>node-03</td>
+            <td>库存回滚重试 2 次后成功</td>
+          </tr>
+          <tr>
+            <td>09:36:41.077</td>
+            <td><span class="busi-logpage__tag busi-logpage__tag--fault">ERROR</span></td>
+            <td>order-service</td>
+            <td>node-07</td>
+            <td>数据库连接池耗尽：active=50, idle=0</td>
+          </tr>
+          <tr>
+            <td>09:35:20.613</td>
+            <td><span class="busi-logpage__tag busi-logpage__tag--fault">ERROR</span></td>
+            <td>order-service</td>
+            <td>node-11</td>
+            <td>NullPointerException at OrderHandler.java:128</td>
+          </tr>
+          <tr>
+            <td>09:34:02.355</td>
+            <td><span class="busi-logpage__tag busi-logpage__tag--warn">WARN</span></td>
+            <td>gateway</td>
+            <td>node-02</td>
+            <td>上游响应耗时 4210ms 超过阈值 3000ms</td>
+          </tr>
+          <tr>
+            <td>09:32:48.190</td>
+            <td><span class="busi-logpage__tag busi-logpage__tag--fault">ERROR</span></td>
+            <td>order-service</td>
+            <td>node-11</td>
+            <td>消息投递失败：队列 order.dlq 已满</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </main>
+</div>
+
+<!-- ============ 遮罩 + 弹窗 ============ -->
+<div class="busi-nl2ppl-mask">
+  <div class="busi-nl2ppl" role="dialog" aria-modal="true" aria-labelledby="nl2ppl-title" data-cid="C-AI-0316">
+
+    <header class="busi-nl2ppl__header">
+      <h2 class="busi-nl2ppl__title" id="nl2ppl-title">智能检索 · 自然语言转 PPL</h2>
+      <button type="button" class="busi-nl2ppl__close" aria-label="关闭弹窗" data-cid="C-AI-0316-CLOSE">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path d="M3 3L13 13M13 3L3 13" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+        </svg>
+      </button>
+    </header>
+
+    <div class="busi-nl2ppl__body">
+
+      <!-- 左：自然语言输入 -->
+      <section class="busi-nl2ppl__pane" data-cid="C-AI-0316-NL">
+        <div class="busi-nl2ppl__pane-head">
+          <span class="busi-nl2ppl__label">自然语言</span>
+          <span class="busi-nl2ppl__label-hint">最多 500 字</span>
+        </div>
+        <div class="busi-nl2ppl__field is-focus">
+          <textarea class="busi-nl2ppl__input" rows="6" maxlength="500"
+                    placeholder="用中文描述要查什么，例如：近 1 小时订单服务报错最多的主机，按条数取前 5">近 1 小时订单服务报错最多的是哪几台主机？按报错条数从高到低取前 5 台。</textarea>
+        </div>
+        <div class="busi-nl2ppl__count">38 / 500</div>
+        <div class="busi-nl2ppl__examples">
+          <span class="busi-nl2ppl__examples-label">示例</span>
+          <button type="button" class="busi-nl2ppl__chip">近 1 小时 5xx 最多的服务</button>
+          <button type="button" class="busi-nl2ppl__chip">超时超 3 秒的请求 TOP 10</button>
+        </div>
+      </section>
+
+      <!-- 中：转换动作 -->
+      <div class="busi-nl2ppl__gutter">
+        <svg class="busi-nl2ppl__arrow" width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M4 12h13M13 7.5L17.5 12 13 16.5" stroke="currentColor" stroke-width="1.4"
+                stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+        <button type="button" class="busi-nl2ppl__btn busi-nl2ppl__btn--primary busi-nl2ppl__btn--gen"
+                data-cid="C-AI-0316-GEN">生成</button>
+      </div>
+
+      <!-- 右：PPL 结果 -->
+      <section class="busi-nl2ppl__pane" data-cid="C-AI-0316-PPL">
+        <div class="busi-nl2ppl__pane-head">
+          <span class="busi-nl2ppl__label">PPL 检索语句</span>
+          <span class="busi-nl2ppl__label-hint">只读 · 由模型生成</span>
+        </div>
+        <div class="busi-nl2ppl__code" role="textbox" aria-readonly="true" aria-label="PPL 检索语句">
+<pre class="busi-nl2ppl__code-pre"><span class="busi-nl2ppl__kw">where</span> service = <span class="busi-nl2ppl__str">'order-service'</span>
+  <span class="busi-nl2ppl__kw">and</span> level = <span class="busi-nl2ppl__str">'ERROR'</span>
+<span class="busi-nl2ppl__pipe">|</span> <span class="busi-nl2ppl__kw">stats</span> count() <span class="busi-nl2ppl__kw">as</span> cnt <span class="busi-nl2ppl__kw">by</span> hostname
+<span class="busi-nl2ppl__pipe">|</span> <span class="busi-nl2ppl__kw">fields</span> hostname, cnt
+<span class="busi-nl2ppl__pipe">|</span> <span class="busi-nl2ppl__kw">sort</span> - cnt
+<span class="busi-nl2ppl__pipe">|</span> <span class="busi-nl2ppl__kw">head</span> <span class="busi-nl2ppl__num">5</span></pre>
+        </div>
+        <div class="busi-nl2ppl__meta">Qwen2.5-7B-Instruct · 1.24 s · 注入 6 条规则</div>
+        <div class="busi-nl2ppl__valid">
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+            <path d="M2 6.2L4.6 8.8 10 3.4" stroke="currentColor" stroke-width="1.6"
+                  stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+          <span>语法校验通过 · 4 条管道命令 · 时间范围「近 1 小时」已换算</span>
+        </div>
+      </section>
+    </div>
+
+    <footer class="busi-nl2ppl__footer">
+      <span class="busi-nl2ppl__footer-hint">生成结果仅作辅助，执行前请核对字段与条件</span>
+      <div class="busi-nl2ppl__actions">
+        <button type="button" class="busi-nl2ppl__btn busi-nl2ppl__btn--default">取消</button>
+        <button type="button" class="busi-nl2ppl__btn busi-nl2ppl__btn--default" data-cid="C-AI-0316-COPY">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+            <rect x="4.8" y="4.8" width="7.2" height="7.2" rx="1.2" stroke="currentColor" stroke-width="1.2" />
+            <path d="M9.2 2.4H3.6c-.66 0-1.2.54-1.2 1.2v5.6" stroke="currentColor" stroke-width="1.2"
+                  stroke-linecap="round" />
+          </svg>
+          复制 PPL
+        </button>
+        <button type="button" class="busi-nl2ppl__btn busi-nl2ppl__btn--primary busi-nl2ppl__btn--run"
+                data-cid="C-AI-0316-RUN">填入检索框执行</button>
+      </div>
+    </footer>
+  </div>
+</div>
+
+</body>
+</html>

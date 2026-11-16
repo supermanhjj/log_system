@@ -8,11 +8,12 @@
 3. AI 能力注册表：为智能检索 / 智能解读 / 辅助决策 / 深度分析预留配置扩展位。
 
 边界（务必如实理解）：
-- 本服务当前只做「配置 + 探测」，**不提供 NL→PPL 生成端点**，生成能力后续接入时复用此处的 provider 解析。
+- 2026-11-14 起提供 `POST /nl2ppl` 运行时生成端点：规则库注入 prompt → 已配置模型 → 语句规范化闸门；
+  仅生成 / 校验语句，**不执行检索、不访问日志原文**；检索页 AI 面板仍未接入。
 - 不编造指标：连通性测试真实发 HTTP / 检查容器内可执行文件，失败如实返回原因。
 - 种子语法规则是「可编辑的默认模板」，不是已验证的全量 PPL 语法；字段别名可用 /grammar/sync-fields 从真实 mapping 覆盖。
-- CLI 探测检查容器内路径 + 可选固定 `<path> --version`；开发编排把宿主机 CLI 入口只读映射进容器，
-  容器内无 Node 运行时，CLI 会话暂不可在容器内执行（探测结果会如实反映，不伪造通过）。
+- CLI 探测检查容器内路径 + 可选固定 `<path> --version`；容器内无 Node 运行时，生成调用改走
+  宿主机桥接（`AI_CLI_BRIDGE_URL` → `tools/codebuddy_bridge.py`），需宿主机先完成 `codebuddy /login`。
 - CLI 可用模型清单来自宿主机 codebuddy 2.164.0 `--help --model`，为一次性采集的真实清单，允许自定义输入。
 """
 import json
@@ -30,6 +31,8 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict
+
+from . import nl2ppl
 
 PG_DSN = os.getenv(
     "AI_PG_DSN",
@@ -61,13 +64,11 @@ KINDS = [
         "key": "local",
         "label": "本地自定义",
         "desc": "Ollama、oMLX 等本机 / 内网自建模型服务",
-        "hint": "容器内访问宿主机需可达地址（Docker Desktop 可用 host.docker.internal，Linux 需配 extra_hosts 或改用容器地址）。",
     },
     {
         "key": "cli",
         "label": "WorkBuddy CLI",
         "desc": "调用本地 WorkBuddy / CodeBuddy 命令行（如 ~/.local/bin/codebuddy）",
-        "hint": "路径按容器内视角解析；请选择调用时使用的模型。容器内暂无 Node 运行时，CLI 会话不可执行，测试仅检查路径。",
     },
 ]
 KIND_KEYS = {k["key"] for k in KINDS}
@@ -120,7 +121,7 @@ CATEGORY_KEYS = {c["key"] for c in GRAMMAR_CATEGORIES}
 
 # 默认模板：与当前平台真实字段（fluentbit/parsers.conf）对齐，全部可编辑/可删除。
 DEFAULT_GRAMMAR = [
-    ("command", "source", "source=logs-<tenant>", "默认模板；索引由后端按租户强制重写"),
+    ("command", "source", "source=<index>", "默认模板；生成的语句默认不带 source= 段，索引由检索网关按租户补齐"),
     ("command", "where", "where <条件>", "默认模板；条件过滤，仅只读"),
     ("command", "stats", "stats count() by <字段>", "默认模板；聚合统计"),
     ("command", "fields", "fields <字段列表>", "默认模板；输出列裁剪"),
@@ -138,8 +139,8 @@ DEFAULT_GRAMMAR = [
     ("term_mapping", "超时", "message 关键字 timeout", "默认模板；PPL 文本匹配写法需实测后固化"),
     ("time_rule", "最近10分钟", "由后端换算为绝对时间范围，不由模型计算", "确定性规则"),
     ("time_rule", "今天", "东八区自然日 00:00:00 起", "确定性规则"),
-    ("example", "查询错误日志", "source=logs-default | where level = 'ERROR' | head 100", "默认模板；已验证的 PPL 写法"),
-    ("example", "按级别统计", "source=logs-default | stats count() by level", "默认模板；已验证的 PPL 写法"),
+    ("example", "查询错误日志", "where level = 'ERROR' | head 100", "默认模板；不含索引前缀，索引由检索网关按租户补齐"),
+    ("example", "按级别统计", "stats count() by level | head 100", "默认模板；不含索引前缀，索引由检索网关按租户补齐"),
     ("deny", "写操作关键字", "drop / delete / update / insert / create / alter / grant", "安全闸门"),
     ("deny", "跨索引 source", "仅允许 logs-<tenant> / logs-*", "安全闸门"),
     ("deny", "无 head 全表扫描", "生成语句必须带结果上限", "安全闸门"),
@@ -241,6 +242,8 @@ def init_db() -> None:
                    ON CONFLICT (cap_key) DO NOTHING""",
                 (key, name, desc, order),
             )
+        # NL→PPL 运行时已落地：只更新状态，不改动用户已保存的 enabled 开关
+        pg_exec("UPDATE ai_capabilities SET status='available' WHERE cap_key='nl2ppl' AND status<>'available'")
         for category, key, value, note in DEFAULT_GRAMMAR:
             pg_exec(
                 """INSERT INTO ai_grammar_rules (category, rule_key, rule_value, note)
@@ -358,6 +361,14 @@ class PreviewIn(BaseModel):
     question: str
 
 
+class Nl2PplIn(BaseModel):
+    question: str
+    provider_id: Optional[int] = None
+    tenant: str = "default"
+    model_name: str = ""          # 预览时临时覆盖模型 ID，不写回配置库
+    include_prompt: bool = False
+
+
 class CapabilityIn(BaseModel):
     enabled: Optional[bool] = None
     config: Optional[Dict[str, Any]] = None
@@ -377,8 +388,8 @@ def root():
     return {
         "service": "ai-service",
         "version": "0.1.0",
-        "scope": "模型接入配置 / PPL 语法规则库 / AI 能力注册表（不含 NL→PPL 生成端点）",
-        "endpoints": ["/meta", "/providers", "/grammar", "/capabilities"],
+        "scope": "模型接入配置 / PPL 语法规则库 / AI 能力注册表 / NL→PPL 生成（仅生成与校验，不执行检索）",
+        "endpoints": ["/meta", "/providers", "/grammar", "/capabilities", "/nl2ppl"],
     }
 
 
@@ -744,8 +755,42 @@ def preview_grammar(req: PreviewIn):
         "matched": len(hits),
         "hits": [{"category": r["category"], "ruleKey": r["rule_key"], "ruleValue": r["rule_value"]} for r in hits],
         "promptContext": "\n".join(lines),
-        "note": "仅做规则键字面命中预览，不调用模型；NL→PPL 生成端点待后续接入。",
+        "note": "仅做规则键字面命中预览，不调用模型；真实转换请点「转换为 PPL」。",
     }
+
+
+@app.post("/nl2ppl")
+def nl_to_ppl(req: Nl2PplIn):
+    """自然语言 → PPL：规则库注入 + 已配置模型 + 后端规范化闸门；失败按 stage 如实返回。"""
+    q = (req.question or "").strip()
+    if not q:
+        raise HTTPException(status_code=400, detail="question 不能为空")
+    if req.provider_id:
+        rows = pg_query("SELECT * FROM ai_model_providers WHERE id=%s", (req.provider_id,))
+    else:
+        rows = pg_query(
+            "SELECT * FROM ai_model_providers WHERE enabled=TRUE ORDER BY is_default DESC, id LIMIT 1"
+        )
+    if not rows:
+        return {
+            "ok": False, "stage": "config", "question": q,
+            "error": "指定的模型接入不存在" if req.provider_id else "没有已启用的模型接入配置",
+            "detail": "", "hint": "到「模型接入」新增或启用一个接入", "elapsedMs": 0,
+        }
+    try:
+        rules = pg_query(
+            """SELECT category, rule_key, rule_value, enabled FROM ai_grammar_rules
+               WHERE enabled=TRUE ORDER BY priority DESC, id"""
+        )
+    except Exception as e:  # noqa: BLE001
+        return {
+            "ok": False, "stage": "grammar", "question": q,
+            "error": f"读取 PPL 语法规则库失败：{e}", "detail": "", "hint": "", "elapsedMs": 0,
+        }
+    return nl2ppl.generate(
+        q, rows[0], rules, tenant=(req.tenant or "default").strip(),
+        model_name=req.model_name, include_prompt=req.include_prompt,
+    )
 
 
 @app.put("/grammar/{rid:int}")
@@ -781,7 +826,7 @@ def list_capabilities():
         if i.get("updated_at") is not None:
             i["updated_at"] = str(i["updated_at"])
     return {"items": items, "total": len(items),
-            "note": "status=planned 仅登记配置，运行时能力（含 NL→PPL 生成）待接入。"}
+            "note": "status=available 表示运行时已接入；nl2ppl（自然语言转 PPL）已可用，其余能力待接入。"}
 
 
 @app.put("/capabilities/{key}")

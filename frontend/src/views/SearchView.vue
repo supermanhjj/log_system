@@ -3,9 +3,10 @@ import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
 import * as echarts from 'echarts'
 import { ElMessage } from 'element-plus'
-import { Search, RefreshLeft, Download, DocumentCopy } from '@element-plus/icons-vue'
+import { Search, RefreshLeft, Download, DocumentCopy, MagicStick } from '@element-plus/icons-vue'
 import { useAppStore } from '../stores/app'
 import { searchQuery, searchHistogram, searchPql, searchContext } from '../api/search'
+import { nl2ppl } from '../api/ai'
 
 const app = useAppStore()
 const route = useRoute()
@@ -220,7 +221,12 @@ async function runPql() {
   pqlLoading.value = true
   pqlResult.value = null
   try {
-    const res = await searchPql({ pql: splText.value, tenant: app.tenant })
+    // PPL 与关键字检索共用页面时间范围：否则 stats 会扫全量，统计结果与直方图对不上
+    const res = await searchPql({
+      pql: splText.value,
+      tenant: app.tenant,
+      timeRange: buildTimeRange(),
+    })
     pqlResult.value = res
     pqlCols.value = (res.schema || []).map((s) => s.name)
     pqlRows.value = (res.datarows || []).map((r) => {
@@ -253,6 +259,76 @@ function resetAll() {
   pqlResult.value = null
   page.value = 1
   doSearch()
+}
+
+// ---- 智能检索弹窗：自然语言 → PPL ----
+const aiDialogVisible = ref(false)
+const nlQuestion = ref('')
+const nlPpl = ref('')
+const nlLoading = ref(false)
+const nlResult = ref(null)
+const nlError = ref(null)
+
+const AI_MAX_LEN = 500
+const AI_EXAMPLES = ['查询最近 10 分钟的错误日志', '按级别统计最近 1 小时']
+// 显示层按管道符拆行（贴近原型的多行排版）；复制与执行仍用原始 nlPpl
+const aiPplParts = computed(() => (nlPpl.value ? nlPpl.value.split(/\s+\|\s+/) : []))
+const aiPplDisplay = computed(() => aiPplParts.value.join('\n| '))
+const aiPipeCount = computed(() => aiPplParts.value.length)
+
+function openAiDialog() {
+  aiDialogVisible.value = true
+}
+
+function closeAiDialog() {
+  aiDialogVisible.value = false
+}
+
+async function generateNl() {
+  const q = nlQuestion.value.trim()
+  if (!q) return ElMessage.warning('请输入要检索的自然语言')
+  nlLoading.value = true
+  nlError.value = null
+  nlResult.value = null
+  nlPpl.value = ''
+  try {
+    // 不指定 provider_id：后端自动取默认/首个已启用模型，检索页无需再配一遍
+    const r = await nl2ppl({ question: q, tenant: app.tenant || 'default' })
+    nlResult.value = r
+    if (!r.ok) {
+      nlError.value = {
+        title: `生成失败（${r.stage}）：${r.error}`,
+        detail: [r.detail, r.hint].filter(Boolean).join(' · '),
+      }
+      return
+    }
+    nlPpl.value = r.ppl
+  } catch (e) {
+    nlError.value = { title: '转换失败', detail: e.response?.data?.detail || e.message }
+  } finally {
+    nlLoading.value = false
+  }
+}
+
+async function copyNlPpl() {
+  if (!nlPpl.value) return
+  try { await navigator.clipboard.writeText(nlPpl.value); ElMessage.success('PPL 已复制') }
+  catch { ElMessage.warning('复制失败，请手动选中语句') }
+}
+
+function fillAndRun() {
+  if (!nlPpl.value) return
+  splText.value = nlPpl.value
+  const tr = nlResult.value?.timeRange
+  if (tr) {
+    customStart.value = new Date(tr.from)
+    customEnd.value = new Date(tr.to)
+    quickKey.value = 'custom'
+  }
+  zoomRange.value = null
+  page.value = 1
+  aiDialogVisible.value = false
+  nextTick(() => doSearch())
 }
 
 function onChartClick(params) {
@@ -636,6 +712,7 @@ watch(
           <template #prepend><span class="mono">检索</span></template>
         </el-input>
         <el-button type="primary" :icon="Search" :loading="loading || pqlLoading" @click="doSearch">查询</el-button>
+        <el-button type="primary" plain :icon="MagicStick" @click="openAiDialog">智能检索</el-button>
         <el-button :icon="RefreshLeft" @click="resetAll">重置</el-button>
       </div>
       <div class="chips-row">
@@ -851,6 +928,73 @@ watch(
         <div v-else class="more-edge">{{ moreLoading ? '加载中…' : '继续向下滚动，加载更晚日志' }}</div>
       </div>
     </el-dialog>
+
+    <!-- 智能检索：自然语言 → PPL -->
+    <el-dialog v-model="aiDialogVisible" title="智能检索 · ChatPPL" width="920px"
+      align-center :close-on-click-modal="false" class="ai-dialog">
+      <div class="ai-body">
+        <div class="ai-pane">
+          <div class="ai-pane-head">
+            <span class="ai-pane-title">自然语言</span>
+            <span class="ai-pane-hint">最多 {{ AI_MAX_LEN }} 字</span>
+          </div>
+          <el-input v-model="nlQuestion" type="textarea" resize="none" class="ai-textarea"
+            :maxlength="AI_MAX_LEN" show-word-limit placeholder="请输入要检索的自然语言"
+            @keydown.ctrl.enter="generateNl" />
+          <div class="ai-examples">
+            <span class="ai-examples-label">示例</span>
+            <button v-for="ex in AI_EXAMPLES" :key="ex" type="button" class="ai-example"
+              @click="nlQuestion = ex">{{ ex }}</button>
+          </div>
+        </div>
+
+        <div class="ai-mid">
+          <span class="ai-arrow">→</span>
+          <el-button type="primary" :loading="nlLoading" @click="generateNl">生成</el-button>
+        </div>
+
+        <div class="ai-pane">
+          <div class="ai-pane-head">
+            <span class="ai-pane-title">PPL 检索语句</span>
+            <span class="ai-pane-hint">只读 · 由模型生成</span>
+          </div>
+          <div class="ai-ppl-box">
+            <pre v-if="nlPpl">{{ aiPplDisplay }}</pre>
+            <span v-else class="ai-placeholder">转换后的 PPL 语法将显示在这里</span>
+          </div>
+          <div v-if="nlResult?.ok" class="ai-meta">
+            {{ nlResult.model?.name }} · {{ nlResult.model?.modelName }} ·
+            {{ (nlResult.elapsedMs / 1000).toFixed(2) }} s · 注入 {{ nlResult.injectedRuleCount }} 条规则
+          </div>
+        </div>
+      </div>
+
+      <div v-if="nlError" class="ai-alert">
+        <el-alert type="error" :closable="false" show-icon :title="nlError.title"
+          :description="nlError.detail" />
+      </div>
+      <div v-else-if="nlResult?.ok" class="ai-verify">
+        <div class="ai-verify-ok">
+          <span class="ai-check">✓</span>语法校验通过 · {{ aiPipeCount }} 段管道命令<span
+            v-if="nlResult.timeRange"> · 时间范围「{{ nlResult.timeRange.label }}」已换算，执行时生效</span>
+        </div>
+        <div v-for="w in (nlResult.warnings || [])" :key="w" class="ai-warn">⚠ {{ w }}</div>
+      </div>
+
+      <template #footer>
+        <div class="ai-footer">
+          <span class="ai-footer-note">生成结果仅作辅助，执行前请核对字段与条件</span>
+          <div class="ai-footer-btns">
+            <button type="button" class="ai-btn" @click="closeAiDialog">取消</button>
+            <button type="button" class="ai-btn" :disabled="!nlPpl" @click="copyNlPpl">
+              <DocumentCopy />复制 PPL
+            </button>
+            <button type="button" class="ai-btn ai-btn-primary" :disabled="!nlPpl"
+              @click="fillAndRun">填入检索框执行</button>
+          </div>
+        </div>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -926,4 +1070,46 @@ watch(
 .batch-actions { display: flex; gap: 4px; }
 .pager { display: flex; justify-content: space-between; align-items: center; margin-top: 12px; }
 .total { font-size: 13px; color: var(--color-text-3); }
+
+/* 智能检索弹窗：左自然语言 / 中生成 / 右 PPL */
+.ai-body { display: grid; grid-template-columns: minmax(0, 1fr) 84px minmax(0, 1fr); gap: 16px; align-items: start; }
+.ai-pane { min-width: 0; }
+.ai-pane-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.ai-pane-title { font-size: 13px; font-weight: 600; color: var(--color-text-1); }
+.ai-pane-hint { font-size: 11px; color: var(--color-text-3); }
+.ai-textarea :deep(.el-textarea__inner) { height: 240px; padding: 10px 12px 22px; font-size: 13px; line-height: 1.8; border-radius: 4px; }
+.ai-textarea :deep(.el-input__count) { right: 10px; bottom: 6px; font-size: 11px; color: var(--color-text-3); background: transparent; }
+.ai-examples { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.ai-examples-label { font-size: 12px; color: var(--color-text-3); }
+.ai-example { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 3px 10px; border: 1px solid var(--color-border-1); border-radius: 4px; background: #fff; font-size: 12px; color: var(--color-text-2); cursor: pointer; }
+.ai-example:hover { border-color: var(--color-primary); color: var(--color-primary); }
+.ai-mid { display: flex; flex-direction: column; align-items: center; gap: 8px; padding-top: 100px; }
+.ai-arrow { font-size: 14px; color: var(--color-text-3); }
+.ai-ppl-box { box-sizing: border-box; height: 240px; overflow: auto; padding: 10px 12px; border: 1px solid #e2ece8; border-radius: 4px; background: #f6fbf9; }
+.ai-ppl-box pre { margin: 0; font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace; font-size: 12.5px; line-height: 1.9; color: #23423d; white-space: pre-wrap; word-break: break-word; }
+.ai-placeholder { font-size: 13px; color: var(--color-text-3); }
+.ai-meta { margin-top: 8px; font-size: 12px; color: var(--color-text-3); }
+.ai-alert { margin-top: 12px; }
+.ai-verify { margin-top: 12px; font-size: 12px; line-height: 1.7; }
+.ai-verify-ok { color: #0f8a5f; }
+.ai-check { margin-right: 6px; font-weight: 600; }
+.ai-warn { margin-top: 2px; color: #b26a00; }
+
+/* footer：左说明 + 右按钮组 */
+.ai-dialog :deep(.el-dialog__footer) { padding: 12px 20px; border-top: 1px solid var(--color-border-1); }
+.ai-footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.ai-footer-note { font-size: 12px; color: var(--color-text-3); }
+.ai-footer-btns { display: flex; align-items: center; gap: 8px; }
+.ai-btn { display: inline-flex; align-items: center; gap: 4px; height: 32px; padding: 0 14px; border: 1px solid var(--color-border-1); border-radius: 4px; background: #fff; font-size: 13px; color: var(--color-text-2); cursor: pointer; }
+.ai-btn svg { width: 14px; height: 14px; }
+.ai-btn:hover:not(:disabled) { border-color: var(--color-primary); color: var(--color-primary); }
+.ai-btn:disabled { background: #fafbfb; color: #b9c4c2; cursor: not-allowed; }
+.ai-btn-primary { border-color: var(--color-primary); background: var(--color-primary); color: #fff; }
+.ai-btn-primary:hover:not(:disabled) { border-color: #026e68; background: #026e68; color: #fff; }
+.ai-btn-primary:disabled { border-color: #cfd8d7; background: #cfd8d7; color: #f4f7f7; }
+</style>
+
+<style>
+/* footer 属 Element Plus 内部节点，用全局选择器限定在本弹窗内覆盖内边距与分隔线 */
+.ai-dialog .el-dialog__footer { padding: 12px 20px; border-top: 1px solid var(--color-border-1); }
 </style>

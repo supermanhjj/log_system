@@ -1,0 +1,721 @@
+/* busi-nl2ppl-modal.css
+   design_tag: 智能一体化运维支撑平台 V3.1 / 2026-11-16
+   令牌来源: ../../design-tokens.css（由 references/tokens.json 生成，勿手改）
+   本文件不出现任何 hex / rgb 字面量（TOK-001）；间距仅 4/8/12/16/24，字号仅 12/14/16/18/20
+   类名一律 .busi-* 前缀 + BEM（AI-001 / AI-002）
+*/
+
+/* ============ 基底 ============ */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body.busi-nl2ppl-page {
+  margin: 0;
+  height: 100vh;
+  overflow: hidden;
+  background: var(--color-bg-page);
+  color: var(--color-text-1);
+  font-family: Arial, "Microsoft YaHei", "PingFang SC", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ============ 背景页（遮罩下衬底） ============ */
+.busi-logpage {
+  height: 100vh;
+  display: grid;
+  grid-template-columns: 224px minmax(0, 1fr);
+  grid-template-rows: 64px minmax(0, 1fr);
+  grid-template-areas:
+    "top top"
+    "side main";
+}
+
+.busi-logpage__top {
+  grid-area: top;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 var(--spacing-xl);
+  background: var(--color-bg-card);
+  border-bottom: 1px solid var(--color-border-1);
+}
+
+.busi-logpage__brand {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
+}
+
+.busi-logpage__logo {
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius-sm);
+  object-fit: contain;
+}
+
+.busi-logpage__brand-text {
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  color: var(--color-text-1);
+}
+
+.busi-logpage__top-right {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-lg);
+}
+
+.busi-logpage__tenant {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-3);
+}
+
+.busi-logpage__avatar {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--color-primary);
+  color: var(--color-bg-card);
+  font-size: var(--font-size-xs);
+}
+
+.busi-logpage__side {
+  grid-area: side;
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+  padding: var(--spacing-md) var(--spacing-sm);
+  background: var(--nav-bg);
+}
+
+.busi-logpage__nav-item {
+  display: flex;
+  align-items: center;
+  height: 36px;
+  padding: 0 var(--spacing-lg);
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-sm);
+  color: var(--nav-item-text);
+}
+
+.busi-logpage__nav-item.is-active {
+  background: var(--nav-item-bg-active);
+  color: var(--nav-item-text-active);
+  font-weight: 600;
+}
+
+.busi-logpage__main {
+  grid-area: main;
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-md);
+  padding: var(--spacing-xl);
+  overflow: hidden;
+}
+
+.busi-logpage__pagehead {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  padding: var(--spacing-md) var(--spacing-lg);
+  background: var(--color-bg-card);
+  border: 1px solid var(--color-border-1);
+  border-radius: var(--radius-md);
+}
+
+.busi-logpage__crumb {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-3);
+}
+
+.busi-logpage__title {
+  margin: var(--spacing-xs) 0 0;
+  font-size: var(--font-size-lg);
+  font-weight: 600;
+  color: var(--color-text-1);
+}
+
+.busi-logpage__head-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+}
+
+.busi-logpage__ghost-btn {
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 var(--spacing-md);
+  border: 1px solid var(--btn-default-border);
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-xs);
+  color: var(--btn-default-text);
+}
+
+.busi-logpage__card {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-md);
+  padding: var(--spacing-lg);
+  background: var(--color-bg-card);
+  border: 1px solid var(--color-border-1);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.busi-logpage__search {
+  display: flex;
+  align-items: stretch;
+  height: 36px;
+  border: 1px solid var(--input-border);
+  border-radius: var(--radius-md);
+  background: var(--input-bg);
+  overflow: hidden;
+}
+
+.busi-logpage__search-prefix {
+  display: flex;
+  align-items: center;
+  padding: 0 var(--spacing-md);
+  background: var(--table-row-bg-stripe);
+  border-right: 1px solid var(--input-border);
+  font-size: var(--font-size-xs);
+  color: var(--color-text-2);
+}
+
+.busi-logpage__search-text {
+  display: flex;
+  align-items: center;
+  padding: 0 var(--spacing-md);
+  font-size: var(--font-size-xs);
+  color: var(--color-text-2);
+  font-family: "SFMono-Regular", Consolas, Menlo, monospace;
+}
+
+.busi-logpage__table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.busi-logpage__table th {
+  height: 44px;
+  padding: 0 var(--spacing-md);
+  background: var(--table-head-bg);
+  color: var(--table-head-text);
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  text-align: left;
+  border-bottom: 1px solid var(--table-border);
+}
+
+.busi-logpage__table td {
+  height: 40px;
+  padding: 0 var(--spacing-md);
+  font-size: var(--font-size-xs);
+  color: var(--color-text-2);
+  border-bottom: 1px solid var(--table-border);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.busi-logpage__tag {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  height: 22px;
+  padding: 0 var(--spacing-sm);
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-xs);
+}
+
+.busi-logpage__tag::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.busi-logpage__tag--fault {
+  background: var(--tag-fault-bg);
+  color: var(--tag-fault-text);
+}
+
+.busi-logpage__tag--warn {
+  background: var(--tag-warning-bg);
+  color: var(--tag-warning-text);
+}
+
+/* ============ 遮罩 ============ */
+.busi-nl2ppl-mask {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--modal-mask);
+  z-index: var(--z-mask);
+}
+
+/* ============ 弹窗容器（OVL-001/002/003/012） ============ */
+.busi-nl2ppl {
+  position: relative;
+  width: 960px;
+  height: 520px;
+  display: flex;
+  flex-direction: column;
+  background: var(--modal-bg);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-3);
+  z-index: var(--z-modal);
+  overflow: hidden;
+}
+
+/* 入场动效（OVL-006：scale .95→1 + opacity，200ms）。静态出图为避免捕获首帧，
+   默认不挂载，真实交互时由脚本加 .is-animated 触发。 */
+.busi-nl2ppl.is-animated {
+  animation: busi-nl2ppl-in var(--duration-normal) cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+@keyframes busi-nl2ppl-in {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* ============ Header 56（OVL-010） ============ */
+.busi-nl2ppl__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 56px;
+  padding: 0 var(--spacing-xl);
+  border-bottom: 1px solid var(--color-border-1);
+  flex: none;
+}
+
+.busi-nl2ppl__title {
+  margin: 0;
+  font-size: var(--font-size-md);
+  font-weight: 600;
+  color: var(--modal-title-text);
+}
+
+.busi-nl2ppl__close {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-3);
+  cursor: pointer;
+  transition: background var(--duration-normal) cubic-bezier(0.4, 0, 0.2, 1),
+    color var(--duration-normal) cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.busi-nl2ppl__close:hover {
+  background: var(--table-row-bg-hover);
+  color: var(--btn-default-border-hover);
+}
+
+.busi-nl2ppl__close:active {
+  background: var(--color-bg-selected);
+  color: var(--color-bg-card);
+}
+
+.busi-nl2ppl__close:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--focus-ring-inner), 0 0 0 4px var(--focus-ring-outer);
+}
+
+/* ============ Body padding 24（OVL-010） ============ */
+.busi-nl2ppl__body {
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 96px minmax(0, 1fr);
+  gap: var(--spacing-lg);
+  padding: var(--spacing-xl);
+  min-height: 0;
+}
+
+.busi-nl2ppl__pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.busi-nl2ppl__pane-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 20px;
+  margin-bottom: var(--spacing-sm);
+  flex: none;
+}
+
+.busi-nl2ppl__label {
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  color: var(--color-text-1);
+}
+
+.busi-nl2ppl__label-hint {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-3);
+}
+
+/* ---------- 输入域（INP-001/002/003/004/005） ---------- */
+.busi-nl2ppl__field {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  background: var(--input-bg);
+  border: 1px solid var(--input-border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  transition: border-color var(--duration-normal) cubic-bezier(0.4, 0, 0.2, 1),
+    box-shadow var(--duration-normal) cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.busi-nl2ppl__field:hover {
+  border-color: var(--input-border-hover);
+}
+
+.busi-nl2ppl__field.is-focus {
+  border-color: var(--input-border-focus);
+  box-shadow: 0 0 0 2px var(--focus-ring-inner);
+}
+
+.busi-nl2ppl__field.is-error {
+  border-color: var(--color-danger);
+  box-shadow: 0 0 0 2px var(--tag-fault-bg);
+}
+
+.busi-nl2ppl__field.is-disabled {
+  background: var(--input-bg-disabled);
+  cursor: not-allowed;
+}
+
+.busi-nl2ppl__input {
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+  padding: var(--spacing-md);
+  border: 0;
+  outline: none;
+  resize: none;
+  background: transparent;
+  font-family: inherit;
+  font-size: var(--font-size-sm);
+  line-height: 1.7;
+  color: var(--input-text);
+}
+
+.busi-nl2ppl__input::placeholder {
+  color: var(--input-placeholder);
+}
+
+.busi-nl2ppl__count {
+  height: 18px;
+  margin-top: var(--spacing-sm);
+  text-align: right;
+  font-size: var(--font-size-xs);
+  color: var(--color-text-3);
+  flex: none;
+}
+
+.busi-nl2ppl__examples {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  height: 24px;
+  margin-top: var(--spacing-lg);
+  flex: none;
+  overflow: hidden;
+}
+
+.busi-nl2ppl__examples-label {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-3);
+  flex: none;
+}
+
+.busi-nl2ppl__chip {
+  height: 24px;
+  padding: 0 var(--spacing-sm);
+  border: 1px solid var(--color-border-2);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-card);
+  font-family: inherit;
+  font-size: var(--font-size-xs);
+  color: var(--color-text-2);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: border-color var(--duration-normal) cubic-bezier(0.4, 0, 0.2, 1),
+    color var(--duration-normal) cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.busi-nl2ppl__chip:hover {
+  border-color: var(--btn-default-border-hover);
+  color: var(--btn-default-border-hover);
+}
+
+.busi-nl2ppl__chip:active {
+  border-color: var(--btn-default-border-active);
+  color: var(--btn-default-border-active);
+}
+
+.busi-nl2ppl__chip:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--focus-ring-inner), 0 0 0 4px var(--focus-ring-outer);
+}
+
+/* ---------- 中间转换动作 ---------- */
+.busi-nl2ppl__gutter {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--spacing-md);
+}
+
+.busi-nl2ppl__arrow {
+  color: var(--color-text-4);
+}
+
+/* ---------- PPL 只读结果 ---------- */
+.busi-nl2ppl__code {
+  flex: 1;
+  min-height: 0;
+  padding: var(--spacing-md);
+  background: var(--table-row-bg-stripe);
+  border: 1px solid var(--color-border-1);
+  border-radius: var(--radius-md);
+  overflow: auto;
+}
+
+.busi-nl2ppl__code-pre {
+  margin: 0;
+  font-family: "SFMono-Regular", Consolas, Menlo, monospace;
+  font-size: var(--font-size-sm);
+  line-height: 1.7;
+  color: var(--color-text-1);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.busi-nl2ppl__kw {
+  color: var(--color-primary);
+  font-weight: 600;
+}
+
+.busi-nl2ppl__str {
+  color: var(--color-link);
+}
+
+.busi-nl2ppl__num {
+  color: var(--color-text-1);
+  font-weight: 600;
+}
+
+.busi-nl2ppl__pipe {
+  color: var(--color-text-3);
+}
+
+.busi-nl2ppl__meta {
+  height: 18px;
+  margin-top: var(--spacing-sm);
+  font-size: var(--font-size-xs);
+  color: var(--color-text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: none;
+}
+
+.busi-nl2ppl__valid {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  height: 24px;
+  margin-top: var(--spacing-lg);
+  font-size: var(--font-size-xs);
+  color: var(--color-success);
+  flex: none;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+/* ============ Footer 64（OVL-010） ============ */
+.busi-nl2ppl__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-lg);
+  height: 64px;
+  padding: 0 var(--spacing-xl);
+  border-top: 1px solid var(--color-border-1);
+  flex: none;
+}
+
+.busi-nl2ppl__footer-hint {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.busi-nl2ppl__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  flex: none;
+}
+
+/* ============ 按钮（BTN-001~010） ============ */
+.busi-nl2ppl__btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--spacing-xs);
+  height: 32px;
+  min-width: 96px;
+  padding: 0 var(--spacing-lg);
+  border-radius: var(--radius-md);
+  border: 1px solid transparent;
+  font-family: inherit;
+  font-size: var(--font-size-sm);
+  font-weight: 400;
+  line-height: 1;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--duration-normal) cubic-bezier(0.4, 0, 0.2, 1),
+    border-color var(--duration-normal) cubic-bezier(0.4, 0, 0.2, 1),
+    color var(--duration-normal) cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* 主按钮：默认 / hover / active / focus / disabled / loading */
+.busi-nl2ppl__btn--primary {
+  background: var(--btn-primary-bg);
+  border-color: var(--btn-primary-bg);
+  color: var(--color-bg-card);
+}
+
+.busi-nl2ppl__btn--primary:hover {
+  background: var(--btn-primary-bg-hover);
+  border-color: var(--btn-primary-bg-hover);
+}
+
+.busi-nl2ppl__btn--primary:active {
+  background: var(--btn-primary-bg-active);
+  border-color: var(--btn-primary-bg-active);
+}
+
+.busi-nl2ppl__btn--primary:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--focus-ring-inner), 0 0 0 4px var(--focus-ring-outer);
+}
+
+.busi-nl2ppl__btn--primary:disabled,
+.busi-nl2ppl__btn--primary.is-disabled {
+  background: var(--btn-primary-bg-disabled);
+  border-color: var(--btn-primary-bg-disabled);
+  color: var(--color-bg-card);
+  cursor: not-allowed;
+}
+
+.busi-nl2ppl__btn--primary.is-loading {
+  background: var(--btn-primary-bg-active);
+  border-color: var(--btn-primary-bg-active);
+  cursor: progress;
+}
+
+.busi-nl2ppl__btn--primary.is-loading::before {
+  content: "";
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--color-bg-card);
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: busi-nl2ppl-spin 800ms linear infinite;
+}
+
+/* 次要按钮 */
+.busi-nl2ppl__btn--default {
+  background: var(--btn-default-bg);
+  border-color: var(--btn-default-border);
+  color: var(--btn-default-text);
+}
+
+.busi-nl2ppl__btn--default:hover {
+  border-color: var(--btn-default-border-hover);
+  color: var(--btn-default-border-hover);
+}
+
+.busi-nl2ppl__btn--default:active {
+  border-color: var(--btn-default-border-active);
+  color: var(--btn-default-border-active);
+}
+
+.busi-nl2ppl__btn--default:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--focus-ring-inner), 0 0 0 4px var(--focus-ring-outer);
+}
+
+.busi-nl2ppl__btn--default:disabled,
+.busi-nl2ppl__btn--default.is-disabled {
+  background: var(--btn-default-bg-disabled);
+  border-color: var(--color-text-4);
+  color: var(--color-text-4);
+  cursor: not-allowed;
+}
+
+.busi-nl2ppl__btn--default.is-loading {
+  color: var(--btn-default-border-hover);
+  border-color: var(--btn-default-border-hover);
+  cursor: progress;
+}
+
+.busi-nl2ppl__btn--default.is-loading::before {
+  content: "";
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--btn-default-border-hover);
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: busi-nl2ppl-spin 800ms linear infinite;
+}
+
+.busi-nl2ppl__btn--gen {
+  min-width: 96px;
+  font-weight: 600;
+}
+
+.busi-nl2ppl__btn--run {
+  min-width: 128px;
+  font-weight: 600;
+}
+
+@keyframes busi-nl2ppl-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

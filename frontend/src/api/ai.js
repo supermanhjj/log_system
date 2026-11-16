@@ -98,6 +98,12 @@ export async function previewGrammar(question) {
   return data
 }
 
+// 自然语言 → PPL：真实调用已配置模型，超时放宽到 120s
+export async function nl2ppl(payload) {
+  const { data } = await client.post('/nl2ppl', payload, { timeout: 120000 })
+  return data
+}
+
 export async function listCapabilities() {
   const { data } = await client.get('/capabilities')
   return data

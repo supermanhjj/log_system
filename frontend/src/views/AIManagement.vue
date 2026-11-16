@@ -1,5 +1,6 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   Refresh, Plus, Download, Upload, Connection, Delete, Edit, Setting,
@@ -9,10 +10,11 @@ import {
   GRAMMAR_CATEGORIES, getAIMeta, listProviders, createProvider, updateProvider,
   deleteProvider, setDefaultProvider, testProvider, listGrammar, createGrammar,
   updateGrammar, deleteGrammar, importGrammar, exportGrammar, syncFields,
-  previewGrammar, listCapabilities, updateCapability,
+  previewGrammar, nl2ppl, listCapabilities, updateCapability,
 } from '../api/ai'
 
 const app = useAppStore()
+const router = useRouter()
 const loading = ref(false)
 const activeTab = ref('models')
 const activeKind = ref('commercial')
@@ -159,6 +161,10 @@ const grammarForm = reactive({
 })
 const previewQuestion = ref('查询最近10分钟的错误日志')
 const previewResult = ref(null)
+const nlProviderId = ref(null)
+const nlModelOverride = ref('')
+const nlLoading = ref(false)
+const nlResult = ref(null)
 const fileInput = ref(null)
 
 function categoryLabel(key) {
@@ -242,6 +248,43 @@ async function doPreview() {
   try { previewResult.value = await previewGrammar(previewQuestion.value) }
   catch (e) { ElMessage.error('预览失败：' + (e.response?.data?.detail || e.message)) }
 }
+function onNlProviderChange(id) {
+  const p = providers.value.find((x) => x.id === id)
+  nlModelOverride.value = p?.model_name || ''
+}
+async function doNl2Ppl() {
+  const q = previewQuestion.value.trim()
+  if (!q) return ElMessage.warning('请输入自然语言检索需求')
+  if (!nlProviderId.value) return ElMessage.warning('请先选择一个模型接入')
+  nlLoading.value = true
+  try {
+    nlResult.value = await nl2ppl({
+      question: q, provider_id: nlProviderId.value,
+      model_name: nlModelOverride.value.trim(), tenant: app.tenant || 'default',
+    })
+    previewResult.value = await previewGrammar(q).catch(() => null)
+    if (!nlResult.value.ok) ElMessage.warning('生成失败：' + nlResult.value.error)
+  } catch (e) {
+    ElMessage.error('转换失败：' + (e.response?.data?.detail || e.message))
+  } finally { nlLoading.value = false }
+}
+async function copyPpl() {
+  if (!nlResult.value?.ppl) return
+  try { await navigator.clipboard.writeText(nlResult.value.ppl); ElMessage.success('PPL 已复制') }
+  catch { ElMessage.warning('复制失败，请手动选中语句') }
+}
+async function gotoSearch() {
+  const r = nlResult.value
+  if (!r?.ok) return
+  const query = { ppl: r.ppl }
+  if (r.timeRange) {
+    query.from = String(new Date(r.timeRange.from).getTime())
+    query.to = String(new Date(r.timeRange.to).getTime())
+  }
+  if (r.explanation) query.note = `AI 生成：${r.explanation}`
+  await router.push({ path: '/search', query })
+}
+function fmtTime(v) { return String(v || '').replace('T', ' ').slice(0, 19) }
 
 // ---- AI 能力扩展 ----
 const capabilities = ref([])
@@ -269,6 +312,12 @@ async function loadProviders() {
   const res = await listProviders()
   providers.value = res.items || []
   defaultId.value = res.defaultId ?? null
+  if (!nlProviderId.value || !providers.value.some((p) => p.id === nlProviderId.value)) {
+    const pick = providers.value.find((p) => p.id === res.defaultId)
+      || providers.value.find((p) => p.enabled) || providers.value[0]
+    nlProviderId.value = pick?.id ?? null
+    nlModelOverride.value = pick?.model_name || ''
+  }
 }
 async function loadGrammar() {
   const res = await listGrammar(grammarFilters)
@@ -415,6 +464,55 @@ onMounted(loadAll)
           <div class="section-note">
             规则为可编辑默认模板，供后续自然语言转 PPL 注入使用；字段别名可按索引真实 mapping 同步。
           </div>
+
+          <div class="preview-box">
+            <div class="section-title">智能检索预览 · 自然语言转 PPL</div>
+            <div class="preview-row">
+              <el-input v-model="previewQuestion"
+                placeholder="输入中文检索需求，如：查询最近10分钟的错误日志"
+                @keyup.enter="doNl2Ppl" />
+              <el-button type="primary" :loading="nlLoading" @click="doNl2Ppl">转换为 PPL</el-button>
+              <el-button @click="doPreview">预览命中</el-button>
+            </div>
+            <div class="preview-config">
+              <span class="cfg-label">模型</span>
+              <el-select v-model="nlProviderId" style="width: 250px" placeholder="选择模型接入"
+                @change="onNlProviderChange">
+                <el-option v-for="p in providers" :key="p.id" :value="p.id"
+                  :label="`${p.name} · ${p.model_name || '未设模型'}${p.enabled ? '' : '（未启用）'}`" />
+              </el-select>
+              <span class="cfg-label">模型 ID</span>
+              <el-input v-model="nlModelOverride" class="mono" style="width: 210px"
+                placeholder="跟随接入配置，可临时覆盖" />
+            </div>
+
+            <div v-if="nlResult" class="nl-result">
+              <template v-if="nlResult.ok">
+                <div class="nl-head">
+                  <el-tag type="success" size="small" effect="plain">生成成功</el-tag>
+                  <span class="muted">{{ nlResult.model?.name }} · {{ nlResult.model?.modelName }} · {{ nlResult.elapsedMs }} ms · 注入 {{ nlResult.injectedRuleCount }} 条规则</span>
+                  <el-button link type="primary" size="small" @click="copyPpl">复制 PPL</el-button>
+                  <el-button link type="primary" size="small" @click="gotoSearch">去检索页执行</el-button>
+                </div>
+                <pre class="ppl-block">{{ nlResult.ppl }}</pre>
+                <div v-if="nlResult.explanation" class="nl-meta">说明：{{ nlResult.explanation }}</div>
+                <div v-if="nlResult.timeRange" class="nl-meta">
+                  时间范围：{{ nlResult.timeRange.label }} → {{ fmtTime(nlResult.timeRange.from) }} ~ {{ fmtTime(nlResult.timeRange.to) }}（后端换算，不写入 PPL）
+                </div>
+                <div v-if="nlResult.assumptions?.length" class="nl-meta">假设：{{ nlResult.assumptions.join('；') }}</div>
+                <div v-for="w in (nlResult.warnings || [])" :key="w" class="nl-meta warn">⚠ {{ w }}</div>
+              </template>
+              <el-alert v-else type="error" :closable="false" show-icon
+                :title="`生成失败（${nlResult.stage}）：${nlResult.error}`"
+                :description="[nlResult.detail, nlResult.hint].filter(Boolean).join(' · ')" />
+            </div>
+
+            <div v-if="previewResult" class="preview-body">
+              <div class="muted">规则库字面命中 {{ previewResult.matched }} 条 · {{ previewResult.note }}</div>
+              <pre class="code-block">{{ previewResult.promptContext || '（无命中规则）' }}</pre>
+            </div>
+          </div>
+
           <div class="filter-card">
             <div class="filter-row">
               <div class="filter-item"><label>规则分类</label>
@@ -481,24 +579,12 @@ onMounted(loadAll)
             <template #empty><div class="empty-box"><p>当前筛选条件下没有规则</p></div></template>
           </el-table>
 
-          <div class="preview-box">
-            <div class="section-title">规则命中预览</div>
-            <div class="preview-row">
-              <el-input v-model="previewQuestion" placeholder="输入一句自然语言，查看将注入模型的语法片段"
-                @keyup.enter="doPreview" />
-              <el-button type="primary" @click="doPreview">预览命中</el-button>
-            </div>
-            <div v-if="previewResult" class="preview-body">
-              <div class="muted">命中 {{ previewResult.matched }} 条 · {{ previewResult.note }}</div>
-              <pre class="code-block">{{ previewResult.promptContext || '（无命中规则）' }}</pre>
-            </div>
-          </div>
         </el-tab-pane>
 
         <!-- ============ AI 能力扩展 ============ -->
         <el-tab-pane label="能力扩展" name="capabilities">
           <div class="section-note">
-            能力注册表为后续 AI 能力预留配置位；当前四项均为「仅登记配置」，运行时能力（含自然语言转 PPL）待接入。
+            能力注册表登记各项 AI 能力配置；智能检索（自然语言转 PPL）运行时已接入，可在「PPL 语法规则库 → 智能检索预览」试用，其余能力待接入。
           </div>
           <div class="cap-grid">
             <div v-for="c in capabilities" :key="c.cap_key" class="cap-card">
@@ -624,10 +710,25 @@ onMounted(loadAll)
 .probe-result { margin-top: 14px; }
 .probe-detail { font-size: 12px; line-height: 1.6; word-break: break-all; }
 .hidden-file { display: none; }
-.preview-box { margin-top: 16px; border-top: 1px solid var(--color-border-1); padding-top: 14px; }
+.preview-box {
+  background: #fff; border: 1px solid var(--color-border-1); border-radius: 4px;
+  padding: 14px; margin-bottom: 14px;
+}
 .section-title { font-size: 14px; font-weight: 600; color: var(--color-text-1); margin-bottom: 10px; }
 .preview-row { display: flex; gap: 8px; }
+.preview-config { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.cfg-label { font-size: 12px; color: var(--color-text-2); white-space: nowrap; }
 .preview-body { margin-top: 10px; }
+.nl-result { margin-top: 12px; border: 1px solid var(--color-border-1); border-radius: 4px; padding: 12px; background: #fff; }
+.nl-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.ppl-block {
+  margin: 10px 0 0; padding: 12px 14px; background: #E6FCF8; border: 1px solid #b9e8df;
+  border-left: 3px solid #03857E; border-radius: 4px; font-size: 13px; line-height: 1.8;
+  white-space: pre-wrap; word-break: break-all; color: #0b3f3a;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+.nl-meta { font-size: 12px; color: var(--color-text-2); margin-top: 8px; line-height: 1.6; }
+.nl-meta.warn { color: #b26a00; }
 .code-block {
   margin: 8px 0 0; padding: 10px 12px; background: #f5f7fa; border: 1px solid var(--color-border-1);
   border-radius: 4px; font-size: 12px; line-height: 1.7; white-space: pre-wrap; word-break: break-all;
