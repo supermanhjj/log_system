@@ -96,6 +96,35 @@ def time_range_clause(time_range: Optional[Dict[str, Any]]):
     return {"range": {"@timestamp": clause}}
 
 
+def ppl_time_filter(time_range: Optional[Dict[str, Any]]) -> Optional[str]:
+    """把时间范围转成一段独立的 PPL where 条件（供 /pql 注入）。
+
+    @timestamp 在索引里存的是 UTC 无时区字符串，PPL 比较必须用带 Z 的 ISO 字面量：
+    '2026-11-16T09:12:00' 会触发 500，'2026-11-16 09:12:00' 会静默返回空结果。
+    这里统一解析后转 UTC 再格式化，避免时区/格式问题。
+    """
+    if not time_range:
+        return None
+    conds: List[str] = []
+    for key, op in (("from", ">="), ("to", "<=")):
+        raw = time_range.get(key)
+        if not raw:
+            continue
+        try:
+            dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        except ValueError:
+            raise HTTPException(
+                status_code=400, detail=f"timeRange.{key} 不是合法的 ISO 时间：{raw}"
+            )
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=CST)
+        literal = dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+        conds.append(f"@timestamp {op} '{literal}'")
+    if not conds:
+        return None
+    return "where " + " and ".join(conds)
+
+
 def build_must(time_range, filters, tenant) -> List[Dict[str, Any]]:
     must: List[Dict[str, Any]] = []
     tr = time_range_clause(time_range)
@@ -149,6 +178,7 @@ class QueryReq(BaseModel):
 class PqlReq(BaseModel):
     pql: str
     tenant: str = "default"
+    timeRange: Optional[Dict[str, Any]] = None
 
 
 class HistReq(BaseModel):
@@ -246,6 +276,8 @@ def pql(req: PqlReq):
     """原生 PPL 分析查询，走 /_plugins/_ppl（已验证可用）。
 
     安全约束：仅允许查询 logs-*，拒绝 drop/delete/update/insert/create/alter 等写操作关键字。
+    时间范围：请求带 timeRange 时，作为独立的一段 where 注入到 source 之后
+    （不与原语句的条件合并，避免改变用户 where 的 and/or 优先级）。
     """
     stmt = (req.pql or "").strip()
     if not stmt:
@@ -253,7 +285,14 @@ def pql(req: PqlReq):
     if re.search(r"\b(drop|delete|update|insert|create|alter|grant)\b", stmt, re.I):
         raise HTTPException(status_code=400, detail="PPL 含不允许的写操作关键字")
     if not stmt.lower().startswith("source="):
-        stmt = f"source={index_for(req.tenant)} {stmt}"
+        # PPL 的 source= 与后续命令之间必须用管道符；用空格会被解析器吞掉条件（实测返回空结果）
+        stmt = f"source={index_for(req.tenant)} | {stmt}"
+
+    time_filter = ppl_time_filter(req.timeRange)
+    if time_filter:
+        head, sep, tail = stmt.partition("|")
+        stmt = f"{head.strip()} | {time_filter} | {tail.strip()}" if sep else f"{stmt} | {time_filter}"
+
     try:
         # opensearch-py 2.x 未暴露公开 perform_request；PPL 走 /_plugins/_ppl 直连。
         resp = httpx.post(
