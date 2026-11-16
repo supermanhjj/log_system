@@ -3,6 +3,7 @@
 > 本文记录 2026-11-16 落地的「登录 + 平台管理-用户与角色 + 顶栏真实登录用户」实现现状。
 > 对应原型：`prototype/settings.html`（P-SYS-0601）、登录规格 `prototype/specs/P-AUTH-0100.json`（原型无 login 页面文件，样式按 `design-tokens.css` 令牌自建）。
 > 规划依据：`docs/tech-stack-selection.md` 3.2(1)、3.2(9)、6.2。
+> 服务级实现细节另见：[auth-service 服务说明](service-auth.md) · [system-service 服务说明](service-system.md)。
 
 ## 1. 范围与定位
 

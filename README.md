@@ -27,6 +27,8 @@
 | [module-alarm-center.md](docs/module-alarm-center.md) | 告警中心：设计与实现的判定引擎偏差、事件状态、关联日志 |
 | [module-data-ingestion.md](docs/module-data-ingestion.md) | 数据接入：配置面/数据面分离、字段字典、采集与管控链路 |
 | [module-platform-admin.md](docs/module-platform-admin.md) | 平台管理：登录、双服务职责边界、RBAC 六表与权限矩阵、接口、验证与待办 |
+| [service-auth.md](docs/service-auth.md) | 登录与鉴权模块（auth-service）：开发内容、登录链路、JWT 与权限下发、失败语义、踩坑与边界 |
+| [service-system.md](docs/service-system.md) | 用户与角色模块（system-service）：六表与种子、用户管理、权限矩阵、保护性约束、审计 |
 | [tech-stack-selection.md](docs/tech-stack-selection.md) | 技术栈选型与功能点 × 技术栈映射（设计基线 v1.5） |
 | [container-deployment.md](docs/container-deployment.md) | 容器化部署、镜像与运行服务现状（第 4 章含 ai-service 与 NL→PPL 运行时） |
 | [service-inventory.md](docs/service-inventory.md) | 服务清单、端口、nginx 路由、索引现状 |

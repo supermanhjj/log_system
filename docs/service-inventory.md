@@ -36,13 +36,13 @@
 | 容器名 | 服务 | 镜像 | 宿主机地址 | 映射端口 | 容器端口 | 状态 | 角色 |
 |---|---|---|---|---|---|---|---|
 | `log_system-web-1` | web | nginx:1.27-alpine | localhost | 8080 | 80 | running | 前端静态页 + 后端反向代理网关 |
-| `log_system-auth-service-1` | auth-service | log_system-backend | localhost | 8001 | 8000 | running | 登录 / JWT 签发 / `/me` 当前用户与权限 / 改密（不建表，只读 users·tenants·roles） |
+| `log_system-auth-service-1` | [auth-service](service-auth.md) | log_system-backend | localhost | 8001 | 8000 | running | 登录 / JWT 签发 / `/me` 当前用户与权限 / 改密（不建表，只读 users·tenants·roles） |
 | `log_system-search-service-1` | search-service | log_system-backend | localhost | 8002 | 8000 | running | 日志检索 |
 | `log_system-dashboard-service-1` | dashboard-service | log_system-backend | localhost | 8003 | 8000 | running | 看板数据后端 |
 | `log_system-alarm-service-1` | alarm-service | log_system-backend | localhost | 8004 | 8000 | running | 告警 |
 | `log_system-ingest-service-1` | ingest-service | log_system-backend | localhost | 8005 | 8000 | running | 日志接入 |
 | `log_system-agent-service-1` | agent-service | log_system-backend | localhost | 8006 | 8000 | running | 运维 Agent 管控面 |
-| `log_system-system-service-1` | system-service | log_system-backend | localhost | 8007 | 8000 | running | 平台管理：用户 / 角色权限 / 系统参数 / 审计日志（RBAC 六表建表方） |
+| `log_system-system-service-1` | [system-service](service-system.md) | log_system-backend | localhost | 8007 | 8000 | running | 平台管理：用户 / 角色权限 / 系统参数 / 审计日志（RBAC 六表建表方） |
 | `log_system-ai-service-1` | ai-service | log_system-backend | localhost | 8008 | 8000 | running | AI 能力配置中心 + NL→PPL 生成端点（模型接入 / PPL 语法规则库 / 能力注册表 / 智能检索预览） |
 
 ### 3. 采集层 & 测试模拟器
