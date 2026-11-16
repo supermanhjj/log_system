@@ -1,68 +1,89 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { useAppStore } from './stores/app'
+import { ElMessage } from 'element-plus'
 import {
-  Document,
+  ArrowDown,
   DataLine,
-  Odometer,
-  Warning,
-  SetUp,
-  Monitor,
-  User,
+  Document,
   MagicStick,
+  Monitor,
+  Odometer,
+  SetUp,
+  User,
+  Warning,
 } from '@element-plus/icons-vue'
+import { useAppStore } from './stores/app'
+import { useAuthStore } from './stores/auth'
 
 const route = useRoute()
 const router = useRouter()
 const app = useAppStore()
+const auth = useAuthStore()
 
-// 左侧菜单：与原型一致，分 5 组
+// 登录页不套平台布局（原型 AUTH-0100 为独立表单页）
+const isLoginPage = computed(() => route.path === '/login')
+
+// 左侧菜单：与原型一致分 6 组，资源标识与后端 permissions.resource 对齐
 const groups = [
   {
     title: '概览',
-    items: [{ path: '/overview', title: '运行总览', icon: Odometer }],
+    items: [{ path: '/overview', title: '运行总览', icon: Odometer, resources: ['overview'] }],
   },
   {
     title: '日志分析',
     items: [
-      { path: '/search', title: '日志检索', icon: Document },
-      { path: '/dashboards', title: '仪表盘', icon: DataLine },
+      { path: '/search', title: '日志检索', icon: Document, resources: ['search'] },
+      { path: '/dashboards', title: '仪表盘', icon: DataLine, resources: ['dashboards'] },
     ],
   },
   {
     title: '告警中心',
     items: [
-      { path: '/alarms/events', title: '告警事件', icon: Warning },
-      { path: '/alarms/rules', title: '告警规则', icon: SetUp },
+      { path: '/alarms/events', title: '告警事件', icon: Warning, resources: ['alarms'] },
+      { path: '/alarms/rules', title: '告警规则', icon: SetUp, resources: ['alarms'] },
     ],
   },
   {
     title: '数据接入',
     items: [
-      { path: '/data-sources', title: '数据源', icon: Monitor },
-      { path: '/agents', title: 'Agent 管理', icon: Monitor },
+      { path: '/data-sources', title: '数据源', icon: Monitor, resources: ['data'] },
+      { path: '/agents', title: 'Agent 管理', icon: Monitor, resources: ['agents'] },
     ],
   },
   {
     title: '智能管理',
-    items: [{ path: '/ai/management', title: 'AI 能力配置', icon: MagicStick }],
+    items: [{ path: '/ai/management', title: 'AI 能力配置', icon: MagicStick, resources: ['ai'] }],
   },
   {
     title: '平台管理',
-    items: [{ path: '/settings/users', title: '用户与角色', icon: User }],
+    // 平台管理是四 Tab 容器：任一 Tab 有权限即可进入（如审计员只有 audit:view）
+    items: [{
+      path: '/settings/users',
+      title: '用户与角色',
+      icon: User,
+      resources: ['settings', 'user', 'role', 'param', 'audit'],
+    }],
   },
 ]
 
-// 标题栏页签：与原型一致，点击进入各组代表页面
+// 无 view 权限的菜单不渲染（后端接口同样会 403，这里只是不做无效入口）
+const visibleGroups = computed(() => groups
+  .map((g) => ({ ...g, items: g.items.filter((m) => m.resources.some((r) => auth.has(r, 'view'))) }))
+  .filter((g) => g.items.length))
+
 const topTabs = [
-  { key: 'overview', label: '概览', path: '/overview' },
-  { key: 'search', label: '日志分析', path: '/search' },
-  { key: 'alarms', label: '告警中心', path: '/alarms/events' },
-  { key: 'data-sources', label: '数据接入', path: '/data-sources' },
-  { key: 'ai', label: '智能管理', path: '/ai/management' },
-  { key: 'settings', label: '平台管理', path: '/settings/users' },
+  { key: 'overview', label: '概览', path: '/overview', resources: ['overview'] },
+  { key: 'search', label: '日志分析', path: '/search', resources: ['search'] },
+  { key: 'alarms', label: '告警中心', path: '/alarms/events', resources: ['alarms'] },
+  { key: 'data-sources', label: '数据接入', path: '/data-sources', resources: ['data'] },
+  { key: 'ai', label: '智能管理', path: '/ai/management', resources: ['ai'] },
+  {
+    key: 'settings', label: '平台管理', path: '/settings/users',
+    resources: ['settings', 'user', 'role', 'param', 'audit'],
+  },
 ]
+const visibleTopTabs = computed(() => topTabs.filter((t) => t.resources.some((r) => auth.has(r, 'view'))))
 
 function topKeyOf(path) {
   if (path === '/overview') return 'overview'
@@ -73,16 +94,78 @@ function topKeyOf(path) {
   if (path.startsWith('/ai')) return 'ai'
   return ''
 }
-
 const activeTopKey = computed(() => topKeyOf(route.path))
 
 function go(path) {
   if (route.path !== path) router.push(path)
 }
+
+// ---- 顶栏用户区 ----
+const isAdmin = computed(() => auth.user?.roleKey === 'platform_admin')
+const initial = computed(() => (auth.displayName || '?').slice(0, 1))
+
+const pwdVisible = ref(false)
+const pwdSaving = ref(false)
+const pwdFormRef = ref(null)
+const pwdForm = reactive({ oldPassword: '', newPassword: '', confirmPassword: '' })
+
+const pwdRules = {
+  oldPassword: [{ required: true, message: '请输入当前密码', trigger: 'blur' }],
+  newPassword: [
+    { required: true, message: '请输入新密码', trigger: 'blur' },
+    { min: 8, max: 32, message: '密码长度 8-32 位', trigger: 'blur' },
+    {
+      validator: (_r, v, cb) => {
+        if (!v || (/[A-Za-z]/.test(v) && /\d/.test(v))) return cb()
+        cb(new Error('需同时包含字母与数字'))
+      },
+      trigger: 'blur',
+    },
+  ],
+  confirmPassword: [
+    { required: true, message: '请再次输入新密码', trigger: 'blur' },
+    {
+      validator: (_r, v, cb) => (v === pwdForm.newPassword ? cb() : cb(new Error('两次输入不一致'))),
+      trigger: 'blur',
+    },
+  ],
+}
+
+function openPassword() {
+  Object.assign(pwdForm, { oldPassword: '', newPassword: '', confirmPassword: '' })
+  pwdVisible.value = true
+}
+
+async function submitPassword() {
+  const ok = await pwdFormRef.value?.validate().catch(() => false)
+  if (!ok) return
+  pwdSaving.value = true
+  try {
+    await auth.changePassword({ oldPassword: pwdForm.oldPassword, newPassword: pwdForm.newPassword })
+    pwdVisible.value = false
+    ElMessage.success('密码已修改，请使用新密码重新登录')
+    await auth.logout()
+    router.replace('/login')
+  } catch (e) {
+    ElMessage.error(e.response?.data?.detail || '修改密码失败')
+  } finally {
+    pwdSaving.value = false
+  }
+}
+
+async function onUserCommand(cmd) {
+  if (cmd === 'password') return openPassword()
+  if (cmd === 'logout') {
+    await auth.logout()
+    router.replace('/login')
+  }
+}
 </script>
 
 <template>
-  <div class="layout">
+  <router-view v-if="isLoginPage" />
+
+  <div v-else class="layout">
     <header class="topbar">
       <div class="brand">
         <img src="/logo.jpg" class="brand-logo" alt="国家电网标识" />
@@ -91,7 +174,7 @@ function go(path) {
 
       <nav class="topbar-nav" aria-label="产品导航">
         <button
-          v-for="t in topTabs"
+          v-for="t in visibleTopTabs"
           :key="t.key"
           type="button"
           class="topbar-nav__item"
@@ -103,26 +186,41 @@ function go(path) {
       </nav>
 
       <div class="topbar-right">
+        <!-- 平台管理员可切租户巡检；其他角色锁定在自己的租户（行级隔离） -->
         <el-select
+          v-if="isAdmin"
           :model-value="app.tenant"
-          @change="app.setTenant"
           size="small"
-          style="width: 160px"
+          style="width: 130px"
+          @change="app.setTenant"
         >
-          <el-option
-            v-for="t in app.tenants"
-            :key="t.value"
-            :label="t.label"
-            :value="t.value"
-          />
+          <el-option v-for="t in app.tenants" :key="t.value" :label="t.label" :value="t.value" />
         </el-select>
-        <span class="user">黄金金</span>
+        <span v-else class="tenant-static">{{ auth.tenantName }}</span>
+
+        <el-dropdown trigger="click" @command="onUserCommand">
+          <span class="user">
+            <span class="user-avatar">{{ initial }}</span>
+            <span class="user-name">{{ auth.displayName || '未登录' }}</span>
+            <el-tag v-if="auth.roleName" size="small" effect="plain" class="role-tag">{{ auth.roleName }}</el-tag>
+            <el-icon class="user-caret"><ArrowDown /></el-icon>
+          </span>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item disabled>
+                {{ auth.user?.account }} · {{ auth.tenantName }}
+              </el-dropdown-item>
+              <el-dropdown-item command="password" divided>修改密码</el-dropdown-item>
+              <el-dropdown-item command="logout">退出登录</el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
       </div>
     </header>
 
     <div class="body">
       <aside class="sidebar">
-        <div v-for="g in groups" :key="g.title" class="sidebar__group">
+        <div v-for="g in visibleGroups" :key="g.title" class="sidebar__group">
           <div class="sidebar__group-title">{{ g.title }}</div>
           <div
             v-for="m in g.items"
@@ -142,6 +240,24 @@ function go(path) {
         <router-view />
       </main>
     </div>
+
+    <el-dialog v-model="pwdVisible" title="修改密码" width="420px" :close-on-click-modal="false">
+      <el-form ref="pwdFormRef" :model="pwdForm" :rules="pwdRules" label-width="88px">
+        <el-form-item label="当前密码" prop="oldPassword">
+          <el-input v-model="pwdForm.oldPassword" type="password" show-password placeholder="请输入当前密码" />
+        </el-form-item>
+        <el-form-item label="新密码" prop="newPassword">
+          <el-input v-model="pwdForm.newPassword" type="password" show-password placeholder="8-32 位，含字母与数字" />
+        </el-form-item>
+        <el-form-item label="确认新密码" prop="confirmPassword">
+          <el-input v-model="pwdForm.confirmPassword" type="password" show-password placeholder="再次输入新密码" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="pwdVisible = false">取消</el-button>
+        <el-button type="primary" :loading="pwdSaving" @click="submitPassword">保存</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -194,8 +310,33 @@ function go(path) {
   font-weight: 600;
 }
 
-.topbar-right { display: flex; align-items: center; gap: 16px; margin-left: auto; }
-.user { font-size: 14px; opacity: 0.9; }
+.topbar-right { display: flex; align-items: center; gap: 14px; margin-left: auto; }
+.tenant-static { font-size: 13px; opacity: 0.78; }
+
+/* 用户区：头像 + 姓名 + 角色标签 + 下拉 */
+.user { display: flex; align-items: center; gap: 8px; cursor: pointer; outline: none; }
+.user-avatar {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.2);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 600;
+  color: #fff;
+}
+.user-name { font-size: 14px; color: #fff; }
+.role-tag {
+  background: rgba(255, 255, 255, 0.14) !important;
+  border-color: rgba(255, 255, 255, 0.32) !important;
+  color: #fff !important;
+  font-size: 11px;
+  height: 19px;
+  padding: 0 6px;
+}
+.user-caret { font-size: 12px; opacity: 0.7; }
 
 .body { display: flex; flex: 1; min-height: 0; }
 

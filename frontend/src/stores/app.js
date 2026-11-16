@@ -4,10 +4,11 @@ import { defineStore } from 'pinia'
 export const useAppStore = defineStore('app', {
   state: () => ({
     tenant: 'default', // default / acme / gp / all
+    // 标签与平台管理「租户」表、登录页下拉保持一致（值不变，仅显示名对齐）
     tenants: [
-      { value: 'default', label: 'default（默认租户）' },
-      { value: 'acme', label: 'acme' },
-      { value: 'gp', label: 'gp' },
+      { value: 'default', label: '总部生产' },
+      { value: 'acme', label: '省侧运维' },
+      { value: 'gp', label: '测试租户' },
       { value: 'all', label: '全部租户' },
     ],
     loading: false,
