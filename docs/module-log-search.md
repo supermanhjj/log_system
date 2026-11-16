@@ -14,7 +14,7 @@
 | 网关 | nginx 统一入口 `http://localhost:8080`，`/api/search/ → search-service:8000/`（`nginx/nginx.conf:22`） |
 | 后端 | 8 个微服务容器内统一 `:8000`，宿主机 `8001–8008` 暴露；PG 存主数据、OpenSearch 存日志与聚合 |
 | 采集 | `log-generator` → 共享卷 → Fluent Bit → 按租户写入 `logs-default / logs-acme / logs-gp` |
-| 运行环境 | **18 个容器 running，8001–8008 `/health` 全部 200**（`docs/service-inventory.md:5,110`）；`ai-service` 属「智能管理」配置中心，运行时 NL→PPL 尚未接入本模块 |
+| 运行环境 | **18 个容器 running，8001–8008 `/health` 全部 200**（`docs/service-inventory.md:5,110`）；`ai-service` 的 NL→PPL 生成端点已在本模块检索页「智能检索」弹窗接入 |
 
 ---
 
@@ -56,7 +56,7 @@
 | 勾选行导出 CSV、复制检索语句 | `exportSelected():466-481`、`copyStatement():482-486` | — | ✅（前端侧） |
 | 告警关联日志跳转与回填执行 | `applyIncomingQuery():544-558` | 关联 PPL 由 `alarm-service` 生成 | ✅ |
 | 保存视图 / 全量导出 | 前端已移除入口（`code-search.md:117`）、`onExport()` 仅提示（`:487-489`） | `GET/POST /saved-views`（`main.py:357-364`） | ❌ stub |
-| AI 智能检索（NL→PPL） | **无运行时调用** | `ai-service` 明确不提供生成端点 | ❌ 待接入 |
+| AI 智能检索（NL→PPL） | 配置页「智能检索预览」+ 检索页「智能检索」弹窗（查询/重置之间），可调真实模型生成 PPL、复制或填入检索框执行 | `POST /api/ai/nl2ppl`（`ai-service`） | ✅ 生成端点与检索页入口均已接入（时间词换算为绝对区间，执行时由 `/pql` 作为独立 where 注入，与页面时间范围一致） |
 
 ---
 
@@ -70,7 +70,7 @@
 | `searchContext`（`:21-24`） | `POST /context` | 按 `_id` 取上下文 |
 
 - 请求体：`PqlReq{ pql: str, tenant: str = "default" }`（`main.py:149-151`）——**没有 timeRange 字段**。
-- 安全校验：黑名单正则拒绝 `drop|delete|update|insert|create|alter|grant`（`main.py:253`）+ 非 `source=` 开头时自动补 `source=logs-<tenant>`（`:255-256`）；**没有索引白名单、函数白名单**：docstring 声称「仅查 logs-*」但代码未对 `source=` 值做校验。
+- 安全校验：黑名单正则拒绝 `drop|delete|update|insert|create|alter|grant`（`main.py:253`）+ 非 `source=` 开头时用**管道符**补 `source=logs-<tenant> | ...`（`:255-257`）；AI 生成的语句默认不带索引段，索引统一在此按租户补齐（用空格拼接会被 PPL 解析器吞掉条件，实测返回空结果）。**没有索引白名单、函数白名单**：docstring 声称「仅查 logs-*」但代码未对 `source=` 值做校验。
 - 超时/异常：PPL 调用 `httpx timeout=30`（`:262`）、前端 `axios 20000`（`api/search.js:4`）；各端点异常统一转 `HTTPException(502)`。
 - 索引：`logs-default / logs-acme / logs-gp`、`logs-*`（`main.py:48-58`）。**`logs-template` 索引模板无代码定义**，字段类型仅记录于 `code-search.md:64-78`，运行时需手工 PUT 模板。
 - PG：本服务不建表；`saved-views` stub 未落库（`main.py:356-364` 注释「PG 持久化待阶段 4 统一实现」）。
@@ -108,7 +108,7 @@
 |---|---|---|
 | **P0** | `/pql` 补 `timeRange` | `runPql():223` 只传 `{pql, tenant}`，PPL 分支**不受页面时间范围约束**；这是「最近 10 分钟」类语义落地的硬缺口 |
 | **P0** | 补 PPL 安全闸门 | 现仅关键字黑名单；应按 `docs/tech-stack-selection.md:189` 要求补索引白名单、只读命令/函数白名单、字段白名单、`head` 上限、tenant 后端强绑定 |
-| P1 | AI 智能检索 | `ai-service` 配置中心（模型接入三页签 / PPL 语法规则库 / 能力注册表）已落地，但 `/nl2ppl` 生成端点与检索页 AI 面板**尚未接入**；`/grammar/preview` 只做字面规则命中、不调用模型（`ai-service/app/main.py:729-748`）；能力注册表 `nl2ppl` 状态为 `planned` |
+| ~~P1~~ | ~~时间词进入 PPL 过滤~~ **已完成（2026-11-16）** | `/pql` 已接收 `timeRange`，在 `source` 段后注入独立 `where @timestamp >= '…Z' and @timestamp <= '…Z'`（UTC ISO）；检索页 PPL（手写与智能检索填入）均传页面时间范围。实测「按级别统计最近 1 小时」合计由 25677 降为 1200，与直方图口径一致；`/grammar/preview` 仍只做字面命中 |
 | P1 | `saved-views` 落库 + 前端入口 | 与 auth/RBAC 一并考虑 |
 | P1 | `timechart` 等 PPL 函数实测 | 先 `curl /_plugins/_ppl` 验证支持清单，再固化语法 chips 与语法库 |
 | P2 | 全量导出、构建体积优化、单节点 yellow 处理 | `code-search.md:156-164` 有记录；告警回填 7 天会产生长区间零值桶 |
@@ -131,6 +131,6 @@
 | `frontend/src/views/SearchView.vue` | 检索主页面（929 行 SFC，能力中枢） |
 | `frontend/src/api/search.js` | 4 个检索接口封装 |
 | `services/search-service/app/main.py` | 检索网关、PPL 转发与安全校验 |
-| `services/ai-service/app/main.py` | 智能管理配置中心（**非**运行时生成端点） |
+| `services/ai-service/app/main.py`、`app/nl2ppl.py` | 智能管理配置中心 + `POST /nl2ppl` 运行时生成端点 |
 | `code-search.md` | 本模块早期实现分析与 curl 实测记录 |
 | `prototype/search.html`、`docs/tech-stack-selection.md`（第 4 章） | 原型与 PPL 选型决策 |

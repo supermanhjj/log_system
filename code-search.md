@@ -105,7 +105,7 @@ docker-compose.yml         # search-service 服务定义（image: log_system-bac
 时间过滤：`timeRange.from/to` → `range @timestamp`。
 
 ### 4.5 PQL 安全约束
-- 必须以 `source=` 开头，否则自动前缀 `source=logs-<tenant>`；
+- 语句不以 `source=` 开头时，自动前缀 `source=logs-<tenant> | `（带管道符），索引按租户补齐；AI 生成的 PPL 默认不带索引段；
 - 正则拒绝 `drop/delete/update/insert/create/alter/grant` 等写操作关键字；
 - 仅查 `logs-*`，禁止越权索引。
 

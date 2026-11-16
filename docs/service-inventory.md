@@ -1,6 +1,6 @@
 # log_system 服务清单与访问指引
 
-> 生成时间：2026-11-12 19:33（GMT+8）；2026-11-14 更新：新增 ai-service 配置中心、前端 Vue3 化、四份模块进展文档
+> 生成时间：2026-11-12 19:33（GMT+8）；2026-11-14 更新：新增 ai-service（配置中心 + NL→PPL 生成端点）、前端 Vue3 化、四份模块进展文档
 > 环境：本机 Docker 开发联调环境（`docker compose up` 自动叠加 `compose.override.yml`）
 > 现状：**18 个服务容器全部 running**，8 个后端微服务 `/health` 健康检查均返回 `200`，OpenSearch 已采集到多租户日志。
 
@@ -43,7 +43,7 @@
 | `log_system-ingest-service-1` | ingest-service | log_system-backend | localhost | 8005 | 8000 | running | 日志接入 |
 | `log_system-agent-service-1` | agent-service | log_system-backend | localhost | 8006 | 8000 | running | 运维 Agent 管控面 |
 | `log_system-system-service-1` | system-service | log_system-backend | localhost | 8007 | 8000 | running | 系统管理 |
-| `log_system-ai-service-1` | ai-service | log_system-backend | localhost | 8008 | 8000 | running | AI 能力配置中心（模型接入 / PPL 语法规则库 / 能力注册表） |
+| `log_system-ai-service-1` | ai-service | log_system-backend | localhost | 8008 | 8000 | running | AI 能力配置中心 + NL→PPL 生成端点（模型接入 / PPL 语法规则库 / 能力注册表 / 智能检索预览） |
 
 ### 3. 采集层 & 测试模拟器
 

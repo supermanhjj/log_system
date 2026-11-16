@@ -21,7 +21,7 @@
 | `nginx/nginx.conf` | 托管 Vue3 SPA（`./frontend/dist`）+ `/api/*` 反代到 8 个微服务，含 `/api/ai/ → ai-service:8000/`（`:28`） |
 | `frontend/` | Vue3 + Element Plus + ECharts 单页应用源码；构建产物 `frontend/dist/` 由 `web` 容器托管（产物不入库） |
 | `services/<name>/app/main.py` | **8 个**微服务（auth/search/dashboard/alarm/ingest/agent/system + **ai-service**），均含 `/health`；另有 `agent-service` `/heartbeat` |
-| `services/ai-service/` | 新增 AI 能力配置中心：`app/main.py`（19 个路由 + PG 三表）、`vendor/cli/codebuddy`（宿主 CLI 入口副本，供容器只读挂载） |
+| `services/ai-service/` | AI 能力配置中心 + NL→PPL 运行时：`app/main.py`（20 个路由 + PG 三表）、`app/nl2ppl.py`（模型网关 / 规则注入 / 语句闸门）、`vendor/cli/codebuddy`（宿主 CLI 入口副本） |
 | `services/requirements.txt` | 后端共用依赖（fastapi/uvicorn/psycopg2/redis/kafka-python/opensearch-py/jose…） |
 | `fluentbit/` | Fluent Bit **distroless 多阶段镜像**（debian:trixie-slim 注入 shell/curl，因官方 5.2.0-arm64 distroless 无 `/bin/sh`/curl 且库须 glibc 2.38+/OpenSSL 3.4+ 匹配基底）+ `fluent-bit.conf`（tail→OpenSearch；**心跳用 dummy 输入+http 输出上报 agent-service**，因 distroless 无 exec 插件）+ `scripts/control.sh`（保留作含 exec 版 Fluent Bit 的管控脚本备选） |
 | `fluentbit/sample/app.log` | 样例日志（参考用；实时采集源已改为 log-generator，见下） |
@@ -82,7 +82,7 @@
 | `log_system-ingest-service-1` | `log_system-backend` | 采集接入（→ Kafka） |
 | `log_system-agent-service-1` | `log_system-backend` | 管控面 / 心跳接收（`/heartbeat`） |
 | `log_system-system-service-1` | `log_system-backend` | 系统 / 健康检查 |
-| `log_system-ai-service-1` | `log_system-backend` | **2026-11-14 新增**：AI 能力配置中心（模型接入 / PPL 语法规则库 / 能力注册表），宿主 `8008`，详见第 4 章 |
+| `log_system-ai-service-1` | `log_system-backend` | **2026-11-14 新增**：AI 能力配置中心 + NL→PPL 生成端点（模型接入 / PPL 语法规则库 / 能力注册表 / 智能检索预览），宿主 `8008`，详见第 4 章 |
 | `log_system-fluentbit-1` | `log_system-fluentbit` | 采集器：`tail` 读日志 → 解析多租户 → `rewrite_tag` 路由 → OpenSearch |
 | `log_system-log-generator-1` | `log_system-log-generator` | 测试业务系统，持续写多租户日志供采集 |
 
@@ -133,19 +133,22 @@
 
 ## 4. 智能管理 / `ai-service` 容器（2026-11-14 新增）
 
-> 本次增量的定位是**AI 能力配置中心**，不是运行时推理服务：模型接入配置、PPL 语法规则库、AI 能力注册表落到 PG，并提供真实连通性探测；**自然语言转 PPL 的生成端点、检索页 AI 面板尚未接入**，日志检索主链路（`/query`、`/pql`）未改动。
+> 本次增量先是**AI 能力配置中心**（模型接入 / PPL 语法规则库 / 能力注册表落 PG + 真实连通性探测）；**2026-11-14 晚间追加 NL→PPL 运行时**（见 4.8）：`POST /nl2ppl` 基于规则库调用已配置模型生成 PPL，并在「智能检索预览」中展示。**检索页「智能检索」弹窗已接入**（查询/重置之间，左自然语言、右 PPL、中间生成，可复制或填入检索框执行）；日志检索主链路（`/query`、`/pql`）未改动。
 
 ### 4.1 新增内容与落点
 
 | 层 | 新增内容 | 代码落点 |
 |---|---|---|
 | 前端 | 侧栏「智能管理」分组 + 顶栏同名页签；独立配置页 `/ai/management`，含「模型接入（商用 API / 本地自定义 / WorkBuddy CLI 三页签）」「PPL 语法规则库」「能力扩展」 | `frontend/src/App.vue:48-49,63`、`router/index.js:20`、`views/AIManagement.vue` |
-| 前端 API | `frontend/src/api/ai.js`，`baseURL /api/ai` | `frontend/src/api/ai.js` |
-| 后端容器 | 独立 FastAPI 服务 `ai-service`（不叫 `agent-service`，该名已被采集端管控占用）；19 个路由 | `services/ai-service/app/main.py:370-792` |
+| 前端 API | `frontend/src/api/ai.js`，`baseURL /api/ai`，含 `nl2ppl()`（超时 120s） | `frontend/src/api/ai.js` |
+| 智能检索预览 | 规则库页内：中文问句 → 选模型（可临时覆盖模型 ID）→ 真实调用模型 → 展示转换后 PPL、解释、时间范围、命中规则；可复制或跳检索页执行 | `views/AIManagement.vue` |
+| NL→PPL 运行时 | 模型网关（商用/本地 OpenAI 兼容、CLI 经宿主机桥接）+ 规则库 prompt 注入 + 语句规范化闸门 | `services/ai-service/app/nl2ppl.py` |
+| CLI 桥接 | 宿主机零依赖 HTTP 桥接，把 `codebuddy -p --model <id>` 包成 `/invoke`，仅监听 `127.0.0.1:8010` | `tools/codebuddy_bridge.py` |
+| 后端容器 | 独立 FastAPI 服务 `ai-service`（不叫 `agent-service`，该名已被采集端管控占用）；20 个路由（含 `POST /nl2ppl`） | `services/ai-service/app/main.py` |
 | 存储 | PG 三表：`ai_model_providers`（`:186`）、`ai_grammar_rules`（`:209`）、`ai_capabilities`（`:224`）；启动时 `init_db()` 建表，PG 不可用则降级启动（`:181-253`） | `services/ai-service/app/main.py` |
 | 网关 | `location /api/ai/ { proxy_pass http://ai-service:8000/; }`（去前缀） | `nginx/nginx.conf:28` |
 | 编排 | 基础服务定义、开发覆盖、生产编排、`web.depends_on` 同步加入 | 见 4.2 |
-| 配置 | `.env.example` 增加 `AI_PG_DSN`（可选覆盖）、`AI_INGEST_META_URL` | `.env.example:36-44`、`ai-service/app/main.py:34-42` |
+| 配置 | `.env.example` 增加 `AI_PG_DSN`（可选覆盖）、`AI_INGEST_META_URL`、`AI_CLI_BRIDGE_URL` | `.env.example`、`ai-service/app/main.py:34-42` |
 | CLI 挂载 | 宿主 CLI 入口副本，只读映射进容器 | `services/ai-service/vendor/cli/codebuddy`、`compose.override.yml:60` |
 
 ### 4.2 编排逐文件落点
@@ -156,6 +159,7 @@
 | `docker-compose.yml:192-200` | `ai-service`：`image: log_system-backend`、`working_dir: /app/services/ai-service`、`uvicorn app.main:app --port 8000`、`env_file: .env`、`depends_on: [postgres, ingest-service]`（同步索引字段需调 `/meta`） |
 | `compose.override.yml:5-10` | `web` 挂载 `./frontend/dist:/usr/share/nginx/html:ro`，端口 `${WEB_PORT:-8080}:80` |
 | `compose.override.yml:55-62` | `ai-service` 源码 bind mount + `./services/ai-service/vendor/cli:/home/appuser/.local/bin:ro`，`--reload`、`ports: ["8008:8000"]` |
+| `compose.override.yml:63-67` | 追加 `extra_hosts: host.docker.internal:host-gateway` 与 `AI_CLI_BRIDGE_URL`，供容器调用宿主机 CLI 桥接 |
 | `docker-compose.prod.yml:23-26,48-50` | `web` 同样挂 `frontend/dist`；`ai-service` 去掉 `--reload` 且 **`volumes: []`**（无 CLI 挂载） |
 | `nginx/nginx.conf:28` | `/api/ai/` 反代 |
 | `Dockerfile:22-26` | `COPY services /app/services`、非 root `appuser`（`HOME=/home/appuser`，决定 CLI 默认路径） |
@@ -169,10 +173,10 @@
 | 运行用户 / 工作目录 | `appuser`（非 root，`HOME=/home/appuser`）/ `/app/services/ai-service` |
 | 启动命令 | 开发 `uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload`；生产去掉 `--reload` |
 | 端口 | 容器内 `8000`，开发期宿主 `8008`；网关 `http://localhost:8080/api/ai/` |
-| 环境 | `env_file: .env` + `TZ=Asia/Shanghai`；`AI_PG_DSN` 缺省用 `POSTGRES_*` 拼 DSN，`AI_INGEST_META_URL` 缺省 `http://ingest-service:8000/meta`（`main.py:34-42`） |
+| 环境 | `env_file: .env` + `TZ=Asia/Shanghai`；`AI_PG_DSN` 缺省用 `POSTGRES_*` 拼 DSN，`AI_INGEST_META_URL` 缺省 `http://ingest-service:8000/meta`，`AI_CLI_BRIDGE_URL` 缺省 `http://host.docker.internal:8010/invoke` |
 | 健康检查 | `GET /health` → `{"status":"ok","service":"ai-service","version":"0.1.0"}` |
-| 接口分组 | `/health`、`/`、`/meta` 3 个；`providers` 6 个（列表/增/改/删/设默认/连通性测试）；`grammar` 8 个（查询/增/改/删/导入/导出/同步字段/命中预览）；`capabilities` 2 个（列表/更新），共 19 个 |
-| 安全处理 | API Key 仅存服务端、列表脱敏（`sk-****xxxx`）、编辑留空保持原值；CLI 探测**不执行用户填写的参数**，只查路径/可执行位，勾选时仅执行固定 `<path> --version`；`source/tenant` 等运行时安全闸门仍属后续待办 |
+| 接口分组 | `/health`、`/`、`/meta` 3 个；`providers` 6 个；`grammar` 8 个；`capabilities` 2 个；`POST /nl2ppl` 1 个，共 20 个 |
+| 安全处理 | API Key 仅存服务端、列表脱敏（`sk-****xxxx`）、编辑留空保持原值；CLI 探测只查路径/可执行位；**`/nl2ppl` 输出按不可信输入处理**：剥离模型自带的 `source=` 索引段（索引由 `/pql` 按租户补齐）、命令白名单、拒绝写操作、补 `head` 上限、未知字段告警（`app/nl2ppl.py`）；`/pql` 侧索引/函数白名单仍待补 |
 
 > 注意：API Key 以明文写入 PG，仅在接口层脱敏；生产部署应评估加密或 KMS 托管。
 
@@ -188,7 +192,7 @@
 
 **探测如实返回**：默认「测试连接」为路径可达性检查，`ok=true` 但 `runtimeReady=false`，详情明示容器内无 Node 运行时；勾选「试运行 --version」返回 `returncode=127 · env: 'node': No such file or directory`，不伪造通过。
 
-**生产边界**：`docker-compose.prod.yml` 的 `ai-service` 为 `volumes: []`，上线前须另行挂载；若要真正执行 CLI 会话，需容器装 Linux Node + 挂完整包（275MB）+ 认证目录（凭据进容器，须明确授权），或做宿主机 CLI 桥接。三条路径均待拍板。
+**生产边界**：`docker-compose.prod.yml` 的 `ai-service` 为 `volumes: []`，上线前须另行挂载。当前已采用**宿主机 CLI 桥接**方案（4.8）而不把 275MB 包与凭据塞进容器；生产需另配桥接地址。
 
 ### 4.5 重建与部署顺序（踩过的坑）
 
@@ -223,11 +227,33 @@ curl http://localhost:8008/health && curl http://localhost:8080/api/ai/health
 | 配置现状 | 2 条接入（`deepseek` 商用 API、`WorkBuddy CLI`）、4 个能力开关均关闭；数值随配置变化 |
 | 前端 | 无头浏览器实测 3 个主页签 + 3 个子页签、规则表与能力卡渲染、菜单与面包屑正确、**控制台零报错**；`npm run build` 与 `compose config` 通过 |
 | CLI 容器内 | `/home/appuser/.local/bin/codebuddy` `-rwxr-xr-x`、`X_OK=YES`、`NODE=MISSING` |
+| NL→PPL 生成 | DeepSeek 真实模型端到端实测：`查询最近10分钟的错误日志` → `where level = 'ERROR' \| head 100`（不带索引段）；`查询来源是log-*，状态码是500的错误日志` → 带 `status = 500` 与按来源映射的 `source` 字段条件；耗时 1~3s、注入 33 条规则；能力 `nl2ppl` 状态 `available` |
+| CLI 桥接 | 容器 → `host.docker.internal:8010` 实测 200；桥接真实调用 `codebuddy -p --model hy3` 如实返回 `Authentication required` 与登录指引，不伪造通过 |
 
 ### 4.7 边界与待办
 
-1. **仅配置中心**：无 `/nl2ppl` 生成端点，检索页 AI 智能检索面板未接入；能力开关只登记配置（`nl2ppl` 状态 `planned`）。`/grammar/preview` 只做字面规则命中、不调用模型。
-2. **CLI 会话不可在容器内执行**：目前只做到入口只读映射 + 路径探测；彻底接通需装 Node 与完整包、并解决凭据进容器问题。
+1. **时间词已进入 PPL 过滤（2026-11-16 修复）**：检索页 PPL（手写与智能检索填入）统一把页面时间范围传给 `/pql`，后端在 `source` 段后注入独立 `where @timestamp >= '…Z' and @timestamp <= '…Z'`；实测「按级别统计最近 1 小时」合计 1200 条，与直方图 1000 余条一致。**关键坑**：`@timestamp` 在索引中存 UTC，PPL 比较必须用带 `Z` 的 ISO 字面量——不带 Z 会 500，用空格格式会静默返回空结果。能力注册表 `nl2ppl` 状态为 `available`。`/grammar/preview` 仍只做字面规则命中。
+2. **CLI 会话仍不可在容器内直接执行**：容器内无 Node，改走宿主机桥接（`tools/codebuddy_bridge.py`）；**当前还差一次交互式登录**（宿主机执行 `codebuddy /login`）与启动桥接进程，二者完成后 hy3 即可真实生成 PPL。
 3. **生产前置**：重建 `log_system-backend` 镜像、补 CLI 挂载、注入 `AI_PG_DSN` / `AI_INGEST_META_URL`（云托管地址）、评估 API Key 加密。
 4. **安全闸门待补**：`/pql` 目前仅关键字黑名单、无索引/函数白名单、`timeRange` 未传入，AI 语句落地前必须先补（见 `module-log-search.md` 第 6 节）。
+
+### 4.8 NL→PPL 运行时（2026-11-14 晚间追加）
+
+**链路**：配置页「智能检索预览」→ `POST /api/ai/nl2ppl` → 规则库注入 prompt → 已配置模型 → 后端规范化闸门 → 返回 PPL → 页面展示（可复制 / 去检索页执行）。生成端点**只产出并校验语句，不执行检索、不访问日志原文**；检索页「智能检索」弹窗复用同一端点，生成后可一键填入检索框执行。
+
+| 环节 | 实现 | 落点 |
+|---|---|---|
+| 规则注入 | 从 PG 读 enabled 规则，按命令 / 字段别名 / 业务词 / 时间规则 / 示例对 / 禁止项分组注入，附当前时间（UTC+8）与租户 | `app/nl2ppl.py:build_prompt` |
+| 模型网关 | `commercial` / `local` → OpenAI 兼容 `/v1/chat/completions`；`cli` → 容器内有 Node 则直接 `-p`，否则走宿主机桥接 | `invoke_model` |
+| 输出解析 | 容错 JSON、Markdown 代码块、模型直接吐一行 PPL 三种情况 | `parse_model_output` |
+| 语句闸门 | 剥离模型自带的 `source=` 索引段（索引统一由 `/pql` 按租户补齐，问句未提来源时不写死租户）、命令白名单（来自规则库）、拒绝写关键字、补/收敛 `head`、未知字段告警；时间词由代码换算绝对区间，不让模型算数 | `normalize_ppl` / `resolve_time` |
+| 前端 | 问句 + 模型下拉（列出全部已配置接入，启用的默认选中）+ 可临时覆盖模型 ID + PPL 高亮块 + 解释/假设/时间范围/警告 + 失败按 stage 如实展示 | `views/AIManagement.vue` |
+
+**CLI 桥接**：宿主机执行 `python3 tools/codebuddy_bridge.py`（零第三方依赖，仅监听 `127.0.0.1:8010`），把 `codebuddy -p --model <id> --output-format text -y --port <空闲端口>` 包成 `POST /invoke`。动态端口是为避开实测遇到的 `EADDRINUSE 127.0.0.1:63988`。`ai-service` 经 `extra_hosts` 的 `host.docker.internal` 访问；容器 `/etc/hosts` 同时含 IPv6 网关且该地址不可达（`[Errno 101]`），网关侧强制解析 IPv4（`_bridge_url_ipv4`）避免偶发失败。实测「绑 `127.0.0.1` 时容器仍可访问」，因此无需改为 `0.0.0.0`，不扩大暴露面。
+
+**实测状态（如实）**：
+
+- DeepSeek 商用 API（配置内模型 ID `deepseek-v4-flash`）可直接真实生成：两条中文问句分别产出 `where level = 'ERROR'` 与带 `status = 500` 的语句，耗时约 1~3s；`/models` 返回 `deepseek-flash` / `deepseek-v4-pro`，但 API 也接受配置里的 ID，无需改配置。
+- WorkBuddy CLI（hy3）当前停在 `Authentication required. Please use /login`：桥接链路本身已通（容器 → 桥接 200），只差 Super 本人在宿主机完成一次交互式登录并常驻启动桥接。未登录时接口如实返回失败原因与操作指引，不伪造通过。
+- 闸门单测：跨索引 `source=other-index` 被重写为 `logs-<tenant>`；`drop` / 命令白名单外函数被拒；缺 `head` 自动补 100，超过 500 收敛；未知字段只告警不硬拒（动态 mapping）。
 

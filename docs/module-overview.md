@@ -14,7 +14,7 @@
 | 网关 | nginx 统一入口 `http://localhost:8080`，`/api/*` 按前缀反代到 8 个 FastAPI 微服务（`/api/dashboards/ → dashboard-service:8000/`） |
 | 后端 | 8 个微服务容器内统一 `:8000`，宿主机 `8001–8008` 暴露；PG 存主数据、OpenSearch 存日志与聚合、Redis 存心跳与缓存 |
 | 采集 | `log-generator`（模拟业务日志）→ 共享卷 → Fluent Bit → 按租户写入 `logs-default / logs-acme / logs-gp` |
-| 运行环境 | **18 个容器 running，8001–8008 `/health` 全部 200**（`docs/service-inventory.md:5,110`）；新增 `ai-service` 属「智能管理」配置中心，不在本四模块范围内 |
+| 运行环境 | **18 个容器 running，8001–8008 `/health` 全部 200**（`docs/service-inventory.md:5,110`）；新增 `ai-service`（配置中心 + NL→PPL 生成端点）属「智能管理」，不在本四模块范围内 |
 | 文档 | 本次新增 4 份模块进展文档，均落到 `docs/` |
 
 ---
@@ -31,7 +31,7 @@
 |---|---|---|
 | **单一数据源，指标全部现算** | 不建 PG 指标表、不写定时任务、不落汇总数据；`GET /overview` 一次请求内并发拼装 6 类指标，全部来自 OpenSearch 真实聚合（`count` / `date_histogram` / `terms` / `percentiles`） | `services/dashboard-service/app/main.py:351-488` |
 | **接口收敛，前端只取一次** | 前端只调 `getOverview(range, tenant, force)` 一个接口，拿到 `stats / trend / levelDist / latency / health / recentAlarms` 再分发给 ECharts；避免多接口拼装带来的状态不一致 | `frontend/src/api/overview.js:11-15`、`frontend/src/views/OverviewView.vue:58` |
-| **轻缓存 + 可强刷** | 服务端内存缓存 30s（`CACHE_TTL_MS`），key 为 `tenant|range`，`force` 参数绕过；前端 60s 自动刷新、切租户自动重取、手动刷新带 `force` | `main.py:284-296,323-327`、`OverviewView.vue:247-282,54-73` |
+| **轻缓存 + 可强刷** | 服务端内存缓存 30s（`CACHE_TTL_MS`），key 为 `tenant\|range`，`force` 参数绕过；前端 60s 自动刷新、切租户自动重取、手动刷新带 `force` | `main.py:284-296,323-327`、`OverviewView.vue:247-282,54-73` |
 | **耗时指标复用引擎自身洞察数据** | 检索耗时不自己埋点，改查 OpenSearch Query Insights 生成的 `top_queries-*` 索引里 `measurements.latency.number`，做 P95 与分桶；索引缺失时返回空柱而非伪造数字 | `main.py:34,205-278` |
 
 数据流：`OverviewView.vue → GET /api/dashboards/overview?range_in&tenant&force → nginx → dashboard-service → OpenSearch(logs-*、top_queries-*)`。
