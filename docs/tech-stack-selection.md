@@ -52,7 +52,7 @@
 
 | 页面（规格） | 路由 | 核心功能点 | 技术栈落点 | 覆盖 |
 |----|----|----|----|----|
-| 登录 `AUTH-0100` | `/login` | 账号密码、租户选择、记住账号、登录态机（成功/失败/无权限） | Vue3 + FastAPI(鉴权服务) + **PostgreSQL**(账号/租户) + JWT | ✅ |
+| 登录 `AUTH-0100` | `/login` | 账号密码、租户选择、记住账号、登录态机（成功/失败/无权限） | Vue3 + FastAPI(鉴权服务) + **PostgreSQL**(账号/租户) + JWT | ✅ 已落地（2026-11-16） |
 | 运行总览 `OVW-0101` | `/overview` | 时间范围、写入趋势、告警分布、检索耗时 P50·P95、告警事件表、导出报表 | Vue3 + OpenSearch(聚合) + ECharts + FastAPI(指标聚合接口) | ✅ |
 | 日志检索 `LOG-0201` | `/search` | **PPL 检索**、时间范围、直方图、日志列表、分页、详情抽屉、保存视图/导出 | Vue3 + **OpenSearch PPL** + FastAPI(检索网关) + PG(视图) | ✅ 本版直接 PPL，无转换层 |
 | 仪表盘列表 `DSH-0301` | `/dashboards` | 筛选、仪表盘 CRUD、删除确认、状态 | Vue3 + FastAPI(仪表盘服务) + PG + OpenSearch(图表数据) | ✅ |
@@ -61,7 +61,7 @@
 | 告警规则 `ALM-0402` | `/alarms/rules` | 规则 CRUD、启用开关、**实时判定**、保存生效 | Vue3 + FastAPI(规则管理) + **Flink**(实时判定 Job) + PG(规则) + Kafka(日志流) | ✅ Flink 核心用武之地 |
 | 数据源 `DAT-0501` | `/data-sources` | 数据源 CRUD、类型(Agent/Syslog/HTTP/Kafka)、连通性校验、导出配置 | Vue3 + FastAPI(接入服务) + PG + Kafka topic 管理 | ✅ |
 | Agent 管理 `DAT-0502` | `/agents` | 主机列表、**心跳(>3min 离线)**、批量升级(滚动/断点续传)、重启、进度 | Vue3 + **Fluent Bit**(主机侧唯一进程，管控脚本随包部署、`exec` 插件调起) + FastAPI(`agent-service`) + PG(主机元数据) + Redis(心跳) | ✅ 本版纳入，见 3.2(8) |
-| 用户与角色 `SYS-0601` | `/settings/users` | Tabs(用户/角色/系统参数/审计)、用户 CRUD、启用开关、导出 | Vue3 + FastAPI(系统服务) + **PostgreSQL**(RBAC/审计) | ✅ 部分待细化 |
+| 用户与角色 `SYS-0601` | `/settings/users` | Tabs(用户/角色/系统参数/审计)、用户 CRUD、启用开关、导出 | Vue3 + FastAPI(系统服务) + **PostgreSQL**(RBAC/审计) | ✅ 已落地（2026-11-16，四 Tab 全通） |
 
 ### 3.2 逐模块细化（含规格原文要点）
 
@@ -72,6 +72,9 @@
   - 后端：FastAPI 鉴权服务，BCrypt 密码哈希，JWT（或 Session）签发；租户选择决定数据范围。
   - 存储：PostgreSQL `users` / `tenants` / `roles` 表。
   - 性能目标：`api_p95 < 800ms`、`lcp < 2000ms`（规格 `perf` 字段）。
+- **已落地（2026-11-16）**：`auth-service` 提供 `/tenants`、`/login`、`/me`、`/logout`、`/password`；
+  密码用 bcrypt(cost=12)，JWT 与 `system-service` 共用 `JWT_SECRET`；失败区分 400（缺字段）/401（账号或密码错，统一文案防枚举）/403（停用或租户不匹配）。
+  登录选定租户写入前端 `app.tenant`，与 `logs-<tenant>` 索引编码对齐（default/acme/gp）。
 
 #### （2）运行总览 `OVW-0101`
 - 功能点：时间范围（近1h/24h/7d/30d）；3 张图（写入趋势「万条」、告警级别分布「严重/警告/提示」、检索耗时分布「P50/P95 ms」）；告警事件表（alarmName/level/source/occurTime/status）；异常状态标签 + 告警 badge；刷新 / 导出报表。
@@ -137,6 +140,9 @@
   - 实现：RBAC 三表 `users` / `roles` / `permissions`，角色枚举即上述三类，权限点按「资源:操作」粒度定义。
 - **多租户隔离（已确认）：行级隔离 + 租户 ID（tenant_id）**。每一张主数据表（用户、规则、数据源、仪表盘、告警事件等）均带 `tenant_id` 列；所有读写 SQL / OpenSearch 查询强制附加 `tenant_id` 过滤（在 FastAPI 鉴权中间件统一注入），实现租户间数据不可见。规格中 `tenant` 枚举（总部生产 / 省侧运维 / 测试租户）即租户维度。
 - 落点：FastAPI 系统服务 + PostgreSQL（RBAC 三表、tenants、audit_log、system_params；各业务表含 `tenant_id`）。
+- **已落地（2026-11-16）**：`system-service` 为六表的唯一建表方，前端 `/settings/users` 四 Tab 全部接真实接口；
+  权限点按 12 个资源 × 动作定义，改角色权限实时生效（不写进 Token，每次现查 permissions）。
+  ⚠️ 与上述「三类角色」的差异：原型 `settings.html` 角色列表含第四类「审计员」，本次按原型实现 4 个内置角色（数据驱动，可在角色表内调整）。
 - ⚠️ 仍待细化（非阻塞本版）：系统参数的具体项、审计日志的字段与保留期——规格未展开，需补 PRD（不影响一阶段开发）。
 
 ### 3.3 覆盖度结论
@@ -218,13 +224,13 @@ source=* | where level = 'ERROR' | stats count() by host
 | 服务（建议名） | 技术 | 状态 | 职责 | 对应功能模块 |
 |----------------|------|------|------|--------------|
 | `web` (前端) | Nginx + Vue3 产物 | 无状态 | 静态资源托管、SPA 路由 | 全部页面 |
-| `auth-service` | FastAPI | 无状态 | 登录、JWT、租户、RBAC 判定 | AUTH/SYS |
+| `auth-service` | FastAPI | 无状态 | 登录、JWT 签发、`/me` 返回用户与权限（**不做管理面 CRUD**；RBAC 判定由各服务自行校验同一 Token） | AUTH-0100 |
 | `search-service` | FastAPI | 无状态 | 检索网关：PPL 检索封装（含合法性校验）、鉴权、分页、限流 | LOG/DSH |
 | `dashboard-service` | FastAPI | 无状态 | 看板/图表配置 CRUD、取数编排 | DSH |
 | `alarm-service` | FastAPI | 无状态 | 告警事件管理、状态机、通知 | ALM-01 |
 | `ingest-service` | FastAPI | 无状态 | 数据源管理、连通性校验、Kafka topic | DAT-01 |
 | `agent-service` | FastAPI | 无状态 | Agent 主机元数据、心跳超时、升级编排（本版纳入一阶段，见 3.2(8)） | DAT-02 |
-| `system-service` | FastAPI | 无状态 | 用户/角色/参数/审计 | SYS |
+| `system-service` | FastAPI | 无状态 | 用户/角色/参数/审计的**管理面 CRUD**，且为 RBAC 六表的唯一建表方 | SYS-0601 |
 | `log-agent` (采集器) | **Fluent Bit**（开源 C agent，**主机侧唯一进程**） | 有状态(部署在主机侧) | 主机日志采集与转发：tail/systemd/syslog/http → Kafka / OpenSearch；**管控脚本随包部署、由 `exec` 插件调起，不另起进程**（替代原自研 Go 采集器） | DAT-01/02 |
 | `alarm-flink-job` | Flink | 有状态 | 实时消费 Kafka → 匹配规则 → 触发告警 | ALM-02 |
 | OpenSearch | 托管/容器 | 有状态 | 日志索引与检索 | 全局 |
