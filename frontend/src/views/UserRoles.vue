@@ -377,10 +377,10 @@ onMounted(async () => {
 <template>
   <div class="page">
     <div class="page-head">
-      <div class="breadcrumb"><span>平台管理</span><span class="sep">/</span><span class="cur">用户与角色</span></div>
+      <div class="breadcrumb"><span>平台管理</span><span class="sep">/</span><span class="cur">用户角色</span></div>
       <div class="head-bar">
         <div>
-          <h1 class="title">用户与角色</h1>
+          <h1 class="title">用户与角色管理</h1>
           <p class="desc">按角色分配菜单与数据范围，变更实时生效</p>
         </div>
         <div class="head-actions">

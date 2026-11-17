@@ -55,16 +55,11 @@ services:
   ai-service:
     volumes:
       - "./services/ai-service:/app/services/ai-service"
-      # 宿主 CLI 入口（真身副本，见 services/ai-service/vendor/cli/codebuddy）只读映射到容器内 ~/.local/bin。
-      # 源路径位于 /Users（Docker Desktop 默认共享），无需改动系统级 File Sharing 设置，也不暴露凭据目录。
-      - "./services/ai-service/vendor/cli:/home/appuser/.local/bin:ro"
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     ports: ["8008:8000"]
-    # 容器内无 Node 运行时：选 WorkBuddy CLI 生成 PPL 时，经宿主机桥接调用 CLI 会话
+    # 本地自定义模型（Ollama / oMLX）默认走 host.docker.internal 访问宿主机服务
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    environment:
-      AI_CLI_BRIDGE_URL: "${AI_CLI_BRIDGE_URL:-http://host.docker.internal:8010/invoke}"
 
   fluentbit:
     volumes:

@@ -21,13 +21,15 @@
 属于“按严重级别的活跃事件视图”；告警事件表仅列出 WARN+（真正需关注的事件）。
 """
 import os
+import json
 import math
 import time
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional
 
 import psycopg2
-from fastapi import FastAPI, HTTPException, Query
+from psycopg2.extras import RealDictCursor
+from fastapi import FastAPI, HTTPException, Query, Body
 from fastapi.middleware.cors import CORSMiddleware
 from opensearchpy import OpenSearch
 
@@ -388,7 +390,12 @@ def root():
     return {
         "service": "dashboard-service",
         "docs": "/docs",
-        "endpoints": ["/overview (运行总览指标，真实数据分析)"],
+        "endpoints": [
+            "/overview (运行总览指标，真实数据分析)",
+            "/dashboards (仪表盘配置 CRUD，PG 持久化)",
+            "/query (配置驱动的图表聚合，OpenSearch 真实取数)",
+            "/meta (可配置的图表类型 / 维度 / 指标字典)",
+        ],
     }
 
 
@@ -621,3 +628,430 @@ def overview(
     }
     cache_put(cache_key, data)
     return data
+
+# ===========================================================================
+# 仪表盘（对应原型 P-DSH-0301 列表 / P-DSH-0302 详情）
+# ---------------------------------------------------------------------------
+# 设计取舍（如实记录）：
+# - 配置（名称/负责人/图表布局/每图表的维度与筛选）存 PG 表 dashboards，
+#   一条记录一个看板，widgets 为 JSONB 数组，支持拖拽后的布局持久化。
+# - 图表数据不在保存时固化：每次打开看板由 POST /query 按每个 widget 的维度配置
+#   实时对 OpenSearch(logs-*) 聚合，与运行总览共用同一取数原语与租户路由。
+# - 不新增定时任务、不落指标快照：演示环境数据量小，实时聚合即可；30s 结果缓存复用。
+# ===========================================================================
+
+# 可配置维度字典：前端编辑面板与后端聚合共用，避免两边口径漂移。
+# field 为 OpenSearch 字段名；label 为中文展示名；支持与否取决于日志 mapping。
+DIMENSIONS = {
+    "none":     {"label": "总量（单值）", "field": None,       "kind": "scalar"},
+    "time":     {"label": "时间趋势",     "field": "@timestamp", "kind": "time"},
+    "level":    {"label": "日志级别",     "field": "level",    "kind": "terms"},
+    "source":   {"label": "来源服务",     "field": "source",   "kind": "terms"},
+    "host":     {"label": "主机",         "field": "host",     "kind": "terms"},
+    "status":   {"label": "状态码",       "field": "status",   "kind": "terms"},
+    "traceId":  {"label": "追踪 ID",      "field": "traceId",  "kind": "terms"},
+    "tenant":   {"label": "租户",         "field": "tenant_id","kind": "terms"},
+    "records":  {"label": "日志明细",     "field": None,        "kind": "records"},
+}
+
+# 图表类型字典：type 决定前端 ECharts 渲染形态，也约束可用维度。
+CHART_TYPES = {
+    "kpi":       {"label": "指标卡",   "dims": ["none"]},
+    "line":      {"label": "折线图",   "dims": ["time"]},
+    "area":      {"label": "面积图",   "dims": ["time"]},
+    "bar":       {"label": "柱状图",   "dims": ["level", "source", "host", "status", "traceId", "tenant"]},
+    "hbar":      {"label": "横向排行", "dims": ["level", "source", "host", "status", "traceId", "tenant"]},
+    "pie":       {"label": "占比饼图", "dims": ["level", "source", "host", "status", "tenant"]},
+    "donut":     {"label": "环形占比", "dims": ["level", "source", "host", "status", "tenant"]},
+    "table":     {"label": "日志明细表", "dims": ["records"]},
+}
+
+# 日志级别配色（与运行总览一致）
+LEVEL_COLORS = {
+    "FATAL": "#B71C1C", "ERROR": "#E53935", "WARN": "#EA720F",
+    "INFO": "#03857E", "DEBUG": "#757575", "NOTICE": "#8E24AA", "TRACE": "#90A4AE",
+}
+PALETTE = ["#03857E", "#19A5A0", "#2178D8", "#EA720F", "#8E24AA", "#E53935", "#757575", "#00A9A3", "#5C6BC0", "#26A69A"]
+
+
+def _color_for(dim: str, key: Any, idx: int) -> str:
+    if dim == "level":
+        return LEVEL_COLORS.get(str(key).upper(), "#CFD8DC")
+    return PALETTE[idx % len(PALETTE)]
+
+
+def init_dashboard_table() -> None:
+    """建 dashboards 表 + 种子看板。失败不阻塞服务启动。"""
+    try:
+        conn = pg_conn()
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS dashboards (
+                    id SERIAL PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    owner TEXT NOT NULL DEFAULT '系统',
+                    description TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'running',
+                    default_range TEXT NOT NULL DEFAULT '近 24 小时',
+                    widgets JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                )
+                """
+            )
+            # 迁移：早期版本含 folder（所属目录）列，现按需求移除；IF EXISTS 保证幂等。
+            cur.execute("ALTER TABLE dashboards DROP COLUMN IF EXISTS folder")
+            cur.execute("SELECT COUNT(*) FROM dashboards")
+            if (cur.fetchone() or [0])[0] == 0:
+                seed = _seed_dashboards()
+                for d in seed:
+                    cur.execute(
+                        """INSERT INTO dashboards (name, owner, description, status, default_range, widgets)
+                           VALUES (%s,%s,%s,%s,%s,%s::jsonb)""",
+                        (d["name"], d["owner"], d["description"],
+                         d["status"], d["default_range"], json.dumps(d["widgets"], ensure_ascii=False)),
+                    )
+    except Exception as e:  # noqa: BLE001
+        print(f"[dashboard-service] init dashboards table failed: {e}", flush=True)
+
+
+def _seed_dashboards() -> List[Dict[str, Any]]:
+    """两条种子：对齐原型「核心业务日志看板」的 4 图 + 指标卡。"""
+    core_widgets = [
+        {"id": "w1", "type": "kpi", "title": "日志总量", "dimension": "none", "span": 1, "filter": {}, "limit": 10},
+        {"id": "w2", "type": "kpi", "title": "错误日志", "dimension": "none", "span": 1,
+         "filter": {"level": ["ERROR", "FATAL"]}, "limit": 10},
+        {"id": "w3", "type": "kpi", "title": "影响主机", "dimension": "none", "span": 1,
+         "filter": {}, "metric": "distinct_host", "limit": 10},
+        {"id": "w4", "type": "kpi", "title": "来源服务", "dimension": "none", "span": 1,
+         "filter": {}, "metric": "distinct_source", "limit": 10},
+        {"id": "w5", "type": "line", "title": "日志量趋势", "dimension": "time", "span": 2, "filter": {}, "limit": 10},
+        {"id": "w6", "type": "donut", "title": "日志级别分布", "dimension": "level", "span": 1, "filter": {}, "limit": 10},
+        {"id": "w7", "type": "hbar", "title": "Top10 来源服务", "dimension": "source", "span": 1, "filter": {}, "limit": 10},
+        {"id": "w8", "type": "bar", "title": "Top10 异常主机", "dimension": "host", "span": 2,
+         "filter": {"level": ["ERROR", "FATAL"]}, "limit": 10},
+        {"id": "w9", "type": "hbar", "title": "状态码分布", "dimension": "status", "span": 1, "filter": {}, "limit": 10},
+        {"id": "w10", "type": "line", "title": "错误级别趋势", "dimension": "time", "span": 2,
+         "filter": {"level": ["ERROR", "FATAL"]}, "limit": 10},
+        {"id": "w11", "type": "table", "title": "异常日志明细", "dimension": "records", "span": 4,
+         "filter": {"level": ["ERROR", "FATAL", "WARN"]}, "limit": 6},
+    ]
+    return [
+        {
+            "name": "核心业务日志看板", "owner": "黄金金",
+            "description": "订单/支付链路的日志总量、级别分布、异常主机与趋势",
+            "status": "running", "default_range": "近 24 小时", "widgets": core_widgets,
+        },
+        {
+            "name": "网关访问质量", "owner": "黄金金",
+            "description": "网关状态码与来源服务分布",
+            "status": "running", "default_range": "近 7 天",
+            "widgets": [
+                {"id": "g1", "type": "kpi", "title": "请求日志量", "dimension": "none", "span": 1, "filter": {}, "limit": 10},
+                {"id": "g2", "type": "donut", "title": "状态码占比", "dimension": "status", "span": 1, "filter": {}, "limit": 10},
+                {"id": "g3", "type": "bar", "title": "来源服务请求量", "dimension": "source", "span": 2, "filter": {}, "limit": 10},
+                {"id": "g4", "type": "line", "title": "请求量趋势", "dimension": "time", "span": 2, "filter": {}, "limit": 10},
+            ],
+        },
+    ]
+
+
+def _row_to_dashboard(row) -> Dict[str, Any]:
+    d = {
+        "id": row["id"], "name": row["name"], "owner": row["owner"],
+        "description": row["description"], "status": row["status"],
+        "defaultRange": row["default_range"],
+        "widgets": row["widgets"] if isinstance(row["widgets"], list) else json.loads(row["widgets"] or "[]"),
+        "createdAt": to_local(row["created_at"]) if row["created_at"] else "",
+        "updatedAt": to_local(row["updated_at"]) if row["updated_at"] else "",
+    }
+    d["chartCount"] = len(d["widgets"])
+    return d
+
+
+@app.on_event("startup")
+def _startup_dashboards():
+    init_dashboard_table()
+
+
+@app.get("/dashboards")
+def list_dashboards():
+    try:
+        with pg_conn().cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT * FROM dashboards ORDER BY updated_at DESC")
+            rows = cur.fetchall()
+        return {"items": [_row_to_dashboard(r) for r in rows]}
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"list dashboards error: {e}")
+
+
+@app.get("/dashboards/meta")
+def dashboard_meta():
+    """编辑面板可用字典：图表类型、可配置维度以及时间范围。"""
+    return {
+        "chartTypes": [{"value": k, **v} for k, v in CHART_TYPES.items()],
+        "dimensions": [{"value": k, **v} for k, v in DIMENSIONS.items()],
+        "ranges": list(RANGE_LABEL_TO_KEY.keys()),
+        "defaultLayout": {"span1": 1, "span2": 2, "cols": 4},
+    }
+
+
+@app.get("/dashboards/{dash_id}")
+def get_dashboard(dash_id: int):
+    try:
+        with pg_conn().cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT * FROM dashboards WHERE id = %s", (dash_id,))
+            row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="仪表盘不存在")
+        return _row_to_dashboard(row)
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"get dashboard error: {e}")
+
+
+@app.post("/dashboards")
+def create_dashboard(payload: Dict[str, Any] = Body(...)):
+    name = str(payload.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="名称不能为空")
+    if len(name) > 24:
+        raise HTTPException(status_code=400, detail="名称不超过 24 字")
+    widgets = payload.get("widgets") or []
+    try:
+        with pg_conn().cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """INSERT INTO dashboards (name, owner, description, status, default_range, widgets)
+                   VALUES (%s,%s,%s,%s,%s,%s::jsonb) RETURNING *""",
+                (name, payload.get("owner") or "系统",
+                 payload.get("description") or "", payload.get("status") or "running",
+                 payload.get("defaultRange") or "近 24 小时",
+                 json.dumps(widgets, ensure_ascii=False)),
+            )
+            row = cur.fetchone()
+        return _row_to_dashboard(row)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"create dashboard error: {e}")
+
+
+@app.put("/dashboards/{dash_id}")
+def update_dashboard(dash_id: int, payload: Dict[str, Any] = Body(...)):
+    try:
+        with pg_conn().cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT id FROM dashboards WHERE id = %s", (dash_id,))
+            if not cur.fetchone():
+                raise HTTPException(status_code=404, detail="仪表盘不存在")
+            fields, values = [], []
+            mapping = {
+                "name": "name", "owner": "owner",
+                "description": "description", "status": "status", "defaultRange": "default_range",
+            }
+            for k, col in mapping.items():
+                if k in payload:
+                    fields.append(f"{col} = %s")
+                    values.append(payload[k])
+            if "widgets" in payload:
+                fields.append("widgets = %s::jsonb")
+                values.append(json.dumps(payload["widgets"] or [], ensure_ascii=False))
+            fields.append("updated_at = now()")
+            values.append(dash_id)
+            cur.execute(f"UPDATE dashboards SET {', '.join(fields)} WHERE id = %s RETURNING *", values)
+            row = cur.fetchone()
+        return _row_to_dashboard(row)
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"update dashboard error: {e}")
+
+
+@app.delete("/dashboards/{dash_id}")
+def delete_dashboard(dash_id: int):
+    try:
+        with pg_conn().cursor() as cur:
+            cur.execute("DELETE FROM dashboards WHERE id = %s", (dash_id,))
+            if cur.rowcount == 0:
+                raise HTTPException(status_code=404, detail="仪表盘不存在")
+        return {"deleted": dash_id}
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"delete dashboard error: {e}")
+
+
+# ---------------------------------------------------------------------------
+# 配置驱动的图表聚合：一次请求按多个 widget 的维度配置并发取数
+# ---------------------------------------------------------------------------
+def _window_of(range_in: str):
+    key = range_key_of(range_in)
+    to = now_ms()
+    if key == "today":
+        now_local = datetime.now(tz=CST)
+        start = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+        frm = int(start.timestamp() * 1000)
+    else:
+        frm = to - RANGE_DURATION_MS[key]
+    return key, frm, to, HIST_INTERVAL[key], HIST_FORMAT[key]
+
+
+def _must_for(frm: int, to: int, flt: Dict[str, Any]) -> List[Dict[str, Any]]:
+    must = [_time_must(frm, to)]
+    if not flt:
+        return must
+    lv = flt.get("level")
+    if lv:
+        levels = lv if isinstance(lv, list) else [lv]
+        must.append({"terms": {"level": levels}})
+    for key in ("source", "host", "status", "traceId", "tenant_id"):
+        val = flt.get(key)
+        if val not in (None, "", "all"):
+            must.append({"term": {key: val}})
+    return must
+
+
+def _metric_aggs(metric: str) -> Dict[str, Any]:
+    """按指标类型生成子聚合：distinct_* 走 cardinality，error_rate 走 filter 比例。"""
+    if metric == "distinct_host":
+        return {"uniq": {"cardinality": {"field": "host"}}}
+    if metric == "distinct_source":
+        return {"uniq": {"cardinality": {"field": "source"}}}
+    if metric == "error_rate":
+        return {"bad": {"filter": {"terms": {"level": ["ERROR", "FATAL"]}}}}
+    return {}
+
+
+def _bucket_value(bucket: Dict[str, Any], metric: str) -> float:
+    if metric == "error_rate":
+        total = bucket.get("doc_count", 0)
+        bad = (bucket.get("bad") or {}).get("doc_count", 0)
+        return round(bad / total * 100, 2) if total else 0.0
+    if metric in ("distinct_host", "distinct_source"):
+        return int((bucket.get("uniq") or {}).get("value", 0) or 0)
+    return int(bucket.get("doc_count", 0))
+
+
+def aggregate_widget(w: Dict[str, Any], idx: str, frm: int, to: int, interval: str, fmt: str) -> Dict[str, Any]:
+    dim = w.get("dimension") or "none"
+    metric = w.get("metric") or "count"
+    limit = int(w.get("limit") or 10)
+    limit = max(1, min(limit, 50))
+    flt = w.get("filter") or {}
+    must = _must_for(frm, to, flt)
+    sub = _metric_aggs(metric)
+    unit = "%" if metric == "error_rate" else ("个" if metric.startswith("distinct_") else "条")
+
+    # 维度 records：最近日志明细表（按时间倒序取 N 条）
+    if dim == "records":
+        body = {
+            "size": limit,
+            "query": {"bool": {"must": must}},
+            "sort": [{"@timestamp": {"order": "desc"}}],
+            "_source": ["@timestamp", "level", "source", "host", "message", "status"],
+        }
+        resp = agg_search(idx, body)
+        rows = []
+        for h in resp.get("hits", {}).get("hits", []):
+            s = h.get("_source", {})
+            rows.append({
+                "time": to_local(s.get("@timestamp")),
+                "level": s.get("level", "—"),
+                "source": s.get("source", "—"),
+                "host": s.get("host", "—"),
+                "message": s.get("message", ""),
+                "status": s.get("status", ""),
+            })
+        return {"id": w.get("id"), "dimension": dim, "unit": unit, "rows": rows}
+
+    # 维度为 none：单值（count / distinct / error_rate）
+    if dim == "none":
+        # track_total_hits=True：OpenSearch 默认 hits.total 封顶 10000（relation=gte），
+        # 总量类指标卡必须关闭截断，否则近 7 天等大数据量会被低估。error_rate 的分母同源。
+        body = {"size": 0, "track_total_hits": True, "query": {"bool": {"must": must}}, "aggs": sub}
+        resp = agg_search(idx, body)
+        total = resp.get("hits", {}).get("total", 0)
+        if isinstance(total, dict):
+            total = total.get("value", 0)
+        aggs = resp.get("aggregations", {})
+        if metric == "error_rate":
+            bad = (aggs.get("bad") or {}).get("doc_count", 0)
+            value = round(bad / total * 100, 2) if total else 0.0
+        elif metric in ("distinct_host", "distinct_source"):
+            value = int((aggs.get("uniq") or {}).get("value", 0) or 0)
+        else:
+            value = int(total or 0)
+        return {"id": w.get("id"), "dimension": dim, "metric": metric, "unit": unit, "value": value}
+
+    dmeta = DIMENSIONS.get(dim)
+    if not dmeta or not dmeta.get("field"):
+        return {"id": w.get("id"), "dimension": dim, "unit": unit, "value": 0, "error": "unsupported dimension"}
+
+    if dmeta["kind"] == "time":
+        agg_node = {
+            "date_histogram": {
+                "field": "@timestamp", "fixed_interval": interval, "min_doc_count": 0,
+                "format": fmt, "time_zone": "+08:00",
+            }
+        }
+        if sub:
+            agg_node["aggs"] = sub
+        body = {"size": 0, "query": {"bool": {"must": must}}, "aggs": {"over_time": agg_node}}
+        resp = agg_search(idx, body)
+        points = []
+        for b in resp["aggregations"]["over_time"]["buckets"]:
+            points.append({
+                "t": b.get("key_as_string") or ms_to_label(b["key"], fmt),
+                "v": _bucket_value(b, metric),
+            })
+        return {"id": w.get("id"), "dimension": dim, "metric": metric, "unit": unit, "points": points}
+
+    # terms 维度
+    field = dmeta["field"]
+    terms_node: Dict[str, Any] = {"terms": {"field": field, "size": limit}}
+    if sub:
+        terms_node["aggs"] = sub
+    body = {"size": 0, "query": {"bool": {"must": must}}, "aggs": {"t": terms_node}}
+    resp = agg_search(idx, body)
+    items = []
+    level_label = {"FATAL": "致命", "ERROR": "错误", "WARN": "警告", "INFO": "信息",
+                   "DEBUG": "调试", "NOTICE": "通知", "TRACE": "追踪"}
+    for i, b in enumerate(resp["aggregations"]["t"]["buckets"]):
+        name = str(b["key"])
+        if dim == "level":
+            name = level_label.get(name.upper(), name)
+        items.append({
+            "name": name, "value": _bucket_value(b, metric),
+            "color": _color_for(dim, b["key"], i),
+        })
+    return {"id": w.get("id"), "dimension": dim, "metric": metric, "unit": unit, "items": items}
+
+
+@app.post("/query")
+def query_widgets(payload: Dict[str, Any] = Body(...)):
+    """按 widget 配置聚合。body: {range_in, tenant, widgets:[...], force?}"""
+    widgets = payload.get("widgets") or []
+    if not isinstance(widgets, list):
+        raise HTTPException(status_code=400, detail="widgets 必须为数组")
+    tenant = payload.get("tenant") or "default"
+    key, frm, to, interval, fmt = _window_of(payload.get("range_in") or "今日")
+    idx = index_for(tenant)
+    force = bool(payload.get("force"))
+
+    results = []
+    errors = []
+    for w in widgets:
+        if not isinstance(w, dict):
+            continue
+        try:
+            results.append(aggregate_widget(w, idx, frm, to, interval, fmt))
+        except HTTPException:
+            raise
+        except Exception as e:  # noqa: BLE001  单个图表失败不影响整板
+            errors.append({"id": w.get("id"), "error": str(e)})
+            results.append({"id": w.get("id"), "dimension": w.get("dimension"), "unit": "条",
+                            "value": 0, "items": [], "points": [], "degraded": True})
+    return {
+        "range": key, "tenant": tenant,
+        "updatedAt": datetime.fromtimestamp(to / 1000, tz=CST).isoformat(),
+        "results": results, "errors": errors,
+    }

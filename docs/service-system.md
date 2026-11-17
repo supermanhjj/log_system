@@ -16,7 +16,7 @@
 | 系统参数（登记 + 类型校验） | ✅ 登记层能力，未驱动系统 | `app/main.py:578-625` |
 | 审计日志（筛选 / 分页 / 导出） | ✅ | `app/main.py:655-722` |
 | RBAC 六表 + 日志空间三表建表与种子 | ✅ 启动时幂等执行 | `app/db.py` 的 `init_db()` |
-| 日志空间管理（容量 / 配置 / 索引 / 配额 / 清理） | ✅ 真实取数（OpenSearch + PG） | `app/storage.py` |
+| 日志空间管理（容量 / 配置 / 索引 / 配额 / 清理） | ✅ 总容量来自配置，已用来自 OpenSearch 真实取数，配额之和受总量约束 | `app/storage.py` |
 | 鉴权闸门 `require(resource, action)` | ✅ 每请求现查权限 | `app/security.py:94-119` |
 | 删除用户 / 角色增删 / 租户管理 | ❌ 未做，用停用代替 | 见第 10 节 |
 
@@ -30,7 +30,7 @@
 
 | | 内容 |
 |---|---|
-| 做 | 建表 + 种子、用户 CRUD/启停/重置/批量/导出、角色权限矩阵读写、系统参数读写、审计查询与导出、日志空间容量/配置/索引/配额、页面元信息 `/meta` |
+| 做 | 建表 + 种子、用户 CRUD/启停/重置/批量/导出、角色权限矩阵读写、系统参数读写、审计查询与导出、日志空间容量/配置/索引/两级配额、页面元信息 `/meta` |
 | 不做 | 登录与 JWT 签发（`auth-service`）、各业务模块（检索/告警/接入/Agent/仪表盘/AI）的取数逻辑 |
 | 表所有权 | RBAC 六表（`tenants` / `roles` / `permissions` / `users` / `audit_log` / `system_params`）+ 日志空间三表（`storage_config` / `tenant_quotas` / `storage_snapshots`）——**只在本服务 `app/db.py` 建**，`auth-service` 只读不建 |
 | 鉴权方式 | 自行校验 Token + 每个接口按「资源:操作」现查 `permissions`，改权限后实时生效 |
@@ -54,7 +54,7 @@
 | `audit_log` | `tenant_id` / `user_id` / `user_name` / `account` / `action` / `target` / `detail`(jsonb) / `ip` / `result` | `idx_audit_created`（`created_at DESC`） | 追加写；姓名与账号**冗余存储**，用户改名后历史仍可读 |
 | `system_params` | `pkey` / `pvalue` / `ptype`(int/enum/bool) / `label` / `note` / `options`(jsonb) | `pkey` 主键 | 保存时按 `ptype` 校验类型与枚举范围 |
 | `storage_config` | `id`(恒为 1) / `retain_days` / `roll_threshold` / `hot_cold_strategy` / `quota_gb` | `id` 主键 + `CHECK (id = 1)` | 单行表，多行无意义；`quota_gb = 0` 表示不限制 |
-| `tenant_quotas` | `tenant_code` / `quota_gb` | `tenant_code` 主键，外键指向 `tenants(code)` | 每租户日志配额，0 = 不限制 |
+| `tenant_quotas` | `tenant_code` / `quota_gb` | `tenant_code` 主键，外键指向 `tenants(code)` | 每租户日志配额，0 = 不设上限；之和受 `storage_config.quota_gb`（平台总容量）约束 |
 | `storage_snapshots` | `snap_date` / `scope` / `used_bytes` / `doc_count` / `index_count` | 主键 `(snap_date, scope)` | 每日容量实测快照，供趋势图从「推算」转「实测」 |
 
 ### 2.2 种子策略
@@ -234,10 +234,10 @@ for perm in sorted(set(req.permissions)):
 | GET | `/audit/export.csv` | `audit:export` | 上限 20000 行 |
 | GET | `/storage/capacity` | `storage:view` 或 `overview:view` | 容量四卡 + 趋势；`range` 支持「近 7 天」或纯天数 |
 | GET | `/storage/config` | `storage:view` | 存储配置 + 冷热策略选项 |
-| PUT | `/storage/config` | `storage:update` | 局部更新；`retainDays` 为日志生命周期唯一来源，不再回写系统参数 |
+| PUT | `/storage/config` | `storage:update` | 局部更新；`totalGB` 为平台总容量（低于已分配配额时 400），`retainDays` 为日志生命周期唯一来源 |
 | GET | `/storage/indexes` | `storage:view` | 索引真实体积/文档数/health/年龄 + 状态与判定依据 |
 | POST | `/storage/indexes/{name}/clean` | `storage:clean` | `purge` 删过期文档（默认）/ `drop` 删冷索引（仅冷索引允许） |
-| GET | `/storage/quotas` | `storage:view` | 各租户配额与真实占用；非管理员仅本租户 |
+| GET | `/storage/quotas` | `storage:view` | 各租户配额与真实占用，含总容量/已分配/剩余汇总；非管理员仅本租户 |
 | PUT | `/storage/quotas/{tenant}` | `storage:update` | `0` = 不限制；非管理员只能改本租户 |
 
 ---
@@ -299,7 +299,7 @@ for perm in sorted(set(req.permissions)):
 | `services/system-service/app/audit.py` | 审计写入（管理面与日志空间共用，失败不阻断业务） |
 | `frontend/src/api/system.js` | 15 个接口封装（含 `saveCsv` blob 下载，`:88-98`） |
 | `frontend/src/views/UserRoles.vue` | 两个 Tab：用户管理 / 角色权限（系统参数与审计日志已迁至系统设置页） |
-| `frontend/src/views/LogStorage.vue` | 日志空间管理四个 Tab：容量概览 / 存储配置 / 索引管理 / 租户配额 |
+| `frontend/src/views/LogStorage.vue` | 日志空间管理四个 Tab：容量概览 / 存储配置（含平台总容量）/ 索引管理 / 租户配额（含分配汇总） |
 | `frontend/src/api/storage.js` | 7 个存储接口封装 |
 | `frontend/src/App.vue` | 顶栏真实用户；菜单按 `resources` 数组过滤 |
 | `frontend/src/router/index.js` | `meta.perm` / `meta.permAny` 双档守卫 |

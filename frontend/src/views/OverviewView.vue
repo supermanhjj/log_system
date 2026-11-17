@@ -30,7 +30,8 @@ const alarmTotal = computed(() => overview.alarmDist.reduce((s, x) => s + x.valu
 
 const storageCapacity = reactive({
   totalText: '—', usedText: '—', availableText: '—', occupancy: '—',
-  docs: 0, indexCount: 0, scopeText: '全部租户', loaded: false,
+  docs: 0, indexCount: 0, scopeText: '全部租户', loaded: false, configured: false,
+  capBasis: 'platform', capLabel: '平台总容量', unlimited: false, totalGB: 0,
 })
 async function loadStorageCapacity() {
   try {
@@ -39,15 +40,26 @@ async function loadStorageCapacity() {
     storageCapacity.totalText = data.totalText || `${data.total} ${data.unit}`
     storageCapacity.usedText = data.usedText || `${data.used} ${data.unit}`
     storageCapacity.availableText = data.availableText || `${data.available} ${data.unit}`
-    storageCapacity.occupancy = data.occupancy
+    storageCapacity.configured = data.configured !== false
+    storageCapacity.occupancy = storageCapacity.configured ? data.occupancy : '—'
     storageCapacity.docs = data.docs || 0
     storageCapacity.indexCount = data.indexCount || 0
     storageCapacity.scopeText = data.scope === 'all' ? '全部租户' : '本租户'
+    storageCapacity.capBasis = data.capBasis || 'platform'
+    storageCapacity.capLabel = data.capLabel || '平台总容量'
+    storageCapacity.unlimited = !!data.unlimited
+    storageCapacity.totalGB = data.totalGB || 0
     storageCapacity.loaded = true
   } catch {
     // 取不到就保持「—」，不回落成写死的假数据
   }
 }
+const storageCapIsTenant = computed(() => storageCapacity.capBasis === 'tenant')
+const storageCapSource = computed(() => {
+  if (storageCapacity.unlimited) return `${storageCapacity.capLabel} · 不设上限`
+  if (!storageCapacity.configured) return storageCapIsTenant.value ? '本租户配额未分配' : '平台总容量未配置'
+  return `${storageCapacity.capLabel} ${storageCapacity.totalGB} GB`
+})
 // 时间维度短文本：用于卡片脚注，使“近24小时”等写死文案随所选维度变化
 const rangeShort = computed(() => {
   const m = {
@@ -120,7 +132,12 @@ function renderTrend() {
   const pts = overview.writeTrend.points
   trendChart.setOption({
     grid: { left: 44, right: 16, top: 28, bottom: 28 },
-    tooltip: { trigger: 'axis', axisPointer: { type: 'line' } },
+    tooltip: {
+      trigger: 'axis',
+      axisPointer: { type: 'line' },
+      // 挂到 body，脱离卡片 grid 布局；否则 hover 气泡参与列宽计算会把两个卡片撑宽、页面右移
+      appendToBody: true,
+    },
     xAxis: {
       type: 'category',
       data: pts.map((p) => p.t),
@@ -206,6 +223,8 @@ function renderLatency() {
     tooltip: {
       trigger: 'axis',
       axisPointer: { type: 'shadow' },
+      // 挂到 body，避免 hover 气泡撑开卡片导致页面右移（与趋势图/环形图一致）
+      appendToBody: true,
       formatter: (p) => {
         const d = p[0]?.data || {}
         if (!d.count) return `${p[0].axisValue}<br/>该时段无检索记录`
@@ -382,7 +401,7 @@ onBeforeUnmount(() => {
         </template>
         <div class="storage-grid">
           <div class="storage-item">
-            <div class="storage-label">总容量</div>
+            <div class="storage-label">{{ storageCapIsTenant ? '分配配额' : '总容量' }}</div>
             <div class="storage-value">{{ storageCapacity.totalText }}</div>
           </div>
           <div class="storage-item">
@@ -395,19 +414,21 @@ onBeforeUnmount(() => {
           </div>
           <div class="storage-item">
             <div class="storage-label">占用率</div>
-            <div class="storage-value">{{ storageCapacity.occupancy }}%</div>
+            <div class="storage-value">{{ storageCapacity.configured ? `${storageCapacity.occupancy}%` : '—' }}</div>
           </div>
         </div>
         <div class="storage-progress">
           <el-progress
-            :percentage="storageCapacity.loaded ? Math.min(100, Number(storageCapacity.occupancy) || 0) : 0"
+            v-if="storageCapacity.configured"
+            :percentage="Math.min(100, Number(storageCapacity.occupancy) || 0)"
             :stroke-width="10"
+            :show-text="false"
           />
         </div>
         <p class="storage-foot">
           <template v-if="storageCapacity.loaded">
 {{ storageCapacity.scopeText }}索引 {{ storageCapacity.indexCount }} 个 ·
-            文档 {{ storageCapacity.docs.toLocaleString() }} 条
+            文档 {{ storageCapacity.docs.toLocaleString() }} 条 · {{ storageCapSource }}
           </template>
           <template v-else>容量数据暂不可用（OpenSearch 未连通或当前角色无存储查看权限）</template>
         </p>
@@ -582,7 +603,7 @@ onBeforeUnmount(() => {
 .storage-section {  }
 
 /* 卡片网格 */
-.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.grid-2 { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
 /* ECharts tooltip 渲染在卡片内部，el-card 默认 overflow:hidden 会裁掉边缘气泡；放开后完整显示 */
 .card { overflow: visible; }
 .card :deep(.el-card__header) { padding: 12px 16px; border-bottom: 1px solid var(--color-border-1); }

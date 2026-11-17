@@ -11,7 +11,8 @@ import UserRoles from '../views/UserRoles.vue'
 import SystemSettings from '../views/SystemSettings.vue'
 import LogStorage from '../views/LogStorage.vue'
 import LoginView from '../views/LoginView.vue'
-import Placeholder from '../views/Placeholder.vue'
+import DashboardsView from '../views/DashboardsView.vue'
+import DashboardDetailView from '../views/DashboardDetailView.vue'
 import { useAuthStore } from '../stores/auth'
 import { useAppStore } from '../stores/app'
 
@@ -27,7 +28,8 @@ const routes = [
   { path: '/', redirect: '/search' },
   { path: '/search', name: 'search', component: SearchView, meta: { title: '日志检索', perm: ['search', 'view'] } },
   { path: '/overview', name: 'overview', component: OverviewView, meta: { title: '运行总览', perm: ['overview', 'view'] } },
-  { path: '/dashboards', name: 'dashboards', component: Placeholder, meta: { title: '仪表盘', perm: ['dashboards', 'view'] } },
+  { path: '/dashboards', name: 'dashboards', component: DashboardsView, meta: { title: '仪表盘', perm: ['dashboards', 'view'] } },
+  { path: '/dashboards/:id', name: 'dashboard-detail', component: DashboardDetailView, meta: { title: '看板详情', perm: ['dashboards', 'view'] } },
   { path: '/alarms/events', name: 'alarm-events', component: AlarmEvents, meta: { title: '告警事件', perm: ['alarms', 'view'] } },
   { path: '/alarms/rules', name: 'alarm-rules', component: AlarmRules, meta: { title: '告警规则', perm: ['alarms', 'view'] } },
   { path: '/data-sources', name: 'data-sources', component: DataSources, meta: { title: '数据源', perm: ['data', 'view'] } },

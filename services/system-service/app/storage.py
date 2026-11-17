@@ -7,13 +7,17 @@
 - PostgreSQL                  → storage_config / tenant_quotas / storage_snapshots
 
 口径约定（重要，避免"假数据"式自圆其说）：
-1. 四张容量卡按「日志视角」自洽计算：`已用 = 日志索引实际 store.size`，
-   `可用 = 配额剩余（未设配额时取物理卷可用空间）`，`总容量 = 已用 + 可用`。
-   这样三项相加必然闭合，且与下方趋势图（日志占用）口径一致。
-2. 配额 `quota_gb = 0` 表示不限制（跟随物理卷容量）。系统不预置看似合理的假配额。
-3. 趋势优先用 `storage_snapshots` 每日实测快照；快照不足 2 个点时，按真实日志
+1. **总容量是配置值，不是查询值**：`storage_config.quota_gb` 表示上云后实际分配给
+   日志平台的总空间（API 对外字段 `totalGB`）。绝不用 OpenSearch 节点的 fs 读数反推
+   总容量——那是 Docker 虚拟磁盘大小，既不等于云上获批容量，也不是日志专用空间。
+   总容量未配置（0）时如实显示「未配置」，可用与占用率显示「—」。
+2. 四张容量卡：`已用 = 日志索引实际 store.size`，`可用 = 总容量 - 已用`，
+   `占用率 = 已用 / 总容量`。三项始终闭合，且与趋势图（日志占用）口径一致。
+3. 两级配额：租户配额之和不得超过平台总容量；总容量与单租户配额为 0 分别表示
+   「未配置总容量」与「该租户不设上限」（后者不计入分配统计）。系统不预置假配额。
+4. 趋势优先用 `storage_snapshots` 每日实测快照；快照不足 2 个点时，按真实日志
    文档分布反推并标记 `source=estimated`，前端如实展示"推算/实测"。
-4. 清理分两种：`purge` 按保留天数删过期文档（默认，安全）；`drop` 删整个索引，
+5. 清理分两种：`purge` 按保留天数删过期文档（默认，安全）；`drop` 删整个索引，
    且只允许对已转冷的索引执行，活动索引一律拒绝。
 """
 import os
@@ -169,14 +173,37 @@ def read_config() -> Dict[str, Any]:
         pg_exec("INSERT INTO storage_config (id) VALUES (1) ON CONFLICT (id) DO NOTHING")
         rows = pg_query("SELECT * FROM storage_config WHERE id=1")
     r = rows[0]
+    total_gb = int(r["quota_gb"])
     return {
         "retainDays": int(r["retain_days"]),
         "rollThreshold": int(r["roll_threshold"]),
         "hotColdStrategy": r["hot_cold_strategy"],
-        "quotaGB": int(r["quota_gb"]),
+        # 平台总容量：DB 沿用旧列名 quota_gb，语义已明确为「分配给日志平台的总空间」。
+        # totalGB 是新口径字段名，quotaGB 保留作为旧前端的兼容别名。
+        "totalGB": total_gb,
+        "quotaGB": total_gb,
         "strategies": [{"value": s["value"], "label": s["label"]} for s in STRATEGIES],
         "updatedAt": to_cst_str(r["updated_at"]),
     }
+
+
+def allocated_gb(exclude_tenant: str = "") -> int:
+    """已分配给租户的配额之和（GB）。0 表示不设上限，按 0 参与求和只统计显式配额。"""
+    rows = pg_query("SELECT tenant_code, quota_gb FROM tenant_quotas")
+    return sum(int(r["quota_gb"]) for r in rows
+               if r["tenant_code"] != exclude_tenant and int(r["quota_gb"]) > 0)
+
+
+def tenant_quota(code: str) -> Optional[Dict[str, Any]]:
+    """读取单个租户的配额与名称（供租户口径容量使用）。"""
+    rows = pg_query(
+        """SELECT q.quota_gb, t.name FROM tenant_quotas q
+             JOIN tenants t ON t.code = q.tenant_code WHERE q.tenant_code = %s""",
+        (code,),
+    )
+    if not rows:
+        return None
+    return {"name": rows[0]["name"], "quotaGB": int(rows[0]["quota_gb"])}
 
 
 def record_snapshot(scope: str, used_bytes: int, docs: int, index_count: int) -> None:
@@ -271,30 +298,57 @@ def capacity(
     log_bytes = sum(i["bytes"] for i in indexes)
     log_docs = sum(i["docs"] for i in indexes)
 
-    quota_gb = cfg["quotaGB"]
-    if quota_gb > 0:
-        total_bytes = quota_gb * GB
+    # 容量口径跟着 scope 走（scope 已由 scope_for 按角色锁定，非平台管理员只能是本租户）：
+    # - scope=all  → 平台管理员看全局，总量取 storage_config.quota_gb（平台总容量配置值）
+    # - scope=具体租户 → 总量取该租户在 tenant_quotas 被分配的配额
+    # 已用 log_bytes 本就按 scope 过滤，这样总量/可用/占用率与已用三者始终同一口径。
+    # 上云后底层磁盘由云厂商托管，节点 fs 读数既拿不到也不等于获批容量，绝不用于反推总量。
+    if scope == "all":
+        cap_basis = "platform"
+        cap_label = "平台总容量"
+        cap_gb = cfg["totalGB"]
+        unlimited = False
+        cap_source = (f"平台总容量 {cap_gb} GB 为配置值（上云后按实际获批空间填写）"
+                      if cap_gb > 0 else "平台总容量尚未配置（请到「存储配置」填写）")
+    else:
+        tq = tenant_quota(scope)
+        cap_gb = tq["quotaGB"] if tq else 0
+        tq_name = tq["name"] if tq else scope
+        cap_basis = "tenant"
+        cap_label = f"租户「{tq_name}」配额"
+        unlimited = cap_gb == 0  # 配额 0 = 不设上限（租户主动选择，区别于平台「未配置」）
+        cap_source = (f"租户「{tq_name}」配额 {cap_gb} GB（在「租户配额」中分配）"
+                      if cap_gb > 0 else f"租户「{tq_name}」未设配额（配额 0 表示不设上限）")
+
+    configured = cap_gb > 0
+    scope_label = "全部租户" if scope == "all" else f"租户 {scope}"
+
+    if configured:
+        total_bytes = cap_gb * GB
         used_bytes = log_bytes
         avail_bytes = max(total_bytes - used_bytes, 0)
-        basis = "quota"
+        basis = "configured"
+        occupancy = round(used_bytes / total_bytes * 100, 1)
+        note = (f"当前口径为{cap_label}：{cap_source}。"
+                f"「{scope_label}」日志索引实际占用 {fmt_bytes(log_bytes)}，按此口径计算可用空间与占用率。"
+                f"物理卷 {fmt_bytes(fs['total'])}（可用 {fmt_bytes(fs['available'])}）仅为底层磁盘参考，"
+                f"不参与容量计算。")
     else:
+        total_bytes = 0
         used_bytes = log_bytes
-        avail_bytes = fs["available"]
-        total_bytes = used_bytes + avail_bytes
-        basis = "physical"
+        avail_bytes = 0
+        basis = "unconfigured"
+        occupancy = 0.0
+        if unlimited:
+            note = (f"当前口径为{cap_label}：{cap_source}，因此可用空间与占用率不适用；"
+                    f"「{scope_label}」日志索引实际占用 {fmt_bytes(log_bytes)}。")
+        else:
+            note = (f"当前口径为{cap_label}：{cap_source}，无法计算可用空间与占用率。"
+                    f"「{scope_label}」日志索引实际占用 {fmt_bytes(log_bytes)}；"
+                    f"物理卷 {fmt_bytes(fs['total'])}（可用 {fmt_bytes(fs['available'])}）仅为底层磁盘参考。")
 
-    occupancy = round(used_bytes / total_bytes * 100, 1) if total_bytes else 0.0
     record_snapshot(scope, log_bytes, log_docs, len(indexes))
     trend = build_trend(scope, days, log_bytes, log_docs)
-
-    if basis == "quota":
-        note = (f"配额口径：日志配额 {quota_gb} GB，已用 {fmt_bytes(log_bytes)}"
-                f"（{occupancy}%）。物理卷总容量 {fmt_bytes(fs['total'])}，可用 {fmt_bytes(fs['available'])}。")
-    else:
-        scope_label = "全部租户" if scope == "all" else f"租户 {scope}"
-        note = (f"物理卷口径：未设置配额，「{scope_label}」日志索引占用 {fmt_bytes(log_bytes)}；"
-                f"可用取 OpenSearch 节点所在卷的全局剩余空间 {fmt_bytes(fs['available'])}"
-                f"（各租户共用同一块磁盘，故单租户视角下已用与可用不同源）。")
 
     return {
         "total": round(total_bytes / GB, 2),
@@ -302,12 +356,19 @@ def capacity(
         "available": round(avail_bytes / GB, 2),
         "occupancy": f"{occupancy}",
         "unit": "GB",
-        "totalText": fmt_bytes(total_bytes),
+        "configured": configured,
+        "totalText": f"{cap_gb} GB" if configured else ("不设上限" if unlimited else "未配置"),
         "usedText": fmt_bytes(used_bytes),
-        "availableText": fmt_bytes(avail_bytes),
+        "availableText": fmt_bytes(avail_bytes) if configured else "—",
         "basis": basis,
-        "quotaGB": quota_gb,
-        "quotaLimited": quota_gb > 0,
+        # 总量口径：随 scope 走，供前端动态显示「平台总容量」/「租户配额」
+        "capBasis": cap_basis,        # platform | tenant
+        "capLabel": cap_label,        # 人类可读口径标签
+        "unlimited": unlimited,       # 租户配额 0（不设上限），与平台「未配置」区分
+        "totalSourceGB": cfg["totalGB"],   # 平台总容量配置值（非当前口径总量），供对照
+        "totalGB": cap_gb,            # 当前口径的总量（平台总容量 or 租户配额）
+        "quotaGB": cap_gb,            # 兼容旧前端字段
+        "quotaLimited": configured,   # 兼容旧前端字段
         "logBytes": log_bytes,
         "logText": fmt_bytes(log_bytes),
         "docs": log_docs,
@@ -333,14 +394,16 @@ class ConfigIn(BaseModel):
     retainDays: Optional[int] = None
     rollThreshold: Optional[int] = None
     hotColdStrategy: Optional[str] = None
-    quotaGB: Optional[int] = None
+    totalGB: Optional[int] = None
+    quotaGB: Optional[int] = None   # 旧前端字段，等价 totalGB
 
 
 @router.get("/config")
 def get_config(user: Dict[str, Any] = Depends(require("storage", "view"))):
     cfg = read_config()
-    cfg["note"] = ("保留天数是日志生命周期的唯一来源；配额填 0 表示不限制"
-                   "（跟随物理卷容量）。清理动作只删除早于保留天数的日志。")
+    cfg["note"] = ("平台总容量是配置值：按上云后实际分配给日志平台的空间填写，0 表示尚未配置；"
+                   "各租户配额之和不得超过总容量。物理卷读数仅供参考，不参与容量计算。"
+                   "保留天数是日志生命周期的唯一来源，清理动作只删除早于保留天数的日志。")
     return cfg
 
 
@@ -367,11 +430,25 @@ def put_config(
             raise HTTPException(status_code=400, detail="热/冷分级策略不存在")
         sets.append("hot_cold_strategy=%s")
         params.append(req.hotColdStrategy)
-    if req.quotaGB is not None:
-        if req.quotaGB < 0:
-            raise HTTPException(status_code=400, detail="配额不能为负数（0 表示不限制）")
+    # totalGB 为新字段名，quotaGB 是旧前端的等价写法；同时出现以 totalGB 为准。
+    new_total = req.totalGB if req.totalGB is not None else req.quotaGB
+    if new_total is not None:
+        if not 0 <= new_total <= 1048576:  # 上限 1 PB，挡住误输入
+            raise HTTPException(status_code=400, detail="平台总容量需在 0-1048576 GB 之间（0 表示尚未配置）")
+        if new_total > 0:
+            already = allocated_gb()
+            if already > new_total:
+                rows = pg_query(
+                    "SELECT tenant_code, quota_gb FROM tenant_quotas WHERE quota_gb > 0 ORDER BY tenant_code"
+                )
+                detail = "、".join(f"{r['tenant_code']} {r['quota_gb']}GB" for r in rows)
+                raise HTTPException(
+                    status_code=400,
+                    detail=(f"已分配给租户的配额合计 {already} GB（{detail}），"
+                            f"超过新的平台总容量 {new_total} GB。请先下调租户配额再改总容量。"),
+                )
         sets.append("quota_gb=%s")
-        params.append(req.quotaGB)
+        params.append(new_total)
     if not sets:
         raise HTTPException(status_code=400, detail="没有需要更新的配置项")
 
@@ -541,8 +618,21 @@ def list_quotas(user: Dict[str, Any] = Depends(require("storage", "view"))):
             "occupancy": round(ub / (quota * GB) * 100, 2) if quota > 0 else None,
             "updatedAt": to_cst_str(r["updated_at"]),
         })
-    return {"items": items,
-            "note": "配额为 0 表示不限制；已用容量来自该租户索引的真实 store.size。"}
+    total_gb = read_config()["totalGB"]
+    allocated = sum(int(r["quota_gb"]) for r in rows) if rows else 0
+    return {
+        "items": items,
+        "totalGB": total_gb,
+        "allocatedGB": allocated,
+        "availableGB": max(total_gb - allocated, 0) if total_gb > 0 else None,
+        "overAllocated": bool(total_gb > 0 and allocated > total_gb),
+        "note": (
+            (f"平台总容量 {total_gb} GB，已分配 {allocated} GB，剩余可分配 "
+             f"{max(total_gb - allocated, 0)} GB。")
+            if total_gb > 0 else
+            f"平台总容量尚未配置，已分配 {allocated} GB。请先到「存储配置」设置总容量。"
+        ) + "配额为 0 表示不设上限（不参与分配统计）；已用容量来自该租户索引的真实 store.size。",
+    }
 
 
 @router.put("/quotas/{tenant}")
@@ -553,11 +643,24 @@ def put_quota(
     user: Dict[str, Any] = Depends(require("storage", "update")),
 ):
     if req.quotaGB < 0:
-        raise HTTPException(status_code=400, detail="配额不能为负数（0 表示不限制）")
+        raise HTTPException(status_code=400, detail="配额不能为负数（0 表示不设上限）")
     if pg_scalar("SELECT 1 FROM tenants WHERE code=%s", (tenant,)) is None:
         raise HTTPException(status_code=404, detail="租户不存在")
     if user["role_key"] != "platform_admin" and tenant != user["tenant_code"]:
         raise HTTPException(status_code=403, detail="只能调整本租户的日志配额")
+
+    # 两级配额约束：租户配额之和不得超过平台总容量。
+    # 非平台管理员只改本租户，但校验按全平台口径算，避免从不同租户入口各自突破上限。
+    total_gb = read_config()["totalGB"]
+    if total_gb > 0:
+        others = allocated_gb(exclude_tenant=tenant)
+        if others + req.quotaGB > total_gb:
+            raise HTTPException(
+                status_code=400,
+                detail=(f"其他租户已分配 {others} GB，本租户设 {req.quotaGB} GB 后将达 "
+                        f"{others + req.quotaGB} GB，超过平台总容量 {total_gb} GB"
+                        f"（剩余可分配 {max(total_gb - others, 0)} GB）。"),
+            )
     pg_exec(
         """INSERT INTO tenant_quotas (tenant_code, quota_gb, updated_at)
            VALUES (%s, %s, now())
@@ -568,6 +671,6 @@ def put_quota(
     write_audit(user, "修改租户配额", tenant, {"quotaGB": req.quotaGB},
                 client_ip(request.headers.get("x-forwarded-for"),
                           request.client.host if request.client else ""))
-    text = f"{req.quotaGB} GB" if req.quotaGB > 0 else "不限制"
+    text = f"{req.quotaGB} GB" if req.quotaGB > 0 else "不设上限"
     return {"ok": True, "tenant": tenant, "quotaGB": req.quotaGB,
             "message": f"{tenant} 的日志配额已更新为 {text}"}

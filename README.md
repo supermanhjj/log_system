@@ -11,12 +11,13 @@
 | 登录 | `/login` | 账号/密码/租户真实校验 PG（bcrypt），签发 JWT；失败区分「密码错 401」与「账号停用/租户不匹配 403」；记住账号；改密后强制重新登录 |
 | 运行总览 | `/overview` | 4 指标卡 + 4 图 + 最近告警表，全部取自 OpenSearch 真实聚合；30s 缓存 / 60s 刷新 |
 | 日志分析 | `/search` | PPL 单框检索（含 `\|` 走 `/_plugins/_ppl`）、直方图、详情与上下文、告警关联回填；检索页已接入「智能检索」弹窗（自然语言转 PPL、复制、填入检索框执行） |
+| 仪表盘 | `/dashboards`、`/dashboards/:id` | 看板列表（筛选/新建/批量删除）+ 详情 + **拖拽式编辑器**：从组件库拖入图表、画布内重排与调宽、配置展示维度；配置存 PG，图表数据按维度对 OpenSearch 实时聚合（8 类图表 / 9 类维度） |
 | 告警中心 | `/alarms/events`、`/alarms/rules` | 规则 CRUD/启停落 PG、请求时同步判定、状态覆盖、关联 PPL 跳检索页 |
 | 数据接入 | `/data-sources`、`/agents` | 数据源自动发现与真实连通性探测、字段元数据来自真实 mapping、Agent 心跳与指令队列 |
-| 智能管理 | `/ai/management` | 独立 `ai-service`：模型接入三页签、PPL 语法规则库、AI 能力注册表，以及 **NL→PPL 生成端点与「智能检索预览」**（中文问句 → 规则库 → 已选模型 → PPL） |
+| 智能管理 | `/ai/management` | 独立 `ai-service`：模型接入两页签（商用 API / 本地自定义）、PPL 语法规则库、AI 能力注册表，以及 **NL→PPL 生成端点与「智能检索预览」**（中文问句 → 规则库 → 已选模型 → PPL） |
 | 平台管理 · 用户与角色 | `/settings/users` | 独立 `system-service`：用户管理（CRUD/启停/重置密码/批量/导出）、角色权限矩阵（改完实时生效）；顶栏显示真实登录用户与角色，菜单按权限过滤 |
 | 平台管理 · 系统设置 | `/settings/system` | 系统参数（操作审计 / 单次检索上限 / **检索耗时目标** / 会话超时 / 默认时区）+ 审计日志（筛选/分页/导出）；检索耗时目标真实驱动运行总览 P95 达标判定 |
-| 平台管理 · 日志空间管理 | `/settings/storage` | 容量概览（含趋势）、存储配置、索引管理（真实体积/文档数/状态/清理）、租户配额；数据来自 OpenSearch `_cat/indices` + `_cluster/stats` 与 PostgreSQL，**无模拟值** |
+| 平台管理 · 日志空间管理 | `/settings/storage` | 容量概览（含趋势）、存储配置（**平台总容量为配置值**，不再查物理卷）、索引管理（真实体积/文档数/状态/清理）、租户配额（之和受总容量约束）；已用来自 OpenSearch `_cat/indices` 真实取数 |
 
 架构：Vue3 + Element Plus + ECharts → nginx（`/api/*` 反代）→ FastAPI 微服务 → OpenSearch / PostgreSQL / Redis；采集侧 `log-generator`（模拟业务）→ Fluent Bit → `logs-<tenant>`。
 
@@ -26,6 +27,7 @@
 |---|---|
 | [module-overview.md](docs/module-overview.md) | 运行总览：建设思路、已落地能力、接口与待办 |
 | [module-log-search.md](docs/module-log-search.md) | 日志分析：PPL 检索链路、安全闸门缺口、AI 生成端点接入现状 |
+| [module-dashboard.md](docs/module-dashboard.md) | 仪表盘：列表/详情/拖拽编辑器、配置存储与维度聚合口径、可配置维度字典 |
 | [module-alarm-center.md](docs/module-alarm-center.md) | 告警中心：设计与实现的判定引擎偏差、事件状态、关联日志 |
 | [module-data-ingestion.md](docs/module-data-ingestion.md) | 数据接入：配置面/数据面分离、字段字典、采集与管控链路 |
 | [module-platform-admin.md](docs/module-platform-admin.md) | 平台管理：登录、双服务职责边界、RBAC 六表与权限矩阵、接口、验证与待办 |
@@ -61,7 +63,7 @@ docker compose up -d --build
 docker compose down -v
 ```
 
-开发期后端源码经 bind mount 热更（`uvicorn --reload`）；生产/演示编排见 `docker-compose.prod.yml`（数据层改为云托管，前端 dist 与 AI CLI 挂载需另行处理）。
+开发期后端源码经 bind mount 热更（`uvicorn --reload`）；生产/演示编排见 `docker-compose.prod.yml`（数据层改为云托管，前端 dist 需另行处理）。
 
 ## 已知边界
 
@@ -69,9 +71,9 @@ docker compose down -v
 - 种子账号密码为演示用（`admin` / `Admin@123`，其余 `Ops@12345`），生产部署前必须用 `AUTH_SEED_ADMIN_PASSWORD` 覆盖并改掉。
 - `/pql` 仅关键字黑名单，缺索引/函数白名单；时间范围已随请求注入（`source` 段后作为独立 `where`）。
 - AI 自然语言转 PPL 的**生成端点、配置页预览与检索页「智能检索 · ChatPPL」弹窗均已可用**；时间范围在 `source` 段后作为独立 `where` 注入，与关键字检索口径一致。
-- WorkBuddy CLI 生成需宿主机桥接（`python3 tools/codebuddy_bridge.py`）+ 一次交互式登录（`codebuddy /login`）；容器内无 Node 运行时，CLI 本体不能在容器内执行。
+- 模型接入只支持**商用 API** 与**本地自定义**（Ollama / oMLX，走 OpenAI 兼容 HTTP）；WorkBuddy / CodeBuddy CLI 接入方式已于 2026-11-17 下线，容器不再挂载宿主 CLI。
 - Kafka / Flink 为设计稿链路，当前日志由 Fluent Bit 直写 OpenSearch；`logs-template` 索引模板无代码定义，部署时需手工 PUT。
-- 日志空间管理的容量与索引数据**均为真实取数**；容量趋势在每日快照攒满 2 个点前为「按真实日志量推算」，页面已标注来源。清理只在手动触发时按保留期执行，**未接定时任务与 ISM 策略**。
+- 日志空间管理的**总容量/租户配额是配置值**，日志已用与索引数据来自 OpenSearch 真实取数；物理卷读数仅供参考。总容量未配置时如实显示「未配置」，不回落成 Docker 虚拟磁盘大小。容量趋势在每日快照攒满 2 个点前为「按真实日志量推算」，页面已标注来源。清理只在手动触发时按保留期执行，**未接定时任务与 ISM 策略**。
 - 日志源为 `log-generator` 模拟数据，非生产日志。
 
 > Apple Silicon：OpenSearch 若报架构错误可加 `platform: linux/amd64`；Flink 默认以 amd64 模拟运行。

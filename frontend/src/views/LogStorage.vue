@@ -64,7 +64,8 @@ const capError = ref('')
 const capacity = reactive({
   total: 0, used: 0, available: 0, occupancy: '0', unit: 'GB',
   totalText: '—', usedText: '—', availableText: '—',
-  logText: '—', docs: 0, indexCount: 0, basis: 'physical', quotaGB: 0,
+  logText: '—', docs: 0, indexCount: 0, basis: 'unconfigured', configured: false, totalGB: 0,
+  capBasis: 'platform', capLabel: '平台总容量', unlimited: false, totalSourceGB: 0,
   physical: { totalText: '—', availableText: '—' },
   trend: { unit: 'GB', points: [], source: 'estimated', note: '' },
   updatedAt: '', note: '',
@@ -74,6 +75,14 @@ const rangeLabel = ref('近 7 天')
 const trendSourceText = computed(() => (
   capacity.trend.source === 'snapshot' ? '实测快照' : '按真实日志量推算'
 ))
+
+// 容量口径文案：跟着 scope 走——平台管理员看全局用平台总容量，租户口径用该租户被分配的配额
+const capIsTenant = computed(() => capacity.capBasis === 'tenant')
+const capSourceText = computed(() => {
+  if (capacity.unlimited) return `${capacity.capLabel} · 不设上限`
+  if (!capacity.configured) return capIsTenant.value ? `${capacity.capLabel} · 未设配额` : '平台总容量未配置'
+  return `${capacity.capLabel} ${capacity.totalGB} GB`
+})
 
 async function loadCapacity() {
   capLoading.value = true
@@ -94,7 +103,7 @@ const cfgLoading = ref(false)
 const cfgSaving = ref(false)
 const cfgError = ref('')
 const cfgUpdatedAt = ref('')
-const cfgForm = reactive({ retainDays: 30, rollThreshold: 80, hotColdStrategy: 'hot7d', quotaGB: 0 })
+const cfgForm = reactive({ retainDays: 30, rollThreshold: 80, hotColdStrategy: 'hot7d', totalGB: 0 })
 const cfgStrategies = ref([])
 
 async function loadConfig() {
@@ -105,7 +114,7 @@ async function loadConfig() {
     cfgForm.retainDays = res.retainDays
     cfgForm.rollThreshold = res.rollThreshold
     cfgForm.hotColdStrategy = res.hotColdStrategy
-    cfgForm.quotaGB = res.quotaGB
+    cfgForm.totalGB = res.totalGB ?? res.quotaGB ?? 0
     cfgUpdatedAt.value = res.updatedAt || ''
     cfgStrategies.value = res.strategies || []
   } catch (e) {
@@ -200,6 +209,7 @@ async function doDrop(row) {
 const quotaLoading = ref(false)
 const quotaError = ref('')
 const quotaItems = ref([])
+const quotaSummary = reactive({ totalGB: 0, allocatedGB: 0, availableGB: null, overAllocated: false })
 
 async function loadQuotas() {
   quotaLoading.value = true
@@ -207,6 +217,12 @@ async function loadQuotas() {
   try {
     const res = await listTenantQuotas()
     quotaItems.value = res.items || []
+    Object.assign(quotaSummary, {
+      totalGB: res.totalGB || 0,
+      allocatedGB: res.allocatedGB || 0,
+      availableGB: res.availableGB,
+      overAllocated: !!res.overAllocated,
+    })
   } catch (e) {
     quotaError.value = errText(e, '租户配额加载失败')
   } finally {
@@ -335,7 +351,7 @@ watch(rangeLabel, () => loadCapacity())
 <template>
   <div class="page">
     <div class="page-head">
-      <div class="breadcrumb"><span>平台管理</span><span class="sep">/</span><span class="cur">日志空间管理</span></div>
+      <div class="breadcrumb"><span>平台管理</span><span class="sep">/</span><span class="cur">日志空间</span></div>
       <div class="head-bar">
         <div>
           <h1 class="title">日志空间管理</h1>
@@ -362,10 +378,36 @@ watch(rangeLabel, () => loadCapacity())
       <!-- 容量概览 -->
       <div v-if="activeTab === 'capacity'">
         <el-alert v-if="capError" type="error" :closable="false" show-icon :title="capError" class="block-alert" />
+        <el-alert
+          v-if="!capLoading && capacity.configured === false && !capIsTenant"
+          type="warning"
+          :closable="false"
+          show-icon
+          class="block-alert"
+          title="平台总容量尚未配置"
+        >
+          <template #default>
+            <span>容量上限、可用空间与占用率暂不可计算。请先到「存储配置」填写实际分配给日志平台的总空间。</span>
+            <el-button link type="primary" @click="activeTab = 'config'; onTabChange('config')">去配置</el-button>
+          </template>
+        </el-alert>
+        <el-alert
+          v-if="!capLoading && capacity.configured === false && capIsTenant"
+          type="info"
+          :closable="false"
+          show-icon
+          class="block-alert"
+          :title="capacity.unlimited ? '本租户配额不设上限' : '本租户尚未分配配额'"
+        >
+          <template #default>
+            <span v-if="capacity.unlimited">当前租户配额为 0（不设上限），可用空间与占用率不适用，仅展示日志已用。管理员可在「租户配额」中为其分配空间。</span>
+            <span v-else>当前租户未分配配额，无法计算可用空间与占用率，仅展示日志已用。管理员可在「租户配额」中分配。</span>
+          </template>
+        </el-alert>
         <div v-loading="capLoading" class="cap-body">
           <div class="stat-grid">
             <div class="stat-card">
-              <div class="stat-label">总容量</div>
+              <div class="stat-label">{{ capIsTenant ? '分配配额' : '总容量' }}</div>
               <div class="stat-value"><span class="num">{{ capacity.totalText }}</span></div>
             </div>
             <div class="stat-card">
@@ -378,8 +420,10 @@ watch(rangeLabel, () => loadCapacity())
             </div>
             <div class="stat-card">
               <div class="stat-label">占用率</div>
-              <div class="stat-value"><span class="num">{{ capacity.occupancy }}</span><span class="unit">%</span></div>
+              <div v-if="capacity.configured" class="stat-value"><span class="num">{{ capacity.occupancy }}</span><span class="unit">%</span></div>
+              <div v-else class="stat-value"><span class="num">—</span></div>
               <el-progress
+                v-if="capacity.configured"
                 :percentage="Math.min(100, Number(capacity.occupancy) || 0)"
                 :stroke-width="8"
                 :show-text="false"
@@ -391,8 +435,8 @@ watch(rangeLabel, () => loadCapacity())
             <span>范围 <b>{{ scopeLabel }}</b></span>
             <span>索引 <b>{{ capacity.indexCount }}</b> 个</span>
             <span>文档 <b>{{ capacity.docs.toLocaleString() }}</b> 条</span>
-            <span>物理卷 <b>{{ capacity.physical.totalText }}</b>（可用 {{ capacity.physical.availableText }}）</span>
-            <span>口径 <b>{{ capacity.basis === 'quota' ? `配额 ${capacity.quotaGB} GB` : '物理卷' }}</b></span>
+            <span>物理卷 <b>{{ capacity.physical.totalText }}</b>（可用 {{ capacity.physical.availableText }}，仅供参考）</span>
+            <span>容量口径 <b>{{ capSourceText }}</b></span>
             <span>更新于 {{ capacity.updatedAt || '—' }}</span>
           </div>
 
@@ -443,10 +487,16 @@ watch(rangeLabel, () => loadCapacity())
             </div>
           </div>
           <div class="param-row">
-            <label class="param-label">日志配额</label>
+            <label class="param-label">平台总容量</label>
             <div class="param-control">
-              <el-input-number v-model="cfgForm.quotaGB" :min="0" :step="100" :disabled="!canUpdate" />
-              <span class="param-note">GB，0 表示不限制（按物理卷剩余空间计算可用容量）</span>
+              <el-input-number v-model="cfgForm.totalGB" :min="0" :max="1048576" :step="100" :disabled="!canUpdate" />
+              <span class="param-note">GB，填实际分配给日志平台的总空间（上云后按云存储配额填写）；0 表示尚未配置</span>
+            </div>
+          </div>
+          <div class="param-row">
+            <span class="param-label"></span>
+            <div class="param-control">
+              <span class="param-note">各租户配额之和不得超过平台总容量；物理卷读数仅供参考，不参与容量计算。</span>
             </div>
           </div>
           <div class="param-row">
@@ -510,6 +560,29 @@ watch(rangeLabel, () => loadCapacity())
       <div v-else>
         <el-alert v-if="quotaError" type="error" :closable="false" show-icon :title="quotaError" class="block-alert" />
         <div v-loading="quotaLoading" style="padding:14px 18px">
+          <div class="quota-summary">
+            <div class="quota-metric">
+              <span class="quota-metric-label">平台总容量</span>
+              <span class="quota-metric-value">{{ quotaSummary.totalGB ? `${quotaSummary.totalGB} GB` : '未配置' }}</span>
+            </div>
+            <div class="quota-metric">
+              <span class="quota-metric-label">已分配</span>
+              <span class="quota-metric-value">{{ quotaSummary.allocatedGB }} GB</span>
+            </div>
+            <div class="quota-metric">
+              <span class="quota-metric-label">剩余可分配</span>
+              <span class="quota-metric-value">{{ quotaSummary.availableGB === null ? '—' : `${quotaSummary.availableGB} GB` }}</span>
+            </div>
+          </div>
+          <el-alert
+            v-if="quotaSummary.overAllocated"
+            type="error"
+            :closable="false"
+            show-icon
+            title="租户配额之和已超过平台总容量"
+            description="请下调租户配额，或到「存储配置」提高平台总容量。"
+            style="margin-bottom:12px"
+          />
           <el-table :data="quotaItems" stripe>
             <el-table-column prop="tenantName" label="租户" min-width="130" />
             <el-table-column prop="tenant" label="编码" width="110" />
@@ -536,7 +609,7 @@ watch(rangeLabel, () => loadCapacity())
               </template>
             </el-table-column>
           </el-table>
-          <p class="note">配额为 0 表示不限制；已用容量来自该租户索引的真实 store.size。</p>
+          <p class="note">配额为 0 表示该租户不设上限（不计入分配统计）；已用容量来自该租户索引的真实 store.size。调整配额时系统会校验「各租户配额之和 ≤ 平台总容量」。</p>
         </div>
       </div>
     </section>
@@ -562,6 +635,10 @@ watch(rangeLabel, () => loadCapacity())
 .tenant-hint { font-size: 12px; color: var(--color-text-3); flex-shrink: 0; }
 
 .block-alert { margin: 12px 18px; width: auto; }
+.quota-summary { display: flex; gap: 36px; padding: 4px 0 16px; }
+.quota-metric { display: flex; flex-direction: column; gap: 4px; }
+.quota-metric-label { font-size: 12px; color: var(--color-text-3); }
+.quota-metric-value { font-size: 18px; font-weight: 600; color: var(--color-text-1); font-variant-numeric: tabular-nums; }
 .cap-body { padding: 18px; }
 .stat-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
 .stat-card { background: #fff; border: 1px solid var(--color-border-1); border-radius: 4px; padding: 16px 18px; }

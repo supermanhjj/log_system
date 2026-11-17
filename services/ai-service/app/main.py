@@ -1,25 +1,22 @@
 """ai-service —— AI 能力配置中心。
 
 对应前端「智能管理」页（/ai/management）。三类能力：
-1. 模型来源接入：商用 API（DeepSeek 等）/ 本地自定义（Ollama、oMLX）/ WorkBuddy 本地 CLI
-   （如 ~/.local/bin/codebuddy）。支持多实例、默认实例、模型选择、真实连通性探测。
+1. 模型来源接入：商用 API（DeepSeek 等）/ 本地自定义（Ollama、oMLX）。
+   支持多实例、默认实例、模型选择、真实连通性探测。
 2. PPL 语法规则库：命令、字段别名、业务词映射、时间规则、示例对、禁止项；
-   可从 ingest-service /meta 按真实 mapping 同步字段，供后续 NL→PPL 生成注入。
+   可从 ingest-service /meta 按真实 mapping 同步字段，供 NL→PPL 生成注入。
 3. AI 能力注册表：为智能检索 / 智能解读 / 辅助决策 / 深度分析预留配置扩展位。
 
 边界（务必如实理解）：
 - 2026-11-14 起提供 `POST /nl2ppl` 运行时生成端点：规则库注入 prompt → 已配置模型 → 语句规范化闸门；
-  仅生成 / 校验语句，**不执行检索、不访问日志原文**；检索页 AI 面板仍未接入。
-- 不编造指标：连通性测试真实发 HTTP / 检查容器内可执行文件，失败如实返回原因。
+  仅生成 / 校验语句，**不执行检索、不访问日志原文**。
+- 不编造指标：连通性测试真实发 HTTP，失败如实返回原因。
 - 种子语法规则是「可编辑的默认模板」，不是已验证的全量 PPL 语法；字段别名可用 /grammar/sync-fields 从真实 mapping 覆盖。
-- CLI 探测检查容器内路径 + 可选固定 `<path> --version`；容器内无 Node 运行时，生成调用改走
-  宿主机桥接（`AI_CLI_BRIDGE_URL` → `tools/codebuddy_bridge.py`），需宿主机先完成 `codebuddy /login`。
-- CLI 可用模型清单来自宿主机 codebuddy 2.164.0 `--help --model`，为一次性采集的真实清单，允许自定义输入。
+- 2026-11-17 起移除「WorkBuddy / CodeBuddy CLI」接入方式（容器侧挂载与宿主机桥接一并下线），
+  模型接入仅保留商用 API 与本地自定义两类。
 """
 import json
 import os
-import shutil
-import subprocess
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
@@ -65,11 +62,6 @@ KINDS = [
         "label": "本地自定义",
         "desc": "Ollama、oMLX 等本机 / 内网自建模型服务",
     },
-    {
-        "key": "cli",
-        "label": "WorkBuddy CLI",
-        "desc": "调用本地 WorkBuddy / CodeBuddy 命令行（如 ~/.local/bin/codebuddy）",
-    },
 ]
 KIND_KEYS = {k["key"] for k in KINDS}
 
@@ -82,8 +74,6 @@ PROVIDER_PRESETS = {
                "model_name": "qwen2.5:7b", "probe_path": "/api/tags"},
     "omlx": {"label": "oMLX (MLX)", "kind": "local", "base_url": "http://host.docker.internal:8080",
              "model_name": "", "probe_path": "/v1/models"},
-    "codebuddy": {"label": "WorkBuddy / CodeBuddy CLI", "kind": "cli",
-                  "cli_path": "~/.local/bin/codebuddy", "model_name": ""},
 }
 DEFAULT_PROBE_PATH = {
     "deepseek": "/models",
@@ -93,21 +83,7 @@ DEFAULT_PROBE_PATH = {
     "custom": "/v1/models",
 }
 
-# CLI 可选模型：逐字采集自宿主机 `codebuddy 2.164.0 --help` 的 --model 说明（2026-11-14）。
-# 容器内无 Node 运行时，无法实时调用 CLI 拉取，故以版本化常量提供；前端允许自定义输入。
-CLI_MODEL_SOURCE = "取自 codebuddy 2.164.0 --help --model（2026-11-14 采集），可自定义输入模型 ID。"
-CLI_MODEL_OPTIONS = [
-    "fast-model", "balanced-model", "deep-model", "cmcc:auto",
-    "cmcc:ydy-deepseek-v4.1-flash", "cmcc:ydy-deepseek-v4-pro",
-    "cmcc:ydy-glm-5.3", "cmcc:ydy-glm-5.3-flash", "cmcc:ydy-glm-5.2", "cmcc:ydy-glm-5.1",
-    "cmcc:ydy-minimax-m3", "cmcc:ydy-minimax-m2.5", "cmcc:ydy-kimi-K3",
-    "cmcc:ydy-kimi-k27-code", "cmcc:ydy-kimi-k2.6",
-    "hy4free", "hy4std", "hy3", "hy3-x",
-    "deepseek-v4.1-flash", "glm-5.3", "glm-5.3-flash", "glm-5.2", "space-bunny",
-    "minimax-m3.1-flash", "kimi-k3.1-pro", "kimi-k3-1", "kimi-k2.8-preview",
-    "deepseek-v4-pro", "step-5-preview", "mimo-v2.6-pro",
-    "custom-local:MiniCPM5-2B-MLX", "custom-local:gemini-3.8-flash",
-]
+# CLI 可选模型清单已随 WorkBuddy CLI 接入方式一并移除（2026-11-17）。
 
 GRAMMAR_CATEGORIES = [
     {"key": "command", "label": "命令白名单"},
@@ -284,7 +260,9 @@ def mask_key(key: str) -> str:
 
 def public_provider(row: Dict[str, Any]) -> Dict[str, Any]:
     r = dict(row)
-    r.pop("cli_args", None)  # 旧字段仅保留在 DB 列中，API 不再暴露
+    # CLI 接入已下线：cli_path / cli_args / work_dir 仅保留在 DB 列中兼容旧数据，API 不再暴露
+    for legacy in ("cli_args", "cli_path", "work_dir"):
+        r.pop(legacy, None)
     r["api_key"] = mask_key(r.get("api_key") or "")
     r["api_key_set"] = bool(row.get("api_key"))
     for k in ("created_at", "updated_at"):
@@ -331,16 +309,10 @@ class ProviderIn(BaseModel):
     base_url: str = ""
     model_name: str = ""
     api_key: str = ""
-    cli_path: str = ""
-    work_dir: str = ""
     timeout: int = 30
     enabled: bool = True
     note: str = ""
     extra: Dict[str, Any] = {}
-
-
-class TestIn(BaseModel):
-    run_version: bool = False
 
 
 class GrammarIn(BaseModel):
@@ -413,12 +385,6 @@ def meta():
             "available": "运行时能力已接入",
         },
         "counts": counts,
-        "cliHint": {
-            "defaultPath": "~/.local/bin/codebuddy",
-            "note": "宿主机 CLI 入口已只读映射到容器内同路径；生产部署需另行挂载。",
-        },
-        "cliModels": CLI_MODEL_OPTIONS,
-        "cliModelSource": CLI_MODEL_SOURCE,
         "note": "连通性测试为真实探测；语法规则为可编辑默认模板，可用 /grammar/sync-fields 同步真实字段。",
     }
 
@@ -446,7 +412,6 @@ def _provider_values(req: ProviderIn, key_value: str) -> tuple:
     return (
         req.name.strip(), req.kind, req.provider.strip() or "custom",
         req.base_url.strip(), req.model_name.strip(), key_value,
-        req.cli_path.strip(), req.work_dir.strip(),
         max(1, min(int(req.timeout or 30), 300)), req.enabled, req.note.strip(),
         psycopg2.extras.Json(req.extra or {}),
     )
@@ -459,14 +424,12 @@ def create_provider(req: ProviderIn):
         raise HTTPException(status_code=400, detail="名称不能为空")
     if req.kind in ("commercial", "local") and not req.base_url.strip().lower().startswith(("http://", "https://")):
         raise HTTPException(status_code=400, detail="商用 API / 本地模型需填 http(s) 开头的 Base URL")
-    if req.kind == "cli" and not req.cli_path.strip():
-        raise HTTPException(status_code=400, detail="CLI 接入需填可执行文件路径")
     try:
         rows = pg_query(
             """INSERT INTO ai_model_providers
-               (name, kind, provider, base_url, model_name, api_key, cli_path,
-                work_dir, timeout, enabled, note, extra)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *""",
+               (name, kind, provider, base_url, model_name, api_key,
+                timeout, enabled, note, extra)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *""",
             _provider_values(req, req.api_key.strip()),
         )
     except psycopg2.errors.UniqueViolation:
@@ -488,7 +451,7 @@ def update_provider(pid: int, req: ProviderIn):
     rows = pg_query(
         """UPDATE ai_model_providers SET
            name=%s, kind=%s, provider=%s, base_url=%s, model_name=%s, api_key=%s,
-           cli_path=%s, work_dir=%s, timeout=%s, enabled=%s, note=%s,
+           timeout=%s, enabled=%s, note=%s,
            extra=%s, updated_at=now()
            WHERE id=%s RETURNING *""",
         _provider_values(req, key_value) + (pid,),
@@ -513,8 +476,8 @@ def set_default_provider(pid: int):
     return {"status": "ok", "defaultId": pid}
 
 
-def probe(row: Dict[str, Any], run_version: bool):
-    """真实探测：HTTP 端点真实请求；CLI 检查容器内路径 + 可选固定 --version。"""
+def probe(row: Dict[str, Any]):
+    """真实探测：对商用 / 本地接入的 HTTP 端点发一次真实请求，失败如实返回原因。"""
     kind = row["kind"]
     ex = as_dict(row.get("extra"))
     if kind in ("commercial", "local"):
@@ -546,59 +509,16 @@ def probe(row: Dict[str, Any], run_version: bool):
         detail += f" · 响应：{snippet(resp.text)}"
         return resp.is_success, detail, {"url": url, "statusCode": resp.status_code, "modelCount": model_count}
 
-    # CLI
-    raw = (row.get("cli_path") or "").strip()
-    if not raw:
-        return False, "未配置 CLI 路径", {}
-    path = os.path.expanduser(raw)
-    if not os.path.isabs(path):
-        return False, f"需填绝对路径（容器内解析为 {path}）", {"resolvedPath": path}
-    if not os.path.isfile(path):
-        return False, (
-            f"容器内未找到可执行文件：{path}。请确认 compose 已把宿主机 CLI 入口映射进 ai-service 容器，"
-            "并填写容器内路径。"
-        ), {"resolvedPath": path}
-    if not os.access(path, os.X_OK):
-        return False, f"文件存在但无可执行权限：{path}", {"resolvedPath": path}
-    try:
-        with open(path, "r", encoding="utf-8", errors="ignore") as f:
-            shebang = f.readline().strip()
-    except OSError:
-        shebang = ""
-    needs_node = "node" in shebang
-    runtime_ready = not needs_node or shutil.which("node") is not None
-    runtime_note = (
-        "" if runtime_ready else
-        "；注意：该 CLI 为 Node.js 脚本，容器内无 node 运行时，暂不能在容器内执行 CLI 会话"
-    )
-    if not run_version:
-        return True, (
-            f"可执行路径检查通过（{path}），未试运行；可勾选「试运行版本命令」执行 <path> --version"
-            + runtime_note
-        ), {"resolvedPath": path, "runtimeReady": runtime_ready}
-    cwd = (row.get("work_dir") or "").strip()
-    cwd = cwd if cwd and os.path.isdir(cwd) else None
-    try:
-        cp = subprocess.run(
-            [path, "--version"], capture_output=True, text=True,
-            timeout=min(int(row.get("timeout") or 30), 8), cwd=cwd, check=False,
-        )
-    except Exception as e:  # noqa: BLE001
-        return False, f"试运行失败：{type(e).__name__}: {e}{runtime_note}", {"resolvedPath": path}
-    detail = (f"returncode={cp.returncode} · stdout={snippet(cp.stdout, 160)}"
-              f" · stderr={snippet(cp.stderr, 160)}")
-    if cp.returncode != 0:
-        detail += runtime_note
-    return cp.returncode == 0, detail, {"resolvedPath": path, "returncode": cp.returncode}
+    return False, f"不支持的接入类型：{kind}", {}
 
 
 @app.post("/providers/{pid:int}/test")
-def test_provider(pid: int, req: TestIn):
+def test_provider(pid: int):
     rows = pg_query("SELECT * FROM ai_model_providers WHERE id=%s", (pid,))
     if not rows:
         raise HTTPException(status_code=404, detail="接入配置不存在")
     started = time.time()
-    ok, detail, extra = probe(rows[0], bool(req.run_version))
+    ok, detail, extra = probe(rows[0])
     elapsed = int((time.time() - started) * 1000)
     result = {
         "ok": ok, "kind": rows[0]["kind"], "provider": rows[0]["provider"],

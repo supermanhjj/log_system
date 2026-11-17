@@ -62,21 +62,21 @@ const groups = [
     items: [
       {
         path: '/settings/users',
-        title: '用户与角色',
+        title: '用户角色',
         icon: User,
         resources: ['settings', 'user', 'role'],
+      },
+      {
+        path: '/settings/storage',
+        title: '日志空间',
+        icon: DataBoard,
+        resources: ['storage'],
       },
       {
         path: '/settings/system',
         title: '系统设置',
         icon: Setting,
         resources: ['param', 'audit'],
-      },
-      {
-        path: '/settings/storage',
-        title: '日志空间管理',
-        icon: DataBoard,
-        resources: ['storage'],
       },
     ],
   },
@@ -262,7 +262,7 @@ async function onUserCommand(cmd) {
     </div>
 
     <el-dialog v-model="pwdVisible" title="修改密码" width="420px" :close-on-click-modal="false">
-      <el-form ref="pwdFormRef" :model="pwdForm" :rules="pwdRules" label-width="88px">
+      <el-form ref="pwdFormRef" :model="pwdForm" :rules="pwdRules" label-width="104px" class="pwd-form">
         <el-form-item label="当前密码" prop="oldPassword">
           <el-input v-model="pwdForm.oldPassword" type="password" show-password placeholder="请输入当前密码" />
         </el-form-item>
@@ -402,4 +402,7 @@ async function onUserCommand(cmd) {
 }
 
 .content { flex: 1; min-width: 0; overflow: auto; padding: 16px 24px; background: #F0F2F5; }
+
+/* 修改密码弹窗：标签「确认新密码」含必填星号较长，禁止换行避免错乱 */
+.pwd-form :deep(.el-form-item__label) { white-space: nowrap; }
 </style>

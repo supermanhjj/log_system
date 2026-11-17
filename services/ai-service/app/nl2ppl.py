@@ -2,29 +2,23 @@
 
 职责（与配置中心 main.py 解耦，规则由调用方从 PG 传入，便于独立验证）：
 1. build_prompt：把 PPL 语法规则库按类别注入 prompt，连同当前时间一起交给模型；
-2. invoke_model：三类接入统一网关（商用/本地走 OpenAI 兼容 /chat/completions，
-   CLI 走容器内可执行路径或宿主机桥接），失败如实抛出 stage/原因；
+2. invoke_model：商用 / 本地接入统一走 OpenAI 兼容 /chat/completions，失败如实抛出 stage/原因；
 3. normalize：模型输出按「不可信输入」处理——剥离模型自带的 source= 索引段
    （索引由检索网关按租户补齐）、命令白名单、拒绝写操作、补 head 上限、未知字段告警；
 4. resolve_time：时间词由后端确定性换算为绝对区间，不让模型算数。
 
 边界：本模块只生成并校验语句，不执行检索、不访问日志原文。
+WorkBuddy / CodeBuddy CLI 接入方式已于 2026-11-17 移除，此处只保留 HTTP 模型接入。
 """
 import json
-import os
 import re
-import shutil
-import socket
-import subprocess
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import urlparse, urlunparse
 
 import httpx
 
 CST = timezone(timedelta(hours=8))
-CLI_BRIDGE_URL = os.getenv("AI_CLI_BRIDGE_URL", "http://host.docker.internal:8010/invoke")
 MAX_HEAD = 500
 DEFAULT_HEAD = 100
 WRITE_WORDS = {"drop", "delete", "update", "insert", "create", "alter", "grant",
@@ -51,14 +45,6 @@ class Nl2PplError(Exception):
         self.message = message
         self.detail = detail
         self.hint = hint
-
-
-def free_port() -> int:
-    s = socket.socket()
-    s.bind(("127.0.0.1", 0))
-    port = s.getsockname()[1]
-    s.close()
-    return port
 
 
 def snippet(text: str, limit: int = 400) -> str:
@@ -209,68 +195,6 @@ def _chat_completions(row: Dict[str, Any], prompt: str, model: str) -> Tuple[str
     return text, {"via": "chat-completions", "url": url, "statusCode": resp.status_code}
 
 
-def _cli_local(row: Dict[str, Any], prompt: str, model: str) -> Tuple[str, Dict[str, Any]]:
-    """容器内确有 Node 运行时才走这里；否则交给宿主机桥接。"""
-    path = os.path.expanduser((row.get("cli_path") or "").strip())
-    timeout = min(int(row.get("timeout") or 30), 90)
-    cwd = (row.get("work_dir") or "").strip() or None
-    cmd = [path, "-p", "--model", model, "--output-format", "text", "-y",
-           "--port", str(free_port())]
-    try:
-        cp = subprocess.run(cmd, input=prompt, capture_output=True, text=True,
-                            timeout=timeout, cwd=cwd, check=False)
-    except Exception as e:  # noqa: BLE001
-        raise Nl2PplError("model", f"CLI 执行失败：{type(e).__name__}", str(e)[:300]) from e
-    if cp.returncode != 0 or not (cp.stdout or "").strip():
-        raise Nl2PplError("model", f"CLI 返回码 {cp.returncode}，未产出内容",
-                          snippet(cp.stderr), "确认 CLI 已登录（宿主机执行 codebuddy /login）")
-    return cp.stdout, {"via": "cli-local", "returncode": cp.returncode}
-
-
-def _bridge_url_ipv4(url: str) -> str:
-    """容器 /etc/hosts 的 host.docker.internal 同时含 IPv4 / IPv6 条目，而 IPv6 网关
-    （Docker Desktop）不可达；强制解析为 IPv4，避免偶发 [Errno 101] Network is unreachable。"""
-    parsed = urlparse(url)
-    if not parsed.hostname:
-        return url
-    try:
-        infos = socket.getaddrinfo(parsed.hostname, parsed.port or 80,
-                                   family=socket.AF_INET, type=socket.SOCK_STREAM)
-        ip = infos[0][4][0]
-    except (socket.gaierror, IndexError):
-        return url
-    netloc = f"{ip}:{parsed.port}" if parsed.port else ip
-    return urlunparse((parsed.scheme, netloc, parsed.path, parsed.params,
-                       parsed.query, parsed.fragment))
-
-
-def _cli_bridge(prompt: str, model: str, timeout_s: int) -> Tuple[str, Dict[str, Any]]:
-    url = _bridge_url_ipv4(CLI_BRIDGE_URL)
-    try:
-        resp = httpx.post(url,
-                          json={"model": model, "prompt": prompt, "timeout": timeout_s},
-                          timeout=timeout_s + 10)
-    except Exception as e:  # noqa: BLE001
-        raise Nl2PplError(
-            "model", f"宿主机 CLI 桥接不可达：{type(e).__name__}", str(e)[:300],
-            "WorkBuddy CLI 在宿主机、容器内无 Node 运行时；请在宿主机启动 "
-            "tools/codebuddy_bridge.py，并先执行一次 codebuddy /login 完成认证",
-        ) from e
-    try:
-        data = resp.json()
-    except ValueError as e:
-        raise Nl2PplError("model", "CLI 桥接返回非 JSON", snippet(resp.text)) from e
-    if not data.get("ok"):
-        raise Nl2PplError("model", data.get("error") or "CLI 桥接调用失败",
-                          snippet(str(data.get("stderr") or "")),
-                          data.get("hint") or "宿主机执行 codebuddy /login 后重试")
-    text = data.get("text") or ""
-    if not text.strip():
-        raise Nl2PplError("model", "CLI 未返回内容", snippet(str(data.get("stderr") or "")),
-                          "确认 CLI 已登录且所选模型可用")
-    return text, {"via": "cli-bridge", "returncode": data.get("returncode")}
-
-
 def invoke_model(row: Dict[str, Any], prompt: str,
                  model_name_override: str = "") -> Tuple[str, Dict[str, Any]]:
     kind = row.get("kind")
@@ -280,12 +204,6 @@ def invoke_model(row: Dict[str, Any], prompt: str,
                           "到「模型接入」编辑该配置，填写或选择模型")
     if kind in ("commercial", "local"):
         return _chat_completions(row, prompt, model)
-    if kind == "cli":
-        path = os.path.expanduser((row.get("cli_path") or "").strip())
-        # 容器内同时具备可执行文件与 node 时才直接执行；否则走宿主机桥接
-        if path and os.path.isfile(path) and shutil.which("node"):
-            return _cli_local(row, prompt, model)
-        return _cli_bridge(prompt, model, min(int(row.get("timeout") or 30), 90))
     raise Nl2PplError("config", f"不支持的接入类型：{kind}")
 
 

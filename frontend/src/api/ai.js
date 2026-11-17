@@ -48,8 +48,8 @@ export async function setDefaultProvider(id) {
   return data
 }
 
-export async function testProvider(id, payload) {
-  const { data } = await client.post(`/providers/${id}/test`, payload)
+export async function testProvider(id) {
+  const { data } = await client.post(`/providers/${id}/test`)
   return data
 }
 

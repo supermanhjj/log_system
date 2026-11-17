@@ -18,7 +18,7 @@ const router = useRouter()
 const loading = ref(false)
 const activeTab = ref('models')
 const activeKind = ref('commercial')
-const meta = ref({ kinds: [], presets: {}, grammarCategories: [], cliHint: {}, cliModels: [], cliModelSource: '', counts: {} })
+const meta = ref({ kinds: [], presets: {}, grammarCategories: [], counts: {} })
 
 // ---- 模型接入 ----
 const providers = ref([])
@@ -28,12 +28,11 @@ const providerSaving = ref(false)
 const editingProviderId = ref(null)
 const probeResult = ref(null)
 const probeLoadingId = ref(null)
-const runVersion = ref(false)
 
 function blankProviderForm(kind) {
   return {
     name: '', kind, provider: 'custom', base_url: '', model_name: '', api_key: '',
-    cli_path: '', work_dir: '', timeout: 30, enabled: true,
+    timeout: 30, enabled: true,
     note: '', probe_path: '',
   }
 }
@@ -60,13 +59,12 @@ function applyPresetValues(key) {
   providerForm.provider = key
   providerForm.base_url = p.base_url || ''
   providerForm.model_name = p.model_name || ''
-  providerForm.probe_path = p.probe_path || (p.kind === 'cli' ? '' : '/v1/models')
-  providerForm.cli_path = p.cli_path || ''
+  providerForm.probe_path = p.probe_path || '/v1/models'
 }
 function openProviderCreate(kind) {
   editingProviderId.value = null
   Object.assign(providerForm, blankProviderForm(kind))
-  applyPresetValues(kind === 'commercial' ? 'deepseek' : kind === 'local' ? 'ollama' : 'codebuddy')
+  applyPresetValues(kind === 'commercial' ? 'deepseek' : 'ollama')
   providerForm.name = `${kindLabel(kind)}接入 ${providersOf(kind).length + 1}`
   probeResult.value = null
   providerDrawer.value = true
@@ -75,8 +73,7 @@ function openProviderEdit(row) {
   editingProviderId.value = row.id
   Object.assign(providerForm, {
     name: row.name, kind: row.kind, provider: row.provider, base_url: row.base_url,
-    model_name: row.model_name, api_key: '', cli_path: row.cli_path,
-    work_dir: row.work_dir, timeout: row.timeout,
+    model_name: row.model_name, api_key: '', timeout: row.timeout,
     enabled: row.enabled, note: row.note, probe_path: row.extra?.probe_path || '',
   })
   probeResult.value = null
@@ -84,19 +81,15 @@ function openProviderEdit(row) {
 }
 async function saveProvider() {
   if (!providerForm.name.trim()) return ElMessage.warning('请填写接入名称')
-  if (providerForm.kind !== 'cli' && !providerForm.base_url.trim().startsWith('http')) {
+  if (!providerForm.base_url.trim().startsWith('http')) {
     return ElMessage.warning('请填写 http(s) 开头的 Base URL')
-  }
-  if (providerForm.kind === 'cli' && !providerForm.cli_path.trim()) {
-    return ElMessage.warning('请填写 CLI 可执行文件路径')
   }
   const extra = {}
   if (providerForm.probe_path) extra.probe_path = providerForm.probe_path
   const payload = {
     name: providerForm.name.trim(), kind: providerForm.kind, provider: providerForm.provider,
     base_url: providerForm.base_url.trim(), model_name: providerForm.model_name.trim(),
-    api_key: providerForm.api_key.trim(), cli_path: providerForm.cli_path.trim(),
-    work_dir: providerForm.work_dir.trim(),
+    api_key: providerForm.api_key.trim(),
     timeout: Number(providerForm.timeout) || 30, enabled: providerForm.enabled,
     note: providerForm.note, extra,
   }
@@ -138,7 +131,7 @@ async function runProbe(row) {
   probeLoadingId.value = row.id
   probeResult.value = null
   try {
-    const res = await testProvider(row.id, { run_version: row.kind === 'cli' && runVersion.value })
+    const res = await testProvider(row.id)
     probeResult.value = { ...res, name: row.name }
     await loadProviders()
   } catch (e) {
@@ -340,7 +333,6 @@ async function loadAll() {
     if (!meta.value.kinds?.length) meta.value.kinds = [
       { key: 'commercial', label: '商用 API', desc: '', hint: '' },
       { key: 'local', label: '本地自定义', desc: '', hint: '' },
-      { key: 'cli', label: 'WorkBuddy CLI', desc: '', hint: '' },
     ]
   } catch (e) {
     ElMessage.error('AI 配置服务不可用：' + (e.response?.data?.detail || e.message))
@@ -381,9 +373,6 @@ onMounted(loadAll)
               <div class="toolbar">
                 <div class="toolbar-left">
                   <span class="muted">共 {{ providersOf(k.key).length }} 个接入配置</span>
-                  <el-checkbox v-if="k.key === 'cli'" v-model="runVersion" class="probe-check">
-                    测试时试运行版本命令（--version）
-                  </el-checkbox>
                 </div>
                 <el-button type="primary" :icon="Plus" @click="openProviderCreate(k.key)">新建接入</el-button>
               </div>
@@ -392,9 +381,9 @@ onMounted(loadAll)
                 <el-table-column label="接入方式" min-width="130">
                   <template #default="{ row }">{{ presetLabel(row.provider) }}</template>
                 </el-table-column>
-                <el-table-column :label="k.key === 'cli' ? 'CLI 路径' : 'Base URL'" min-width="210" show-overflow-tooltip>
+                <el-table-column label="Base URL" min-width="210" show-overflow-tooltip>
                   <template #default="{ row }">
-                    <span class="mono">{{ k.key === 'cli' ? row.cli_path : row.base_url }}</span>
+                    <span class="mono">{{ row.base_url }}</span>
                   </template>
                 </el-table-column>
                 <el-table-column label="模型" min-width="150" show-overflow-tooltip>
@@ -624,30 +613,14 @@ onMounted(loadAll)
           </el-select>
           <div class="form-hint">选择预设自动填充地址 / 路径，之后可按需修改</div>
         </el-form-item>
-        <el-divider content-position="left">{{ providerForm.kind === 'cli' ? '命令行参数' : '接口参数' }}</el-divider>
-        <template v-if="providerForm.kind !== 'cli'">
-          <el-form-item label="Base URL"><el-input v-model="providerForm.base_url" placeholder="https://api.deepseek.com" /></el-form-item>
-          <el-form-item label="模型名"><el-input v-model="providerForm.model_name" placeholder="deepseek-chat" /></el-form-item>
-          <el-form-item label="API Key">
-            <el-input v-model="providerForm.api_key" type="password" show-password
-              :placeholder="editingProviderId ? '留空保持原密钥不变' : '仅存服务端，列表脱敏显示'" />
-          </el-form-item>
-          <el-form-item label="探测路径"><el-input v-model="providerForm.probe_path" placeholder="/v1/models" /></el-form-item>
-        </template>
-        <template v-else>
-          <el-form-item label="CLI 路径">
-            <el-input v-model="providerForm.cli_path" class="mono" placeholder="~/.local/bin/codebuddy" />
-            <div class="form-hint">{{ meta.cliHint?.note || '路径按容器内视角解析' }}</div>
-          </el-form-item>
-          <el-form-item label="选择模型">
-            <el-select v-model="providerForm.model_name" filterable allow-create default-first-option
-              style="width:100%" placeholder="选择或输入模型 ID">
-              <el-option v-for="m in (meta.cliModels || [])" :key="m" :label="m" :value="m" />
-            </el-select>
-            <div class="form-hint">{{ meta.cliModelSource || '选择调用 CLI 时使用的模型；可自定义输入模型 ID。' }}</div>
-          </el-form-item>
-          <el-form-item label="工作目录"><el-input v-model="providerForm.work_dir" class="mono" placeholder="留空使用服务默认目录" /></el-form-item>
-        </template>
+        <el-divider content-position="left">接口参数</el-divider>
+        <el-form-item label="Base URL"><el-input v-model="providerForm.base_url" placeholder="https://api.deepseek.com" /></el-form-item>
+        <el-form-item label="模型名"><el-input v-model="providerForm.model_name" placeholder="deepseek-chat" /></el-form-item>
+        <el-form-item label="API Key">
+          <el-input v-model="providerForm.api_key" type="password" show-password
+            :placeholder="editingProviderId ? '留空保持原密钥不变' : '仅存服务端，列表脱敏显示'" />
+        </el-form-item>
+        <el-form-item label="探测路径"><el-input v-model="providerForm.probe_path" placeholder="/v1/models" /></el-form-item>
         <el-form-item label="超时(秒)"><el-input-number v-model="providerForm.timeout" :min="1" :max="300" /></el-form-item>
         <el-form-item label="启用"><el-switch v-model="providerForm.enabled" /></el-form-item>
         <el-form-item label="备注"><el-input v-model="providerForm.note" type="textarea" :rows="2" /></el-form-item>

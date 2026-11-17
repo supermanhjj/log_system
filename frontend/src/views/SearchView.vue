@@ -865,10 +865,10 @@ watch(
         </template>
       </div>
 
-      <!-- 原始日志 -->
+      <!-- 原始日志（当前日志，高亮显示，与「更多上下文」框一致） -->
       <div class="raw-section">
         <div class="raw-title">原始日志</div>
-        <pre class="raw-block">{{ rawLog }}</pre>
+        <pre class="raw-block"><span class="more-anchor-tag">当前日志</span>{{ rawLog }}</pre>
       </div>
 
       <!-- 上下文：后 2 条（原始日志下方） -->
@@ -1023,7 +1023,7 @@ watch(
 .ctx-line:hover { background: var(--el-color-primary-light-9); border-color: var(--el-color-primary-light-7); }
 .raw-section { margin-top: 16px; }
 .raw-title { font-size: 13px; font-weight: 600; color: var(--color-text-1); margin-bottom: 8px; }
-.raw-block { background: #f5f7fa; border: 1px solid var(--color-border-1); border-radius: 4px; padding: 12px; font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace; font-size: 12px; line-height: 1.6; color: #1f2d3d; white-space: pre-wrap; word-break: break-all; margin: 0; }
+.raw-block { background: #E6FCF8; border: 1px solid #03857E; border-radius: 4px; box-shadow: inset 3px 0 0 #03857E; padding: 12px 12px 12px 15px; font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace; font-size: 12px; line-height: 1.6; color: #1f2d3d; white-space: pre-wrap; word-break: break-all; margin: 0; }
 
 /* 更多上下文日志框 */
 .more-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
