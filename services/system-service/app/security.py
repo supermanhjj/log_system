@@ -7,7 +7,7 @@
 所以「改角色权限后实时生效」，不需要重新登录。
 """
 import os
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import bcrypt
 from fastapi import Header, HTTPException
@@ -100,6 +100,27 @@ def require(resource: str, action: str):
             raise HTTPException(
                 status_code=403,
                 detail=f"当前角色「{user['role_name']}」缺少权限 {resource}:{action}",
+            )
+        return user
+
+    return dependency
+
+
+def require_any(pairs: List[tuple]):
+    """依赖工厂：任一权限点满足即放行。
+
+    用例：运行总览的「存储容量概览」区块，对有 overview:view 的角色应可读，
+    但日志空间管理页本身仍要求 storage:view。
+    """
+
+    def dependency(authorization: Optional[str] = Header(None)) -> Dict[str, Any]:
+        user = current_user(authorization)
+        points = set(perms_for_role(user["role_key"]))
+        if not any(f"{r}:{a}" in points for r, a in pairs):
+            need = " 或 ".join(f"{r}:{a}" for r, a in pairs)
+            raise HTTPException(
+                status_code=403,
+                detail=f"当前角色「{user['role_name']}」缺少权限 {need}",
             )
         return user
 

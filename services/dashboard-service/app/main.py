@@ -13,6 +13,8 @@
                           记录一经写入不再变化，故历史柱值不会随刷新波动。
                           前置条件：集群需启用 query insights（top_n_queries）；若索引不存在或无记录，
                           返回空柱（0）而非用实时探测值伪造历史。
+                          目标值不写死：读 system_params.search_p95_target（系统设置 → 检索耗时目标，
+                          默认 800ms），改完 10 秒内生效，且对 30 秒结果缓存同样生效。
 - 数据源健康度 / 在线数  : 各 source 近 1h 接收量 ÷ 近 7d 同时段均值（与高保真原型公式一致）
 
 说明：告警在平台中尚无独立后端（alarm-service 仍为骨架），故“告警”面板由日志严重级别实时推导，
@@ -24,6 +26,7 @@ import time
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional
 
+import psycopg2
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from opensearchpy import OpenSearch
@@ -41,13 +44,33 @@ client = OpenSearch(
     verify_certs=False,
 )
 
-app = FastAPI(title="dashboard-service", version="0.4.0")
+app = FastAPI(title="dashboard-service", version="0.4.1")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# PostgreSQL 只读：仅用于读取「系统设置」下发到 system_params 的阈值类参数。
+PG_DSN = os.getenv(
+    "SYSTEM_PG_DSN",
+    f"dbname={os.getenv('POSTGRES_DB', 'logdb')} "
+    f"user={os.getenv('POSTGRES_USER', 'loguser')} "
+    f"password={os.getenv('POSTGRES_PASSWORD', 'logpass')} "
+    f"host={os.getenv('POSTGRES_HOST', 'postgres')} "
+    f"port={os.getenv('POSTGRES_PORT', '5432')}",
+)
+_pg_conn = None
+
+
+def pg_conn():
+    """惰性连接 + autocommit。库不可达时抛异常，由调用方兜底，不影响 OpenSearch 取数。"""
+    global _pg_conn
+    if _pg_conn is None or getattr(_pg_conn, "closed", 1):
+        _pg_conn = psycopg2.connect(PG_DSN, connect_timeout=3)
+        _pg_conn.autocommit = True
+    return _pg_conn
 
 # ---------------------------------------------------------------------------
 # 租户 → 索引 路由（与 search-service 保持一致）
@@ -297,6 +320,62 @@ def cache_put(key: str, data: Dict) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 检索耗时目标（系统设置 → 系统参数 search_p95_target）
+# ---------------------------------------------------------------------------
+DEFAULT_P95_TARGET = 800          # 参数缺失或库不可达时的兜底值（与系统参数默认值一致）
+P95_TARGET_MIN, P95_TARGET_MAX = 50, 60000
+_PARAM_CACHE: Dict[str, Any] = {"ts": 0, "value": None}
+PARAM_TTL_MS = 10 * 1000          # 10 秒即可，保证「系统设置」改完近乎立即生效
+
+
+def p95_target() -> int:
+    """读系统参数 search_p95_target。读不到、值非法、库连不上都回落 800，绝不因此让首页 500。"""
+    now = now_ms()
+    if _PARAM_CACHE["value"] is not None and now - _PARAM_CACHE["ts"] < PARAM_TTL_MS:
+        return _PARAM_CACHE["value"]
+    value = None
+    try:
+        conn = pg_conn()
+        with conn.cursor() as cur:
+            cur.execute("SELECT pvalue FROM system_params WHERE pkey = 'search_p95_target'")
+            row = cur.fetchone()
+        if row and str(row[0]).strip():
+            n = int(str(row[0]).strip())
+            if P95_TARGET_MIN <= n <= P95_TARGET_MAX:
+                value = n
+    except Exception as e:  # noqa: BLE001
+        print(f"[dashboard-service] read search_p95_target failed: {e}", flush=True)
+    if value is None:
+        value = DEFAULT_P95_TARGET
+    _PARAM_CACHE.update(ts=now, value=value)
+    return value
+
+
+def apply_target(data: Dict[str, Any], target: int) -> Dict[str, Any]:
+    """把缓存里的结果按当前目标值重新判定达标/超标。
+
+    缓存按 (租户, 时间范围) 存 30 秒，目标值是「设置项」，改完要立刻生效，
+    所以判定相关的字段一律在返回前用最新目标值重算，不受缓存年龄影响。
+    """
+    out = dict(data)
+    stats = dict(out.get("stats") or {})
+    card = stats.get("searchP95")
+    if isinstance(card, dict):
+        card = dict(card)
+        p95 = card.get("value") or 0
+        ok = p95 <= target
+        card["sub"] = f"目标 ≤ {target}ms"
+        card["status"] = "normal" if ok else "warning"
+        card["statusText"] = "达标" if ok else "超标"
+        stats["searchP95"] = card
+    out["stats"] = stats
+    latency = dict(out.get("latency") or {})
+    latency["target"] = target
+    out["latency"] = latency
+    return out
+
+
+# ---------------------------------------------------------------------------
 # 端点
 # ---------------------------------------------------------------------------
 @app.get("/health")
@@ -321,14 +400,14 @@ def overview(
 ):
     key = range_key_of(range_in)
     cache_key = f"{tenant}|{key}"
+    target = p95_target()  # 系统设置 → 系统参数 search_p95_target，取不到回落 800
     if not force:
         cached = cache_get(cache_key)
         if cached is not None:
-            return cached
+            return apply_target(cached, target)
 
     idx = index_for(tenant)
     to = now_ms()
-    target = 800  # 检索耗时目标（ms）
 
     if key == "today":
         # 今日：东八区当天 00:00:00 → 当前时刻（自然日口径，区别于“近24小时”滚动窗口）

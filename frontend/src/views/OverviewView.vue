@@ -5,6 +5,7 @@ import { ElMessage } from 'element-plus'
 import { Refresh, Download } from '@element-plus/icons-vue'
 import { useAppStore } from '../stores/app'
 import { getOverview, RANGE_OPTIONS } from '../api/overview'
+import { getCapacity } from '../api/storage'
 
 const app = useAppStore()
 
@@ -26,6 +27,27 @@ const overview = reactive({
 const updatedAtText = computed(() => fmt(updatedAt.value))
 const descText = computed(() => `数据截至 ${updatedAtText.value}，每 60 秒自动刷新`)
 const alarmTotal = computed(() => overview.alarmDist.reduce((s, x) => s + x.value, 0))
+
+const storageCapacity = reactive({
+  totalText: '—', usedText: '—', availableText: '—', occupancy: '—',
+  docs: 0, indexCount: 0, scopeText: '全部租户', loaded: false,
+})
+async function loadStorageCapacity() {
+  try {
+    // 运行总览看平台级存储（平台管理员为全租户，其他角色由后端锁定本租户）
+    const data = await getCapacity('近 7 天', 'all')
+    storageCapacity.totalText = data.totalText || `${data.total} ${data.unit}`
+    storageCapacity.usedText = data.usedText || `${data.used} ${data.unit}`
+    storageCapacity.availableText = data.availableText || `${data.available} ${data.unit}`
+    storageCapacity.occupancy = data.occupancy
+    storageCapacity.docs = data.docs || 0
+    storageCapacity.indexCount = data.indexCount || 0
+    storageCapacity.scopeText = data.scope === 'all' ? '全部租户' : '本租户'
+    storageCapacity.loaded = true
+  } catch {
+    // 取不到就保持「—」，不回落成写死的假数据
+  }
+}
 // 时间维度短文本：用于卡片脚注，使“近24小时”等写死文案随所选维度变化
 const rangeShort = computed(() => {
   const m = {
@@ -63,6 +85,7 @@ async function loadData(showTip = false, force = false) {
     overview.sources = data.sources
     overview.recentAlarms = data.recentAlarms
     updatedAt.value = new Date(data.updatedAt || Date.now())
+    loadStorageCapacity()
     if (showTip) ElMessage.success('指标已刷新')
   } catch (e) {
     error.value = true
@@ -172,7 +195,7 @@ function renderLatency() {
   const pts = overview.latency.points
   const target = overview.latency.target
   const maxV = Math.max(...pts.map((p) => p.v), 1)
-  // 真实检索耗时在演示数据量下可能远小于 800ms 目标；仅当目标线相对数据有意义时才绘制，
+  // 真实检索耗时在演示数据量下可能远小于目标值；仅当目标线相对数据有意义时才绘制，
   // 避免坐标轴被目标线拉高导致柱体不可见。
   const includeTarget = target <= maxV * 3
   const yMax = includeTarget
@@ -270,6 +293,7 @@ onMounted(async () => {
   latencyChart = echarts.init(latencyEl.value)
   window.addEventListener('resize', resizeAll)
   await loadData(false)
+  await loadStorageCapacity()
   renderAll()
   startAutoRefresh()
 })
@@ -345,6 +369,49 @@ onBeforeUnmount(() => {
           <span class="sub">{{ s.sub }}</span>
         </div>
       </div>
+    </section>
+
+    <!-- 存储容量概览 -->
+    <section class="storage-section" aria-label="存储容量概览">
+      <el-card shadow="never" class="card">
+        <template #header>
+          <div class="card-head">
+            <span class="card-title">存储容量概览</span>
+            <router-link to="/settings/storage" class="lnk">管理日志空间</router-link>
+          </div>
+        </template>
+        <div class="storage-grid">
+          <div class="storage-item">
+            <div class="storage-label">总容量</div>
+            <div class="storage-value">{{ storageCapacity.totalText }}</div>
+          </div>
+          <div class="storage-item">
+            <div class="storage-label">日志已用</div>
+            <div class="storage-value">{{ storageCapacity.usedText }}</div>
+          </div>
+          <div class="storage-item">
+            <div class="storage-label">可用</div>
+            <div class="storage-value">{{ storageCapacity.availableText }}</div>
+          </div>
+          <div class="storage-item">
+            <div class="storage-label">占用率</div>
+            <div class="storage-value">{{ storageCapacity.occupancy }}%</div>
+          </div>
+        </div>
+        <div class="storage-progress">
+          <el-progress
+            :percentage="storageCapacity.loaded ? Math.min(100, Number(storageCapacity.occupancy) || 0) : 0"
+            :stroke-width="10"
+          />
+        </div>
+        <p class="storage-foot">
+          <template v-if="storageCapacity.loaded">
+{{ storageCapacity.scopeText }}索引 {{ storageCapacity.indexCount }} 个 ·
+            文档 {{ storageCapacity.docs.toLocaleString() }} 条
+          </template>
+          <template v-else>容量数据暂不可用（OpenSearch 未连通或当前角色无存储查看权限）</template>
+        </p>
+      </el-card>
     </section>
 
     <!-- 趋势与分布 -->
@@ -504,6 +571,15 @@ onBeforeUnmount(() => {
 .trend--up { color: #E53935; }
 .trend--down { color: #005E53; }
 .sub { color: var(--color-text-3); }
+
+/* 存储容量概览 */
+.storage-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+.storage-item { background: #F7F9FB; border: 1px solid var(--color-border-1); border-radius: 4px; padding: 12px 14px; }
+.storage-label { font-size: 12px; color: var(--color-text-3); }
+.storage-value { margin-top: 6px; font-size: 18px; font-weight: 600; color: var(--color-text-1); font-variant-numeric: tabular-nums; }
+.storage-progress { margin-top: 14px; }
+.storage-foot { margin: 8px 0 0; font-size: 12px; color: var(--color-text-3); }
+.storage-section {  }
 
 /* 卡片网格 */
 .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }

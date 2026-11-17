@@ -1,21 +1,22 @@
-"""system-service —— 平台管理：用户 / 角色权限 / 系统参数 / 审计日志。
+"""system-service —— 平台管理：用户 / 角色权限 / 系统参数 / 审计日志 / 日志空间。
 
 对应原型 SYS-0601（/settings/users）。落点依据 docs/tech-stack-selection.md 3.2(9)：
 「FastAPI 系统服务 + PostgreSQL（RBAC 三表、tenants、audit_log、system_params；
 各业务表含 tenant_id 行级隔离）」。
 
 边界（务必如实理解）：
-- 本服务是六张表的**唯一建表与写入方**（见 db.py）；auth-service 只读 users/tenants/roles。
+- 本服务是九张表的**唯一建表与写入方**（见 db.py）：RBAC 六表 + 日志空间三表；
+  auth-service 只读 users/tenants/roles。
 - 这里只管「管理面 CRUD」；登录、JWT 签发在 auth-service。两者共用 JWT_SECRET，
   本服务在每个管理接口上自行校验 Token 并现查 permissions，做到改权限后实时生效。
 - 不伪造数据：用户列表、角色成员数、审计日志全部来自 PostgreSQL 真实记录；
+  日志空间容量/索引/配额来自 OpenSearch 与 PostgreSQL 真实取数（见 storage.py）。
   密码只存 bcrypt 哈希，任何接口都不返回哈希值。
-- 系统参数目前是「登记 + 校验」层能力，日志保留天数 / 单次上限尚未反向驱动
-  OpenSearch 索引策略与检索网关，属后续接入项（文档中如实标注）。
+- 系统参数目前是「登记 + 校验」层能力，日志保留天数已与日志空间配置联动，
+  其余参数（检索上限等）尚未反向驱动 OpenSearch 与检索网关，属后续接入项。
 """
 import csv
 import io
-import json
 import secrets
 from typing import Any, Dict, List, Optional
 
@@ -24,6 +25,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel
 
+from .audit import write_audit
 from .db import (
     ACTION_LABELS,
     ALL_PERMS,
@@ -43,14 +45,16 @@ from .security import (
     perms_for_role,
     require,
 )
+from .storage import router as storage_router
 
-app = FastAPI(title="system-service", version="0.2.0")
+app = FastAPI(title="system-service", version="0.3.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.include_router(storage_router)
 
 ACCOUNT_RULE = "账号由小写字母开头，可含小写字母、数字与下划线，长度 3-32"
 
@@ -58,23 +62,6 @@ ACCOUNT_RULE = "账号由小写字母开头，可含小写字母、数字与下�
 # ---------------------------------------------------------------------------
 # 通用
 # ---------------------------------------------------------------------------
-def write_audit(user: Dict[str, Any], action: str, target: str = "",
-                detail: Optional[Dict[str, Any]] = None, ip: str = "",
-                result: str = "success") -> None:
-    """审计写入失败不阻断业务，但要留痕到服务日志，避免静默丢审计。"""
-    try:
-        pg_exec(
-            """INSERT INTO audit_log (tenant_id, user_id, user_name, account,
-                                      action, target, detail, ip, result)
-               VALUES ((SELECT id FROM tenants WHERE code=%s), %s, %s, %s, %s, %s, %s, %s, %s)""",
-            (user.get("tenant_code"), user.get("id"), user.get("name", ""),
-             user.get("account", ""), action, target,
-             json.dumps(detail or {}, ensure_ascii=False), ip, result),
-        )
-    except Exception as e:  # noqa: BLE001
-        print(f"[system-service] audit write failed: {e}", flush=True)
-
-
 def temp_password() -> str:
     """初始/重置密码：满足「字母 + 数字」策略，由管理员一次性转交。"""
     return f"Tmp{secrets.randbelow(9) + 1}{secrets.token_hex(3)}"
@@ -129,9 +116,10 @@ def health():
 def root():
     return {
         "service": "system-service",
-        "version": "0.2.0",
-        "scope": "平台管理：用户 / 角色权限 / 系统参数 / 审计日志",
-        "endpoints": ["/meta", "/users", "/roles", "/params", "/audit"],
+        "version": "0.3.0",
+        "scope": "平台管理：用户 / 角色权限 / 系统参数 / 审计日志 / 日志空间",
+        "endpoints": ["/meta", "/users", "/roles", "/params", "/audit",
+                      "/storage/capacity", "/storage/config", "/storage/indexes", "/storage/quotas"],
     }
 
 
@@ -587,7 +575,8 @@ def get_params(user: Dict[str, Any] = Depends(require("param", "view"))):
             }
             for r in rows
         ],
-        "note": "日志保留与单次检索上限目前为登记项，尚未反向驱动索引生命周期与检索网关。",
+        "note": ("日志保留天数已归「日志空间管理 · 存储配置」统一设置，此处不再重复；"
+                 "检索耗时目标已驱动运行总览的达标判定，单次检索上限仍是登记项。"),
     }
 
 
@@ -619,6 +608,8 @@ def put_params(
                 raise HTTPException(status_code=400, detail=f"「{d['label']}」必须是 true/false")
         pg_exec("UPDATE system_params SET pvalue=%s, updated_at=now() WHERE pkey=%s", (val, k))
 
+    # 日志保留天数只归「日志空间管理 · 存储配置」管（storage_config.retain_days），
+    # 系统参数里不再保留同名项，这里自然没有需要回写的地方。
     write_audit(user, "修改系统参数", f"{len(req.items)} 项", {"items": req.items},
                 client_ip(request.headers.get("x-forwarded-for"),
                           request.client.host if request.client else ""))

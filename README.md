@@ -14,7 +14,9 @@
 | 告警中心 | `/alarms/events`、`/alarms/rules` | 规则 CRUD/启停落 PG、请求时同步判定、状态覆盖、关联 PPL 跳检索页 |
 | 数据接入 | `/data-sources`、`/agents` | 数据源自动发现与真实连通性探测、字段元数据来自真实 mapping、Agent 心跳与指令队列 |
 | 智能管理 | `/ai/management` | 独立 `ai-service`：模型接入三页签、PPL 语法规则库、AI 能力注册表，以及 **NL→PPL 生成端点与「智能检索预览」**（中文问句 → 规则库 → 已选模型 → PPL） |
-| 平台管理 | `/settings/users` | 独立 `system-service`：用户管理（CRUD/启停/重置密码/批量/导出）、角色权限矩阵（改完实时生效）、系统参数、审计日志；顶栏显示真实登录用户与角色，菜单按权限过滤 |
+| 平台管理 · 用户与角色 | `/settings/users` | 独立 `system-service`：用户管理（CRUD/启停/重置密码/批量/导出）、角色权限矩阵（改完实时生效）；顶栏显示真实登录用户与角色，菜单按权限过滤 |
+| 平台管理 · 系统设置 | `/settings/system` | 系统参数（操作审计 / 单次检索上限 / **检索耗时目标** / 会话超时 / 默认时区）+ 审计日志（筛选/分页/导出）；检索耗时目标真实驱动运行总览 P95 达标判定 |
+| 平台管理 · 日志空间管理 | `/settings/storage` | 容量概览（含趋势）、存储配置、索引管理（真实体积/文档数/状态/清理）、租户配额；数据来自 OpenSearch `_cat/indices` + `_cluster/stats` 与 PostgreSQL，**无模拟值** |
 
 架构：Vue3 + Element Plus + ECharts → nginx（`/api/*` 反代）→ FastAPI 微服务 → OpenSearch / PostgreSQL / Redis；采集侧 `log-generator`（模拟业务）→ Fluent Bit → `logs-<tenant>`。
 
@@ -27,8 +29,9 @@
 | [module-alarm-center.md](docs/module-alarm-center.md) | 告警中心：设计与实现的判定引擎偏差、事件状态、关联日志 |
 | [module-data-ingestion.md](docs/module-data-ingestion.md) | 数据接入：配置面/数据面分离、字段字典、采集与管控链路 |
 | [module-platform-admin.md](docs/module-platform-admin.md) | 平台管理：登录、双服务职责边界、RBAC 六表与权限矩阵、接口、验证与待办 |
+| [module-log-storage.md](docs/module-log-storage.md) | 日志空间管理：容量口径、趋势来源、索引状态判据、清理语义、权限与验证 |
 | [service-auth.md](docs/service-auth.md) | 登录与鉴权模块（auth-service）：开发内容、登录链路、JWT 与权限下发、失败语义、踩坑与边界 |
-| [service-system.md](docs/service-system.md) | 用户与角色模块（system-service）：六表与种子、用户管理、权限矩阵、保护性约束、审计 |
+| [service-system.md](docs/service-system.md) | 用户、角色与日志空间（system-service）：九表与种子、用户管理、权限矩阵、日志空间真实取数、保护性约束、审计 |
 | [tech-stack-selection.md](docs/tech-stack-selection.md) | 技术栈选型与功能点 × 技术栈映射（设计基线 v1.5） |
 | [container-deployment.md](docs/container-deployment.md) | 容器化部署、镜像与运行服务现状（第 4 章含 ai-service 与 NL→PPL 运行时） |
 | [service-inventory.md](docs/service-inventory.md) | 服务清单、端口、nginx 路由、索引现状 |
@@ -68,6 +71,7 @@ docker compose down -v
 - AI 自然语言转 PPL 的**生成端点、配置页预览与检索页「智能检索 · ChatPPL」弹窗均已可用**；时间范围在 `source` 段后作为独立 `where` 注入，与关键字检索口径一致。
 - WorkBuddy CLI 生成需宿主机桥接（`python3 tools/codebuddy_bridge.py`）+ 一次交互式登录（`codebuddy /login`）；容器内无 Node 运行时，CLI 本体不能在容器内执行。
 - Kafka / Flink 为设计稿链路，当前日志由 Fluent Bit 直写 OpenSearch；`logs-template` 索引模板无代码定义，部署时需手工 PUT。
+- 日志空间管理的容量与索引数据**均为真实取数**；容量趋势在每日快照攒满 2 个点前为「按真实日志量推算」，页面已标注来源。清理只在手动触发时按保留期执行，**未接定时任务与 ISM 策略**。
 - 日志源为 `log-generator` 模拟数据，非生产日志。
 
 > Apple Silicon：OpenSearch 若报架构错误可加 `platform: linux/amd64`；Flink 默认以 amd64 模拟运行。

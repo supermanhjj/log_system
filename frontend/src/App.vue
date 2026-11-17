@@ -10,7 +10,9 @@ import {
   Monitor,
   Odometer,
   SetUp,
+  Setting,
   User,
+  DataBoard,
   Warning,
 } from '@element-plus/icons-vue'
 import { useAppStore } from './stores/app'
@@ -57,13 +59,26 @@ const groups = [
   },
   {
     title: '平台管理',
-    // 平台管理是四 Tab 容器：任一 Tab 有权限即可进入（如审计员只有 audit:view）
-    items: [{
-      path: '/settings/users',
-      title: '用户与角色',
-      icon: User,
-      resources: ['settings', 'user', 'role', 'param', 'audit'],
-    }],
+    items: [
+      {
+        path: '/settings/users',
+        title: '用户与角色',
+        icon: User,
+        resources: ['settings', 'user', 'role'],
+      },
+      {
+        path: '/settings/system',
+        title: '系统设置',
+        icon: Setting,
+        resources: ['param', 'audit'],
+      },
+      {
+        path: '/settings/storage',
+        title: '日志空间管理',
+        icon: DataBoard,
+        resources: ['storage'],
+      },
+    ],
   },
 ]
 
@@ -72,18 +87,23 @@ const visibleGroups = computed(() => groups
   .map((g) => ({ ...g, items: g.items.filter((m) => m.resources.some((r) => auth.has(r, 'view'))) }))
   .filter((g) => g.items.length))
 
-const topTabs = [
+const settingsLandingPath = computed(() => {
+  if (auth.has('user', 'view') || auth.has('role', 'view') || auth.has('settings', 'view')) return '/settings/users'
+  if (auth.has('param', 'view') || auth.has('audit', 'view')) return '/settings/system'
+  return '/settings/storage'
+})
+const topTabs = computed(() => ([
   { key: 'overview', label: '概览', path: '/overview', resources: ['overview'] },
   { key: 'search', label: '日志分析', path: '/search', resources: ['search'] },
   { key: 'alarms', label: '告警中心', path: '/alarms/events', resources: ['alarms'] },
   { key: 'data-sources', label: '数据接入', path: '/data-sources', resources: ['data'] },
   { key: 'ai', label: '智能管理', path: '/ai/management', resources: ['ai'] },
   {
-    key: 'settings', label: '平台管理', path: '/settings/users',
-    resources: ['settings', 'user', 'role', 'param', 'audit'],
+    key: 'settings', label: '平台管理', path: settingsLandingPath.value,
+    resources: ['settings', 'user', 'role', 'param', 'audit', 'storage'],
   },
-]
-const visibleTopTabs = computed(() => topTabs.filter((t) => t.resources.some((r) => auth.has(r, 'view'))))
+]))
+const visibleTopTabs = computed(() => topTabs.value.filter((t) => t.resources.some((r) => auth.has(r, 'view'))))
 
 function topKeyOf(path) {
   if (path === '/overview') return 'overview'

@@ -3,7 +3,8 @@
 > 本文记录 2026-11-16 落地的「登录 + 平台管理-用户与角色 + 顶栏真实登录用户」实现现状。
 > 对应原型：`prototype/settings.html`（P-SYS-0601）、登录规格 `prototype/specs/P-AUTH-0100.json`（原型无 login 页面文件，样式按 `design-tokens.css` 令牌自建）。
 > 规划依据：`docs/tech-stack-selection.md` 3.2(1)、3.2(9)、6.2。
-> 服务级实现细节另见：[auth-service 服务说明](service-auth.md) · [system-service 服务说明](service-system.md)。
+> 服务级实现细节另见：[auth-service 服务说明](service-auth.md) · [system-service 服务说明](service-system.md) · [日志空间管理](module-log-storage.md)。
+> **2026-11-16 页面拆分**：原「用户与角色」四 Tab 拆成三个菜单——用户与角色（用户管理 / 角色权限）、系统设置（系统参数 / 审计日志）、日志空间管理（容量概览 / 存储配置 / 索引管理 / 租户配额）。
 
 ## 1. 范围与定位
 
@@ -14,6 +15,8 @@
 | 角色权限（成员数 / 权限矩阵编辑 / 实时生效） | SYS-0601 | 已落地 |
 | 系统参数（日志保留 / 检索上限 / 时区 / 会话超时 / 审计开关） | SYS-0601 | 已落地（登记 + 校验层） |
 | 审计日志（筛选 / 分页 / 导出） | SYS-0601 | 已落地，登录、登出、改密、用户与角色变更、参数变更、导出均留痕 |
+| 系统设置（系统参数 + 审计日志，独立菜单 `/settings/system`） | SYS-0601 | 已落地，从「用户与角色」页迁出 |
+| 日志空间管理（容量 / 配置 / 索引 / 配额，`/settings/storage`） | 无原型（新增页） | 已落地，容量与索引数据来自 OpenSearch 实时取数 |
 | 顶栏实际登录用户与角色 | 全站 | 已落地（姓名 + 角色标签 + 租户 + 下拉：修改密码 / 退出登录） |
 
 ## 2. 双服务职责边界（关键）
@@ -72,8 +75,9 @@
 | role 角色权限 | view / update | ✓ | | | |
 | param 系统参数 | view / update | ✓ | | | |
 | audit 审计日志 | view / export | ✓ | | | ✓/✓ |
+| storage 日志空间 | view / update / clean | ✓ | ✓ | | |
 
-- 权限点合计：平台管理员 25、运维值班 9、只读用户 6、审计员 4。
+- 权限点合计：平台管理员 28、运维值班 10、只读用户 6、审计员 4（落库 48 行）。
 - **权限不写进 Token**，每次请求按 `role_key` 现查 `permissions` 表 → 改角色权限后**实时生效，无需重新登录**。
 - 保护性约束：`platform_admin` 权限不可裁剪；不能停用/删除自己；内置账号不可停用、角色与租户不可改；不能移除自己所在角色的 `role:update`（防把自己锁在门外）。
 - **平台管理入口按「任一 Tab 有权限」放行**：路由 `meta.permAny`，`/settings/users` 在 `settings/user/role/param/audit` 任一 `view` 下可进。否则审计员有 `audit:view` 却进不了页面（本次实测发现并修正）。
@@ -113,7 +117,9 @@ CSV 均带 UTF-8 BOM（Excel 直开不乱码）；临时密码只在创建/重�
 | 文件 | 内容 |
 |---|---|
 | `frontend/src/views/LoginView.vue` | 独立登录页（不套平台布局）：品牌区 + 账号/密码/租户 + 记住账号 + 错误/无权限两种提示态 + 登录 loading |
-| `frontend/src/views/UserRoles.vue` | 用户与角色四 Tab；筛选、批量栏、表格、分页、新建/编辑弹窗、临时密码弹窗、角色权限矩阵（两列 12 组）、参数表单、审计表 |
+| `frontend/src/views/UserRoles.vue` | 用户与角色两 Tab：用户管理、角色权限矩阵 |
+| `frontend/src/views/SystemSettings.vue` | 系统设置两 Tab：系统参数、审计日志（含导出） |
+| `frontend/src/views/LogStorage.vue` | 日志空间管理四 Tab：容量概览（含趋势图与范围切换）、存储配置、索引管理（含清理确认）、租户配额 |
 | `frontend/src/App.vue` | 顶栏真实用户（首字头像 + 姓名 + 角色标签 + 租户）；用户下拉：账号/租户、修改密码、退出登录；登录页不渲染布局；菜单与顶部页签按权限过滤 |
 | `frontend/src/router/index.js` | `/login` 公开路由 + 全局守卫（无 Token → 登录页并带 `redirect`；有 Token 无用户 → `/me` 回填；`perm`/`permAny` 不足 → 提示并回 `/overview`） |
 | `frontend/src/stores/auth.js` | Token（localStorage `ls_token`）、`user`、`permissions`、`has(resource, action)`、登录/登出/改密 |
@@ -139,7 +145,7 @@ CSV 均带 UTF-8 BOM（Excel 直开不乱码）；临时密码只在创建/重�
 ## 9. 已知边界与待办
 
 1. **跨服务鉴权未强绑**：目前只有 `auth-service` / `system-service` 校验 Token；`search` / `alarm` / `ingest` / `agent` / `dashboard` / `ai` 仍不校验（前端也不带 Token）。要真隔离需在 nginx 或各服务加统一中间件——这是下一步最该做的安全项。
-2. **系统参数未驱动系统**：`log_retain_days` / `search_limit` / `audit_enabled` 目前是登记 + 校验，未反向驱动 OpenSearch ISM 策略、检索网关上限、审计开关。
+2. **系统参数部分已驱动**：`search_p95_target` 已驱动运行总览 P95 卡片的达标 / 超标判定（改完约 10 秒内生效）；日志保留天数已从系统参数下线，只由「日志空间管理 · 存储配置」维护，避免两处各存一份；`search_limit` / `audit_enabled` 仍是登记 + 校验，未反向驱动检索网关上限与审计开关。
 3. 无删除用户接口（与原型一致，用停用代替），`user:delete` 权限点已定义但暂无对应操作。
 4. 审计写入是请求内同步 INSERT（失败不阻断业务，仅打日志）；高并发下应改异步或批量。
 5. 密码策略仅「长度 + 字母数字」，无失败锁定、验证码、历史密码校验、强制首次改密。

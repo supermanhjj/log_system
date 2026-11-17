@@ -1,8 +1,8 @@
-# 用户与角色模块（system-service）开发记录
+# 用户、角色与日志空间（system-service）开发记录
 
 > 快照日期：2026-11-16（GMT+8）｜基于当前工作区真实代码整理，行号随代码变动可能偏移
-> 模块范围：**用户**（增删改查 / 启停 / 重置密码 / 批量 / 导出）、**角色**（权限矩阵）、以及依附其上的**系统参数**与**审计日志**
-> 关联文档：[平台管理模块](module-platform-admin.md) · [登录与鉴权模块（auth-service）](service-auth.md) · [服务清单](service-inventory.md) · [技术栈选型](tech-stack-selection.md)
+> 模块范围：**用户**（增删改查 / 启停 / 重置密码 / 批量 / 导出）、**角色**（权限矩阵）、**日志空间**（容量 / 配置 / 索引 / 配额），以及依附其上的**系统参数**与**审计日志**
+> 关联文档：[平台管理模块](module-platform-admin.md) · [登录与鉴权模块（auth-service）](service-auth.md) · [日志空间管理](module-log-storage.md) · [服务清单](service-inventory.md) · [技术栈选型](tech-stack-selection.md)
 > 服务 / 端口：`log_system-system-service-1`，宿主机 `8007` → 容器 `8000`；网关前缀 `/api/system/`（`nginx/nginx.conf:27`）
 
 ---
@@ -15,23 +15,24 @@
 | 角色权限（成员数 / 矩阵编辑 / 实时生效） | ✅ | `app/main.py:501-568` |
 | 系统参数（登记 + 类型校验） | ✅ 登记层能力，未驱动系统 | `app/main.py:578-625` |
 | 审计日志（筛选 / 分页 / 导出） | ✅ | `app/main.py:655-722` |
-| RBAC 六表建表与种子 | ✅ 启动时幂等执行 | `app/db.py:146-284` |
-| 鉴权闸门 `require(resource, action)` | ✅ 每请求现查权限 | `app/security.py:94-106` |
+| RBAC 六表 + 日志空间三表建表与种子 | ✅ 启动时幂等执行 | `app/db.py` 的 `init_db()` |
+| 日志空间管理（容量 / 配置 / 索引 / 配额 / 清理） | ✅ 真实取数（OpenSearch + PG） | `app/storage.py` |
+| 鉴权闸门 `require(resource, action)` | ✅ 每请求现查权限 | `app/security.py:94-119` |
 | 删除用户 / 角色增删 / 租户管理 | ❌ 未做，用停用代替 | 见第 10 节 |
 
-代码规模：`main.py` 728 行、`db.py` 291 行、`security.py` 107 行。**共 17 个路由**（15 个业务 + `/health`、`/`）。库内实测：`tenants 3 / roles 4 / permissions 44 / params 5`。
+代码规模：`main.py` 约 730 行、`db.py` 约 380 行、`security.py` 约 120 行、`storage.py` 约 480 行、`audit.py` 40 行。**共 24 个路由**（22 个业务 + `/health`、`/`），其中 7 个属 `/storage`。库内实测：`tenants 3 / roles 4 / permissions 48 / params 5 / storage_config 1 / tenant_quotas 3`。
 
 ---
 
 ## 1. 模块定位与开发边界
 
-**一句话**：本服务是平台管理的数据面——**六张 RBAC 表的唯一建表方与唯一写入方**，管人、管角色、管参数、管审计。
+**一句话**：本服务是平台管理的数据面——**九张表的唯一建表方与唯一写入方**（RBAC 六表 + 日志空间三表），管人、管角色、管参数、管审计、管日志空间。
 
 | | 内容 |
 |---|---|
-| 做 | 建表 + 种子、用户 CRUD/启停/重置/批量/导出、角色权限矩阵读写、系统参数读写、审计查询与导出、页面元信息 `/meta` |
+| 做 | 建表 + 种子、用户 CRUD/启停/重置/批量/导出、角色权限矩阵读写、系统参数读写、审计查询与导出、日志空间容量/配置/索引/配额、页面元信息 `/meta` |
 | 不做 | 登录与 JWT 签发（`auth-service`）、各业务模块（检索/告警/接入/Agent/仪表盘/AI）的取数逻辑 |
-| 表所有权 | `tenants` / `roles` / `permissions` / `users` / `audit_log` / `system_params`——**只在本服务 `app/db.py` 建**，`auth-service` 只读不建 |
+| 表所有权 | RBAC 六表（`tenants` / `roles` / `permissions` / `users` / `audit_log` / `system_params`）+ 日志空间三表（`storage_config` / `tenant_quotas` / `storage_snapshots`）——**只在本服务 `app/db.py` 建**，`auth-service` 只读不建 |
 | 鉴权方式 | 自行校验 Token + 每个接口按「资源:操作」现查 `permissions`，改权限后实时生效 |
 
 `main.py` 按「通用 → 元信息 → 用户 → 角色 → 参数 → 审计」分段注释，**没有 service 层**：每个接口就是「校验 → 一条 SQL → 写审计 → 组装响应」。这是刻意保持直白——管理面逻辑不值得为分层再套一层，读代码的人能一眼看到 SQL。
@@ -52,6 +53,9 @@
 | `users` | `tenant_id` / `account` / `name` / `password_hash` / `role_key` / `phone` / `email` / `enabled` / `last_login_at` / `last_login_ip` / `is_builtin` | `account` UNIQUE、`idx_users_tenant` | 账号规则：小写字母开头，可含小写字母/数字/下划线，3-32 位 |
 | `audit_log` | `tenant_id` / `user_id` / `user_name` / `account` / `action` / `target` / `detail`(jsonb) / `ip` / `result` | `idx_audit_created`（`created_at DESC`） | 追加写；姓名与账号**冗余存储**，用户改名后历史仍可读 |
 | `system_params` | `pkey` / `pvalue` / `ptype`(int/enum/bool) / `label` / `note` / `options`(jsonb) | `pkey` 主键 | 保存时按 `ptype` 校验类型与枚举范围 |
+| `storage_config` | `id`(恒为 1) / `retain_days` / `roll_threshold` / `hot_cold_strategy` / `quota_gb` | `id` 主键 + `CHECK (id = 1)` | 单行表，多行无意义；`quota_gb = 0` 表示不限制 |
+| `tenant_quotas` | `tenant_code` / `quota_gb` | `tenant_code` 主键，外键指向 `tenants(code)` | 每租户日志配额，0 = 不限制 |
+| `storage_snapshots` | `snap_date` / `scope` / `used_bytes` / `doc_count` / `index_count` | 主键 `(snap_date, scope)` | 每日容量实测快照，供趋势图从「推算」转「实测」 |
 
 ### 2.2 种子策略
 
@@ -66,7 +70,9 @@
 | `audit_linjing` | 林静 | 审计员 | 总部生产 | 13800000004 | 只有审计权限，验证菜单过滤 |
 | `ops_zhaolei` | 赵磊 | 运维值班 | 总部生产 | 13800000005 | **初始即停用**，验证停用后登录被拒 |
 
-参数种子 5 项：`log_retain_days`(enum 30/90/180/365)、`search_limit`(int 5000)、`timezone`(enum)、`session_timeout_min`(int 30)、`audit_enabled`(bool)。
+参数种子 5 项：`search_limit`(int 5000)、`search_p95_target`(int 800，检索耗时目标 ms)、`timezone`(enum)、`session_timeout_min`(int 30)、`audit_enabled`(bool)。
+
+**参数归属的一次收敛**：`log_retain_days` 已从本表下线（写入 `RETIRED_PARAMS`，`init_db()` 每次启动幂等 `DELETE` 残留行）。日志保留天数只有一个权威来源——`storage_config.retain_days`，由「日志空间管理 · 存储配置」维护，避免同一语义在两个页面各存一份、显示不一致。
 
 ---
 
@@ -127,9 +133,9 @@ elif user["role_key"] != "platform_admin":
 
 ## 4. 角色模块
 
-### 4.1 开发内容：12 资源 / 25 权限点
+### 4.1 开发内容：13 资源 / 28 权限点
 
-权限树定义在 `db.py:28-50`（`PERMISSION_TREE` + `ALL_PERMS`），动作标签统一走 `ACTION_LABELS`：`view` 查看 / `create` 新建 / `update` 修改 / `delete` 删除 / `export` 导出。
+权限树定义在 `db.py` 的 `PERMISSION_TREE` + `ALL_PERMS`，动作标签统一走 `ACTION_LABELS`：`view` 查看 / `create` 新建 / `update` 修改 / `delete` 删除 / `export` 导出 / `clean` 清理。
 
 | 资源 | 动作 | 平台管理员 | 运维值班 | 只读用户 | 审计员 |
 |---|---|:--:|:--:|:--:|:--:|
@@ -145,8 +151,9 @@ elif user["role_key"] != "platform_admin":
 | role 角色权限 | view / update | ✓ | | | |
 | param 系统参数 | view / update | ✓ | | | |
 | audit 审计日志 | view / export | ✓ | | | ✓/✓ |
+| storage 日志空间 | view / update / clean | ✓ | ✓ | | |
 
-合计：平台管理员 **25**、运维值班 **9**、只读用户 **6**、审计员 **4**，落库 44 行。
+合计：平台管理员 **28**、运维值班 **10**、只读用户 **6**、审计员 **4**，落库 48 行。`storage` 只给运维值班 `view`（值班需要知道磁盘快满），清理与改配置仅平台管理员。
 
 两个设计取舍：**审计员是原型角色列表里的第四类**，与文档已确认的三级模型并存；**角色数据驱动但无管理入口**——`roles` 表增删角色不需要改代码，但增了还得补前端菜单与路由，所以暂未开放 CRUD。
 
@@ -192,7 +199,7 @@ for perm in sorted(set(req.permissions)):
 
 ## 6. 系统参数与审计日志（依附模块）
 
-**系统参数**（`main.py:578-625`）：保存时按 `ptype` 校验——`int` 必须整数、`enum` 必须命中 `options`、`bool` 必须 `true/false`；未知 `pkey` 直接 400 并列出参数名。**边界要说清**：这 5 个参数目前只是「登记 + 校验」层能力，`log_retain_days` / `search_limit` / `audit_enabled` **尚未反向驱动** OpenSearch ISM 策略、检索网关上限与审计开关。
+**系统参数**（`main.py` 的 `/params`）：保存时按 `ptype` 校验——`int` 必须整数、`enum` 必须命中 `options`、`bool` 必须 `true/false`；未知 `pkey` 直接 400 并列出参数名。**边界要说清**：`search_p95_target` 已真实驱动运行总览（`dashboard-service` 每 10 秒读一次，见 `module-overview.md`）；`search_limit` / `audit_enabled` / `session_timeout_min` / `timezone` 仍是「登记 + 校验」层能力，尚未反向驱动检索网关上限、审计开关与 JWT 过期时间。
 
 **审计日志**（`main.py:655-722`）：`write_audit()` 是全服务唯一入口，覆盖新建用户、修改用户、启停、重置密码、批量启停、批量重置、修改角色权限、修改系统参数、导出用户、导出审计 10 类管理动作。
 
@@ -203,7 +210,7 @@ for perm in sorted(set(req.permissions)):
 
 ---
 
-## 7. 接口清单（17 个路由）
+## 7. 接口清单（24 个路由）
 
 业务接口全部要求 `Authorization: Bearer`，权限列即所需权限点。
 
@@ -225,6 +232,13 @@ for perm in sorted(set(req.permissions)):
 | PUT | `/params` | `param:update` | 按 `ptype` 校验 |
 | GET | `/audit` | `audit:view` | 筛选 + 分页 + 去重动作列表 |
 | GET | `/audit/export.csv` | `audit:export` | 上限 20000 行 |
+| GET | `/storage/capacity` | `storage:view` 或 `overview:view` | 容量四卡 + 趋势；`range` 支持「近 7 天」或纯天数 |
+| GET | `/storage/config` | `storage:view` | 存储配置 + 冷热策略选项 |
+| PUT | `/storage/config` | `storage:update` | 局部更新；`retainDays` 为日志生命周期唯一来源，不再回写系统参数 |
+| GET | `/storage/indexes` | `storage:view` | 索引真实体积/文档数/health/年龄 + 状态与判定依据 |
+| POST | `/storage/indexes/{name}/clean` | `storage:clean` | `purge` 删过期文档（默认）/ `drop` 删冷索引（仅冷索引允许） |
+| GET | `/storage/quotas` | `storage:view` | 各租户配额与真实占用；非管理员仅本租户 |
+| PUT | `/storage/quotas/{tenant}` | `storage:update` | `0` = 不限制；非管理员只能改本租户 |
 
 ---
 
@@ -261,7 +275,8 @@ for perm in sorted(set(req.permissions)):
 | 级别 | 项 | 说明 |
 |---|---|---|
 | **P0** | 只有本服务与 auth-service 校验 Token | `search` / `alarm` / `ingest` / `agent` / `dashboard` / `ai` 仍不校验（前端也不带 Token）；真隔离需在 nginx 或各服务加统一中间件 |
-| **P1** | 系统参数未驱动系统 | 见第 6 节，仍是登记层能力 |
+| **P1** | 系统参数多数未驱动系统 | 日志保留天数已与日志空间配置双向联动；`search_limit` / `audit_enabled` 仍是登记层能力（见第 6 节） |
+| **P1** | 日志空间无定时清理 | 保留期只在手动点「清理过期」时生效，未接 OpenSearch ISM 或定时任务（详见 `module-log-storage.md`） |
 | **P1** | 无删除用户接口 | 与原型一致用停用代替；`user:delete` 权限点已定义但无操作 |
 | **P1** | 角色权限替换非事务 | `DELETE` + 逐条 `INSERT` 在 autocommit 下中断会留下不完整权限集 |
 | **P1** | 无角色增删接口 | 只有 4 个内置角色可改，`roles` 表可数据驱动但无管理入口 |
@@ -279,9 +294,13 @@ for perm in sorted(set(req.permissions)):
 |---|---|
 | `services/system-service/app/main.py` | 17 个路由、业务校验、保护性约束、CSV 导出 |
 | `services/system-service/app/db.py` | 六表 DDL、种子、权限树、PG 访问层 |
-| `services/system-service/app/security.py` | bcrypt、JWT 解析、`require()` 权限闸门 |
+| `services/system-service/app/security.py` | bcrypt、JWT 解析、`require()` / `require_any()` 权限闸门 |
+| `services/system-service/app/storage.py` | `/storage` 全部接口：OpenSearch 取数、趋势、索引状态、清理 |
+| `services/system-service/app/audit.py` | 审计写入（管理面与日志空间共用，失败不阻断业务） |
 | `frontend/src/api/system.js` | 15 个接口封装（含 `saveCsv` blob 下载，`:88-98`） |
-| `frontend/src/views/UserRoles.vue` | 四个 Tab：用户管理 / 角色权限 / 系统参数 / 审计日志 |
+| `frontend/src/views/UserRoles.vue` | 两个 Tab：用户管理 / 角色权限（系统参数与审计日志已迁至系统设置页） |
+| `frontend/src/views/LogStorage.vue` | 日志空间管理四个 Tab：容量概览 / 存储配置 / 索引管理 / 租户配额 |
+| `frontend/src/api/storage.js` | 7 个存储接口封装 |
 | `frontend/src/App.vue` | 顶栏真实用户；菜单按 `resources` 数组过滤 |
 | `frontend/src/router/index.js` | `meta.perm` / `meta.permAny` 双档守卫 |
 | `docs/module-platform-admin.md` | 模块业务视角（原型对照、权限矩阵、端到端验证） |

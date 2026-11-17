@@ -426,7 +426,7 @@ onMounted(loadAll)
                     <span v-else class="muted">未测试</span>
                   </template>
                 </el-table-column>
-                <el-table-column label="操作" width="250" fixed="right">
+                <el-table-column label="操作" width="250" fixed="right" align="center" header-align="center">
                   <template #default="{ row }">
                     <div class="op-actions">
                       <el-button link type="primary" size="small" :loading="probeLoadingId === row.id"
@@ -568,7 +568,7 @@ onMounted(loadAll)
               </template>
             </el-table-column>
             <el-table-column prop="note" label="说明" min-width="180" show-overflow-tooltip />
-            <el-table-column label="操作" width="130" fixed="right">
+            <el-table-column label="操作" width="130" fixed="right" align="center" header-align="center">
               <template #default="{ row }">
                 <div class="op-actions">
                   <el-button link type="primary" size="small" @click="openGrammarEdit(row)">编辑</el-button>
@@ -698,6 +698,7 @@ onMounted(loadAll)
 .muted { color: var(--color-text-3); font-size: 12px; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; }
 .op-actions { display: flex; align-items: center; justify-content: center; flex-wrap: nowrap; gap: 2px; }
+.op-actions .el-button { margin: 0 !important; }
 .empty-box { padding: 18px 0; text-align: center; color: var(--color-text-3); font-size: 13px; }
 .empty-box p { margin: 0 0 8px; }
 .data-table { width: 100%; }

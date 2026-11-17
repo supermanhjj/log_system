@@ -42,7 +42,7 @@
 | `log_system-alarm-service-1` | alarm-service | log_system-backend | localhost | 8004 | 8000 | running | 告警 |
 | `log_system-ingest-service-1` | ingest-service | log_system-backend | localhost | 8005 | 8000 | running | 日志接入 |
 | `log_system-agent-service-1` | agent-service | log_system-backend | localhost | 8006 | 8000 | running | 运维 Agent 管控面 |
-| `log_system-system-service-1` | [system-service](service-system.md) | log_system-backend | localhost | 8007 | 8000 | running | 平台管理：用户 / 角色权限 / 系统参数 / 审计日志（RBAC 六表建表方） |
+| `log_system-system-service-1` | [system-service](service-system.md) | log_system-backend | localhost | 8007 | 8000 | running | 平台管理：用户 / 角色权限 / 系统参数 / 审计日志 / 日志空间管理（九表建表方，容量与索引实时取数） |
 | `log_system-ai-service-1` | ai-service | log_system-backend | localhost | 8008 | 8000 | running | AI 能力配置中心 + NL→PPL 生成端点（模型接入 / PPL 语法规则库 / 能力注册表 / 智能检索预览） |
 
 ### 3. 采集层 & 测试模拟器

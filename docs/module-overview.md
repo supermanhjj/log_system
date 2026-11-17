@@ -53,7 +53,7 @@
 | 4 张指标卡：今日写入日志、活动告警、检索耗时 P95、在线数据源 | `:326-360`、数据来自 `overview.stats` | `main.py:351-355,379-406,438-448,450-488` | ✅ 真实聚合 |
 | 日志写入趋势（面积折线，环比 + 时间桶） | `:361-375`、`renderChart()` 系列 | `main.py:357-377` `date_histogram` | ✅ 真实 |
 | 告警级别分布（环形图，中心活动告警数） | `:376-389` | `main.py:379-406` `terms(level, size=50)` | ✅ 真实（源自日志 level） |
-| 检索耗时分布（柱图 + 800ms 目标线 + 超标标橙） | `:390-410` | `main.py:205-278,438-448` `percentiles(95)` | ✅ 真实（依赖 Query Insights） |
+| 检索耗时分布（柱图 + 目标线 + 超标标橙） | `:390-410` | `main.py` `percentiles(95)` + 系统参数 `search_p95_target` | ✅ 真实（依赖 Query Insights） |
 | 数据源健康度（进度条） | `:411-435` | `main.py:450-488` | ✅ 真实 |
 | 最近告警表（6 列，取前 5 条） | `:436-468` | `main.py:408-436` | ⚠️ 日志推导，`status`/`handler` 固定值 |
 | 60s 自动刷新 / 手动强刷 / 租户联动 / 错误态与重试 | `:54-81,247-282` | `force` 参数 `:319,323-327` | ✅ 已实现 |
@@ -71,9 +71,10 @@
 | 请求参数 | `range_in`（今日/近1小时/近7天等 5 项）、`tenant`、`force` |
 | 索引映射 | `INDEX_BY_TENANT = {default: logs-default, acme: logs-acme, gp: logs-gp}`，`all/*` → `logs-*`（`main.py:55-61`） |
 | 依赖索引 | `logs-*`（写入量、趋势、级别、告警、健康度）、`top_queries-*`（检索耗时，`main.py:34`） |
-| PG 表 | **本模块不查 PG、无建表、无 SQL**；主数据表归告警 / 接入 / 系统服务 |
+| PG 表 | 不建表；**只读** `system_params` 一个值——`search_p95_target`（检索耗时目标，默认 800ms）。读不到 / 非整数 / 超出 50–60000 均回落 800，不会因此让首页失败 |
 | nginx 路由 | `location /api/dashboards/ { proxy_pass http://dashboard-service:8000/; }`（`nginx/nginx.conf:23`）；注意是复数 `dashboards`，无单数路由 |
 | 异常处理 | 聚合失败抛 `HTTPException(502)`（`main.py:141-153`）；耗时洞察异常单独吞掉并返回 `source:"unavailable"` 空柱（`:253-256`） |
+| 目标值生效 | 参数值按 10 秒 TTL 缓存，返回前用最新目标值重算 `stats.searchP95.sub/status/statusText` 与 `latency.target`——**30 秒结果缓存内的数据也会立刻按新目标重新判定** |
 
 ---
 
@@ -112,7 +113,7 @@
 
 | 优先级 | 待办 | 说明 |
 |---|---|---|
-| P0 | 耗时指标前置条件显式化 | 需集群启用 Query Insights（`top_n_queries`）；索引不存在时返回空柱，不伪造数据（`main.py:14-15,255-256`）。实测 P95 约 840.7ms > 800ms 目标，卡片显示「超标」是真实结果 |
+| P0 | 耗时指标前置条件显式化 | 需集群启用 Query Insights（`top_n_queries`）；索引不存在时返回空柱，不伪造数据。实测 P95 约 840.7ms > 800ms 目标，卡片显示「超标」是真实结果 |
 | P1 | 告警面板接入 `alarm-service` | 用真实告警事件与状态替换日志 level 推导，补齐处理人、状态机 |
 | P1 | 真实导出报表 | 后端生成 CSV/Excel，去掉前端假提示 |
 | P2 | 补 P50、`skeleton` / 空态 / 无权限态 | 与规格 `P-OVW-0101` 对齐 |

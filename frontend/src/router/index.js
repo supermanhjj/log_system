@@ -8,6 +8,8 @@ import DataSources from '../views/DataSources.vue'
 import AgentManagement from '../views/AgentManagement.vue'
 import AIManagement from '../views/AIManagement.vue'
 import UserRoles from '../views/UserRoles.vue'
+import SystemSettings from '../views/SystemSettings.vue'
+import LogStorage from '../views/LogStorage.vue'
 import LoginView from '../views/LoginView.vue'
 import Placeholder from '../views/Placeholder.vue'
 import { useAuthStore } from '../stores/auth'
@@ -32,6 +34,8 @@ const routes = [
   { path: '/agents', name: 'agents', component: AgentManagement, meta: { title: 'Agent 管理', perm: ['agents', 'view'] } },
   { path: '/ai/management', name: 'ai-management', component: AIManagement, meta: { title: '智能管理', perm: ['ai', 'view'] } },
   { path: '/settings/users', name: 'settings-users', component: UserRoles, meta: { title: '用户与角色', permAny: SETTINGS_ENTRY } },
+  { path: '/settings/system', name: 'settings-system', component: SystemSettings, meta: { title: '系统设置', permAny: [['param','view'],['audit','view']] } },
+  { path: '/settings/storage', name: 'settings-storage', component: LogStorage, meta: { title: '日志空间管理', permAny: [['storage', 'view']] } },
 ]
 
 const router = createRouter({

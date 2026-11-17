@@ -1,8 +1,10 @@
-"""system-service 数据层：RBAC 六表、种子数据、权限矩阵定义。
+"""system-service 数据层：RBAC 六表 + 日志空间三表、种子数据、权限矩阵定义。
 
 表的归属约定（重要）：本模块是 `users` / `roles` / `permissions` / `tenants` /
-`audit_log` / `system_params` 六张表的**唯一建表方**；auth-service 只读不建，
-避免两个服务各写一份 DDL 互相冲突（详见 docs/module-platform-admin.md）。
+`audit_log` / `system_params` 六张 RBAC 表，以及 `storage_config` /
+`tenant_quotas` / `storage_snapshots` 三张日志空间表的**唯一建表方**；
+auth-service 只读不建，避免两个服务各写一份 DDL 互相冲突（详见
+docs/module-platform-admin.md）。
 
 租户编码与 OpenSearch 真实索引对齐：default / acme / gp，
 登录时选定的租户即前端 `app.tenant`，检索链路无需再做映射。
@@ -38,6 +40,7 @@ PERMISSION_TREE: List[Dict[str, Any]] = [
     {"resource": "role", "label": "角色权限", "actions": ["view", "update"]},
     {"resource": "param", "label": "系统参数", "actions": ["view", "update"]},
     {"resource": "audit", "label": "审计日志", "actions": ["view", "export"]},
+    {"resource": "storage", "label": "日志空间", "actions": ["view", "update", "clean"]},
 ]
 ACTION_LABELS = {
     "view": "查看",
@@ -45,6 +48,7 @@ ACTION_LABELS = {
     "update": "修改",
     "delete": "删除",
     "export": "导出",
+    "clean": "清理",
 }
 
 ALL_PERMS = [f"{i['resource']}:{a}" for i in PERMISSION_TREE for a in i["actions"]]
@@ -57,7 +61,8 @@ ROLE_SEEDS = [
         "运维值班",
         "检索 · 告警处置 · 仪表盘查看",
         ["overview:view", "search:view", "search:export", "dashboards:view",
-         "alarms:view", "alarms:update", "data:view", "agents:view", "ai:view"],
+         "alarms:view", "alarms:update", "data:view", "agents:view", "ai:view",
+         "storage:view"],
         2,
     ),
     (
@@ -95,12 +100,17 @@ USER_SEEDS = [
 
 # 系统参数：(key, 值, 类型, 名称, 说明, 可选项)
 PARAM_SEEDS = [
-    ("log_retain_days", "90", "enum", "日志保留", "热数据 30 天，冷数据自动归档到对象存储", ["30", "90", "180", "365"]),
     ("search_limit", "5000", "int", "单次检索上限", "超过上限请缩小时间范围或使用聚合语句", []),
+    ("search_p95_target", "800", "int", "检索耗时目标",
+     "单位 ms，运行总览的检索耗时 P95 卡片按此值判定达标 / 超标", []),
     ("timezone", "Asia/Shanghai", "enum", "默认时区", "检索时间与审计时间的展示时区", ["Asia/Shanghai", "UTC"]),
     ("session_timeout_min", "30", "int", "会话超时", "分钟，超时后需重新登录", []),
     ("audit_enabled", "true", "bool", "操作审计", "记录检索、导出、规则变更等操作，保留 180 天", []),
 ]
+
+# 已下线的参数：日志保留天数只由「日志空间管理 · 存储配置」承载（storage_config.retain_days），
+# 系统设置里不再重复一份，避免两处各存一个值、页面显示不一致。启动时幂等清掉残留行。
+RETIRED_PARAMS = ("log_retain_days",)
 
 _pg_conn = None
 
@@ -232,6 +242,45 @@ def init_db() -> None:
             )
             """
         )
+        # ---- 日志空间管理（2026-11-16）：存储配置、租户配额、每日容量快照 ----
+        # storage_config 是单行表：id 恒为 1 且 CHECK 约束挡住第二行，避免出现多份配置。
+        pg_exec(
+            """
+            CREATE TABLE IF NOT EXISTS storage_config (
+                id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+                retain_days INTEGER NOT NULL DEFAULT 30,
+                roll_threshold INTEGER NOT NULL DEFAULT 80,
+                hot_cold_strategy TEXT NOT NULL DEFAULT 'hot7d',
+                quota_gb INTEGER NOT NULL DEFAULT 0,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+            """
+        )
+        # quota_gb = 0 表示「不限制（跟随物理卷容量）」，不给假配额
+        pg_exec(
+            """
+            CREATE TABLE IF NOT EXISTS tenant_quotas (
+                tenant_code TEXT PRIMARY KEY REFERENCES tenants(code) ON DELETE CASCADE,
+                quota_gb INTEGER NOT NULL DEFAULT 0,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+            """
+        )
+        # 容量趋势的真实来源：每次查询容量时按 scope 记录当天快照，运行天数够了就自动从
+        # 「推算」切换为「实测」。scope 为租户编码或 all（全租户）。
+        pg_exec(
+            """
+            CREATE TABLE IF NOT EXISTS storage_snapshots (
+                snap_date DATE NOT NULL,
+                scope TEXT NOT NULL DEFAULT 'all',
+                used_bytes BIGINT NOT NULL DEFAULT 0,
+                doc_count BIGINT NOT NULL DEFAULT 0,
+                index_count INTEGER NOT NULL DEFAULT 0,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                PRIMARY KEY (snap_date, scope)
+            )
+            """
+        )
 
         for code, name in TENANT_SEEDS:
             pg_exec(
@@ -273,11 +322,20 @@ def init_db() -> None:
                  role_key, phone, enabled, builtin),
             )
 
+        pg_exec("DELETE FROM system_params WHERE pkey = ANY(%s)", (list(RETIRED_PARAMS),))
         for key, value, ptype, label, note, options in PARAM_SEEDS:
             pg_exec(
                 """INSERT INTO system_params (pkey, pvalue, ptype, label, note, options)
                    VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (pkey) DO NOTHING""",
                 (key, value, ptype, label, note, pg_json(options)),
+            )
+        # 存储配置单行 + 各租户配额行；配额一律 0（不限制），不预置看似合理的假数值
+        pg_exec("INSERT INTO storage_config (id) VALUES (1) ON CONFLICT (id) DO NOTHING")
+        for t in pg_query("SELECT code FROM tenants ORDER BY id"):
+            pg_exec(
+                """INSERT INTO tenant_quotas (tenant_code) VALUES (%s)
+                   ON CONFLICT (tenant_code) DO NOTHING""",
+                (t["code"],),
             )
         print("[system-service] init_db done", flush=True)
     except Exception as e:  # noqa: BLE001
