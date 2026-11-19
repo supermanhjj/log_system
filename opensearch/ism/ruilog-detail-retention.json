@@ -1,0 +1,33 @@
+{
+  "policy": {
+    "description": "RuiLog 明细索引生命周期：hot 写入 → warm 只读合并 → delete 删除。保留天数由平台存储配置联动更新（C 批次）。",
+    "default_state": "hot",
+    "states": [
+      {
+        "name": "hot",
+        "actions": [],
+        "transitions": [
+          { "state_name": "warm", "conditions": { "min_index_age": "2d" } }
+        ]
+      },
+      {
+        "name": "warm",
+        "actions": [
+          { "force_merge": { "max_num_segments": 1 } }
+        ],
+        "transitions": [
+          { "state_name": "delete", "conditions": { "min_index_age": "7d" } }
+        ]
+      },
+      {
+        "name": "delete",
+        "actions": [
+          { "delete": {} }
+        ]
+      }
+    ],
+    "ism_template": [
+      { "index_patterns": ["logs-*-*"], "priority": 100 }
+    ]
+  }
+}

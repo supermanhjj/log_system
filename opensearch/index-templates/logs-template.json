@@ -1,12 +1,13 @@
 {
-  "index_patterns": ["logs-*"],
+  "index_patterns": ["logs-*-*"],
   "priority": 200,
   "template": {
     "settings": {
       "number_of_shards": 1,
       "number_of_replicas": 0,
       "refresh_interval": "1s",
-      "index.mapping.total_fields.limit": 2000
+      "index.mapping.total_fields.limit": 2000,
+      "index.lifecycle.name": "ruilog-detail-retention"
     },
     "mappings": {
       "dynamic": false,
@@ -31,7 +32,8 @@
         "src_file": { "type": "keyword" },
         "collector_id": { "type": "keyword" },
         "env": { "type": "keyword" },
-        "ingested_at": { "type": "date" }
+        "ingested_at": { "type": "date" },
+        "parse_status": { "type": "keyword" }
       }
     }
   }

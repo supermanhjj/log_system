@@ -44,7 +44,9 @@ STRATEGIES = [
 ]
 HOT_DAYS = {s["value"]: s["hotDays"] for s in STRATEGIES}
 RANGES = {"近 7 天": 7, "近 30 天": 30, "近 90 天": 90}
-INDEX_NAME_RE = r"^logs-[A-Za-z0-9_-]+$"
+# 索引已按天滚动（logs-<tenant>-YYYY.MM.DD），正则必须允许日期后缀，
+# 否则日志空间管理页的「清理」按钮对所有新索引都报 400。
+INDEX_NAME_RE = r"^logs-[A-Za-z0-9_-]+(-\d{4}\.\d{2}\.\d{2})?$"
 
 _os_client = None
 
@@ -87,6 +89,22 @@ def os_call(fn, *args, **kwargs):
         )
 
 
+def index_tenant(name: str) -> str:
+    """从索引名反解租户：logs-<tenant>-YYYY.MM.DD 与旧格式 logs-<tenant> 都支持。
+
+    按天滚动后不能再拿完整索引名和租户编码做相等比较，否则按租户筛选永远为空。
+    """
+    if not name.startswith("logs-"):
+        return ""
+    tail = name[len("logs-"):]
+    if tail.endswith("-write"):
+        tail = tail[: -len("-write")]
+    # "-2026.11.19" 共 11 字符：[-11]='-'，[-6] 与 [-3] 是两个点号
+    if len(tail) > 11 and tail[-11] == "-" and tail[-6] == "." and tail[-3] == ".":
+        return tail[:-11]
+    return tail
+
+
 def fetch_indices(tenant: str = "") -> List[Dict[str, Any]]:
     """读取 logs-* 索引的真实统计；tenant 为空或 all 时不按租户过滤。"""
     rows = os_call(
@@ -101,7 +119,7 @@ def fetch_indices(tenant: str = "") -> List[Dict[str, Any]]:
         name = str(r.get("index", ""))
         if not name.startswith("logs-"):
             continue
-        if tenant and tenant != "all" and name != f"logs-{tenant}":
+        if tenant and tenant != "all" and index_tenant(name) != tenant:
             continue
         created_ms = int(r.get("creation.date") or 0)
         created = datetime.fromtimestamp(created_ms / 1000, CST) if created_ms else None
@@ -515,7 +533,21 @@ def list_indexes(
             "ageDays": ix["ageDays"],
             "createdAt": ix["createdAt"],
         })
-    return {"items": items, "total": len(items), "scope": scope}
+    # 按天滚动后索引数会膨胀到「租户数 × 保留天数」，前端如需按租户展示，
+    # 直接用这份汇总，不必自己解析日期后缀。items 仍保留逐日明细供下钻。
+    summary_map: Dict[str, Dict[str, Any]] = {}
+    for it in items:
+        t = index_tenant(it["name"])
+        s = summary_map.setdefault(t, {"tenant": t, "indexes": 0, "docs": 0, "bytes": 0})
+        s["indexes"] += 1
+        s["docs"] += it["docs"]
+        s["bytes"] += it["bytes"]
+    return {
+        "items": items,
+        "total": len(items),
+        "scope": scope,
+        "summary": sorted(summary_map.values(), key=lambda x: -x["bytes"]),
+    }
 
 
 class CleanIn(BaseModel):
@@ -682,46 +714,77 @@ def put_quota(
 # 推断成错误类型）；注销时删除空索引。这与「按租户动态索引 + 索引模板」的方向一致，
 # 本地 OpenSearch 无 index template 管理页，先以显式 mapping 落地。
 # ---------------------------------------------------------------------------
-TENANT_INDEX_MAPPING: Dict[str, Any] = {
-    "settings": {"number_of_shards": 1, "number_of_replicas": 0},
-    "mappings": {
-        "dynamic": True,
-        "properties": {
-            "@timestamp": {"type": "date"},
-            "level": {"type": "keyword"},
-            "source": {"type": "keyword"},
-            "host": {"type": "keyword"},
-            "traceId": {"type": "keyword"},
-            "tenant_id": {"type": "keyword"},
-            "status": {"type": "integer"},
-            "message": {"type": "text", "fields": {"keyword": {"type": "keyword", "ignore_above": 256}}},
-            "raw": {"type": "text"},
-        },
-    },
-}
+def _utc_index_date() -> str:
+    """索引日期后缀取 UTC，与 @timestamp 的 UTC 语义一致。"""
+    return datetime.now(timezone.utc).strftime("%Y.%m.%d")
+
+
+# 注意：这里曾有 TENANT_INDEX_MAPPING（dynamic:true + 残缺 properties）。
+# 组合式索引模板 opensearch/index-templates/logs-template.json 是 dynamic:false +
+# attrs flat_object，显式 mapping 优先级高于模板，导致新租户索引实际是动态映射，
+# 现场字段一多就撞 total_fields.limit，随后该索引所有写入报错、日志断流。
+# 现已统一：建索引不传 mapping，全部继承模板。禁止再加回本地 mapping 定义。
 
 
 def ensure_tenant_index(code: str) -> bool:
-    """开通租户时建索引；已存在则跳过。失败返回 False（不阻塞租户登记）。"""
+    """开通租户时建当天索引 + 读写别名；已存在则幂等跳过。
+
+      logs-<code>-YYYY.MM.DD  实际索引，ISM 管理生命周期
+      logs-<code>-write       写别名，只指向当天索引
+      logs-<code>             读别名，指向该租户全部日期索引
+
+    查询服务仍按 logs-<code> 查，代码零改动。失败返回 False（不阻塞租户登记）。
+    """
     try:
         c = os_client()
-        name = f"logs-{code}"
-        if c.indices.exists(index=name):
-            return True
-        c.indices.create(index=name, body=TENANT_INDEX_MAPPING)
+        date = _utc_index_date()
+        idx = f"logs-{code}-{date}"
+        wa = f"logs-{code}-write"
+        ra = f"logs-{code}"
+
+        if not c.indices.exists(index=idx):
+            try:
+                c.indices.create(index=idx)  # mapping / shards 全部继承 index template
+            except Exception as e:  # noqa: BLE001
+                if "resource_already_exists" not in str(e).lower():
+                    raise
+
+        old = c.indices.get_alias(name=wa, ignore=404) or {}
+        actions = [
+            {"add": {"index": idx, "alias": wa}},
+            {"add": {"index": idx, "alias": ra}},
+        ]
+        for old_idx in old:
+            if old_idx != idx:
+                actions.append({"remove": {"index": old_idx, "alias": wa}})
+        c.indices.update_aliases(body={"actions": actions})
         return True
     except Exception as e:  # noqa: BLE001
         print(f"[system-service] ensure_tenant_index({code}) failed: {e}", flush=True)
         return False
 
 
+def ensure_all_tenant_indices() -> Dict[str, int]:
+    """跨天维护：为每个启用租户建当天索引并切写别名。
+
+    由 startup 后台线程周期调用（每 5 分钟）。为什么必须有它：
+    稳态切换后 ingest 只写 Kafka，不再走 OS 写入路径，此时只有本任务负责跨天滚动；
+    少了它，写别名会一直指向昨天的索引，直到 ISM 把昨天索引删掉导致写入失败。
+    """
+    codes = [r["code"] for r in pg_query("SELECT code FROM tenants WHERE enabled")]
+    ok = sum(1 for code in codes if ensure_tenant_index(code))
+    return {"total": len(codes), "ok": ok}
+
+
 def drop_tenant_index(code: str) -> bool:
-    """删除租户的空索引（有数据的租户在业务层已被拦截）。"""
+    """注销租户：删除该租户全部日期索引（别名随索引一并消失）。"""
     try:
         c = os_client()
-        name = f"logs-{code}"
-        if c.indices.exists(index=name):
-            c.indices.delete(index=name)
+        found = c.indices.get(index=f"logs-{code}-*", ignore=404) or {}
+        # get 可能把 logs-<code>-write 别名一并列出，别名不能作为 index 删除
+        names = [n for n in found if not n.endswith("-write")]
+        if names:
+            c.indices.delete(index=names)
         return True
     except Exception as e:  # noqa: BLE001
         print(f"[system-service] drop_tenant_index({code}) failed: {e}", flush=True)

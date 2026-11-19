@@ -18,6 +18,8 @@
 import csv
 import io
 import secrets
+import threading
+import time
 from typing import Any, Dict, List, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
@@ -986,6 +988,29 @@ def export_audit(
     )
 
 
+def _index_rollover_loop() -> None:
+    """跨天索引滚动后台任务（每 5 分钟）。
+
+    为什么必须独立存在：稳态切换后 ingest 只写 Kafka，不再触达 OpenSearch，
+    写别名就没人维护了。若不滚动，写别名一直指向昨天的索引，ISM 一到保留期
+    把昨天索引删掉，Flink 写入立即全部失败且日志无处可去。
+    幂等，重跑无副作用；失败只打印，不影响管理服务正常运行。
+    """
+    from .storage import ensure_all_tenant_indices
+
+    time.sleep(10)  # 等 init_db() 建完 tenants 表，避免首次查询报错
+    while True:
+        try:
+            result = ensure_all_tenant_indices()
+            if result["ok"] != result["total"]:
+                print(f"[index-rollover] 部分租户索引未就绪：{result}", flush=True)
+        except Exception as e:  # noqa: BLE001
+            print(f"[index-rollover] failed: {e}", flush=True)
+        time.sleep(300)
+
+
 @app.on_event("startup")
 def on_startup() -> None:
     init_db()
+    threading.Thread(target=_index_rollover_loop, name="index-rollover",
+                     daemon=True).start()

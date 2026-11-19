@@ -378,7 +378,9 @@ public class LogPipelineJob {
             for (LogEvent e : buffer) {
                 try {
                     String tenant = e.tenantId == null || e.tenantId.isEmpty() ? "unknown" : e.tenantId;
-                    String idx = "logs-" + tenant;
+                    // 写入走日志平台维护的写别名 logs-<tenant>-write（始终指向当天索引）。
+                    // 读侧仍查 logs-<tenant>，因此查询服务代码无需改动。
+                    String idx = "logs-" + tenant + "-write";
                     sb.append("{\"index\":{\"_index\":\"").append(idx)
                       .append("\",\"_id\":\"").append(e.eventId).append("\"}}\n");
                     // 字段名与 ingest.normalize_record 输出对齐（snake_case + @timestamp）

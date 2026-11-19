@@ -39,6 +39,7 @@ from opensearchpy import OpenSearch, helpers
 from pydantic import BaseModel, Field
 
 from .authz import current_identity, is_admin, resolve_ingest_tenant, resolve_tenant
+from . import index_manager
 from . import kafka_writer
 from . import log_schema
 
@@ -93,10 +94,21 @@ def index_for(tenant: Optional[str], override: str = "") -> str:
 
 
 def tenant_from_index(idx: str) -> str:
-    """从索引名反解租户编码（logs-<tenant> → <tenant>），供 Kafka key 使用。"""
-    if idx.startswith("logs-"):
-        return idx[len("logs-"):]
-    return ""
+    """从索引/别名反解租户编码（logs-<tenant>[-write|-YYYY.MM.DD] → <tenant>）。
+
+    写入侧已改为按天索引 + 写别名，这里必须同时识别三种后缀，否则 Kafka key
+    会变成 "acme-write"，同一租户被拆到不同分区，Flink keyBy 后状态对不上。
+    """
+    if not idx.startswith("logs-"):
+        return ""
+    tail = idx[len("logs-"):]
+    if tail.endswith("-write"):
+        return tail[: -len("-write")]
+    # 日期后缀 YYYY.MM.DD（长度 10，形如 2026.11.19）
+    # "-2026.11.19" 共 11 字符：[-11]='-'，[-6] 与 [-3] 是两个点号
+    if len(tail) > 11 and tail[-11] == "-" and tail[-6] == "." and tail[-3] == ".":
+        return tail[:-11]
+    return tail
 
 
 def now_ms() -> int:
@@ -873,7 +885,6 @@ def ingest(
         identity = current_identity(authorization)
         tenant = resolve_ingest_tenant(identity, payload.get("tenant"))
 
-    idx = index_for(tenant)
     docs = [normalize_record(r, tenant) for r in records if isinstance(r, dict)]
     if not docs:
         raise HTTPException(status_code=400, detail="records 中没有有效的日志对象")
@@ -885,6 +896,8 @@ def ingest(
     #  - kafka 模式下由 Flink 统一消费后写 OS+CH。
     if kafka_writer.use_opensearch():
         try:
+            # 写别名始终指向当天索引；查询侧仍查 logs-<tenant> 读别名，代码不变。
+            idx = index_manager.ensure_write_target(os_client, tenant)
             helpers.bulk(os_client, [{"_index": idx, "_source": d} for d in docs])
             written["opensearch"] = True
         except Exception as e:  # noqa: BLE001
@@ -1383,30 +1396,33 @@ def ingest_collector(
         tenant = derive_tenant(rec)
         if tenant not in known:
             tenant = ""   # 未归属 → logs-unknown
-        buckets.setdefault(index_for(tenant), []).append(normalize_record(rec, tenant))
+        # 按租户分桶而不是按索引名分桶：写入目标已改为按天索引 + 写别名，
+        # 同一租户的不同日期索引不能拆成不同 Kafka key。
+        buckets.setdefault(tenant, []).append(normalize_record(rec, tenant))
 
     accepted = 0
     kafka_ok = 0
     os_ok = 0
     errors = []
-    # 逐个租户写：OS 按索引分片 bulk，Kafka 按租户 key 分区。
-    for idx, docs in buckets.items():
-        tenant = tenant_from_index(idx)
+    # 逐个租户写：OS 走该租户的写别名，Kafka 按租户 key 分区。
+    for tenant, docs in buckets.items():
+        kafka_tenant = tenant or "unknown"
         # 采集器一次 flush 可能上千条：按 MAX_BATCH 分片，避免整个 chunk 因单批过大被拒后
         # 无限重试（采集链路上最常见的数据丢失点）。
         for i in range(0, len(docs), MAX_BATCH):
             part = docs[i:i + MAX_BATCH]
             if kafka_writer.use_opensearch():
                 try:
+                    idx = index_manager.ensure_write_target(os_client, tenant)
                     helpers.bulk(os_client, [{"_index": idx, "_source": d} for d in part])
                     os_ok += len(part)
                 except Exception as e:  # noqa: BLE001
-                    errors.append(f"opensearch[{idx}]: {e}")
+                    errors.append(f"opensearch[{kafka_tenant}]: {e}")
             if kafka_writer.use_kafka():
                 try:
-                    kafka_ok += kafka_writer.publish(part, tenant)
+                    kafka_ok += kafka_writer.publish(part, kafka_tenant)
                 except Exception as e:  # noqa: BLE001
-                    errors.append(f"kafka[{idx}]: {e}")
+                    errors.append(f"kafka[{kafka_tenant}]: {e}")
             accepted += len(part)
 
     if errors and os_ok == 0 and kafka_ok == 0:
