@@ -194,3 +194,45 @@ def replay(req: ReplayIn, _: Dict[str, Any] = Depends(_admin)) -> Dict[str, Any]
         "dryRun": req.dryRun,
         "samples": samples,
     }
+
+
+# ---- 采集器凭证与租户白名单（E 批次安全加固） ----
+class CollectorIn(BaseModel):
+    code: str
+    name: str = ""
+    tenantAllow: List[str] = []
+    key: str = ""       # 明文只在此处接受，数据库只存 sha256
+
+
+@router.get("/collectors")
+def list_collectors(_: Dict[str, Any] = Depends(_admin)) -> List[Dict[str, Any]]:
+    rows = pipeline_store.list_collectors()
+    # 凭证哈希绝不下发到前端
+    return [{k: v for k, v in r.items() if k != "key_hash"} for r in rows]
+
+
+@router.post("/collectors")
+def save_collector(req: CollectorIn, _: Dict[str, Any] = Depends(_admin)) -> Dict[str, Any]:
+    import hashlib
+
+    if not req.code.strip():
+        raise HTTPException(status_code=400, detail="采集器编码不能为空")
+    key_hash = hashlib.sha256(req.key.encode("utf-8")).hexdigest() if req.key else ""
+    row = pipeline_store.upsert_collector(
+        req.code.strip(), req.name, req.tenantAllow, key_hash)
+    return {k: v for k, v in row.items() if k != "key_hash"}
+
+
+@router.get("/security-audit")
+def security_audit(limit: int = 100,
+                   _: Dict[str, Any] = Depends(_admin)) -> List[Dict[str, Any]]:
+    """查询租户注入冲突 / 越界拒收记录，用于追溯谁在伪造归属。"""
+    if limit < 1 or limit > 1000:
+        raise HTTPException(status_code=400, detail="limit 限 1-1000")
+    from .main import pg_query
+
+    return pg_query(
+        "SELECT id, ts, collector_code, action, injected, inferred, final_tenant, "
+        "host, src_file FROM ingest_security_audit ORDER BY ts DESC LIMIT %s",
+        (limit,),
+    )

@@ -26,4 +26,12 @@ export const previewParse = async (payload) => (await client.post('/preview', pa
 export const replayLogs = async (payload) =>
   (await client.post('/replay', payload, { timeout: 120000 })).data
 
+/** 采集器凭证与租户白名单（key 只在新建时提交，数据库只存哈希） */
+export const listCollectors = async () => (await client.get('/collectors')).data
+export const saveCollector = async (payload) => (await client.post('/collectors', payload)).data
+
+/** 租户伪造 / 越界审计记录 */
+export const securityAudit = async (limit = 100) =>
+  (await client.get('/security-audit', { params: { limit } })).data
+
 export const PARSER_TYPES = ['grok', 'json', 'regex', 'delimiter', 'kv']

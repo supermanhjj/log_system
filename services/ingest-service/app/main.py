@@ -22,6 +22,7 @@
 """
 import os
 import json
+import hashlib
 import time
 import socket
 import secrets
@@ -273,6 +274,23 @@ def init_db() -> None:
         # 服务端解析管线的规则表（解析器 / 管线 / 采集器凭证）
         pipeline_store.init_tables()
         pipeline_store.seed_defaults()
+        # 归属冲突 / 越界审计：谁在伪造租户必须可追溯
+        pg_exec(
+            """
+            CREATE TABLE IF NOT EXISTS ingest_security_audit (
+                id             SERIAL PRIMARY KEY,
+                ts             TIMESTAMPTZ NOT NULL DEFAULT now(),
+                collector_code TEXT NOT NULL DEFAULT '',
+                action         TEXT NOT NULL,
+                injected       TEXT NOT NULL DEFAULT '',
+                inferred       TEXT NOT NULL DEFAULT '',
+                final_tenant   TEXT NOT NULL DEFAULT '',
+                host           TEXT NOT NULL DEFAULT '',
+                src_file       TEXT NOT NULL DEFAULT '',
+                sample         TEXT NOT NULL DEFAULT ''
+            )
+            """
+        )
     except Exception as e:  # noqa: BLE001
         print(f"[ingest-service] init_db skipped: {e}", flush=True)
 
@@ -1317,23 +1335,54 @@ def export_config(tenant: str = Query("default"),
 COLLECTOR_KEYS = os.getenv("INGEST_COLLECTOR_KEYS", "")
 
 
-def collector_authorized(key: Optional[str]) -> bool:
+def collector_authorized(key: Optional[str]) -> Optional[Dict[str, Any]]:
+    """按 key_hash 查采集器台账，返回含 tenant_allow 的凭证主体。
+
+    兼容旧环境变量：表中查不到但环境变量命中时返回 legacy 主体（不做白名单限制），
+    保证现有演示链路不中断；但每次命中都打 warning，推动迁移到台账。
+    """
     if not key:
-        return False
+        return None
+    digest = hashlib.sha256(key.strip().encode("utf-8")).hexdigest()
+    try:
+        rows = pipeline_store.pg_query(
+            "SELECT code, name, tenant_allow FROM log_collectors WHERE key_hash=%s",
+            (digest,),
+        )
+    except Exception as e:  # noqa: BLE001
+        print(f"[ingest] 采集器台账查询失败（沿用环境变量凭证）: {e}", flush=True)
+        rows = []
+    if rows:
+        r = rows[0]
+        allow = r.get("tenant_allow")
+        if isinstance(allow, str):
+            try:
+                allow = json.loads(allow)
+            except ValueError:
+                allow = []
+        r["tenant_allow"] = [str(x) for x in (allow or [])]
+        r["legacy"] = False
+        return r
     for k in COLLECTOR_KEYS.split(","):
         if k.strip() and secrets.compare_digest(k.strip(), key.strip()):
-            return True
-    return False
+            print("[ingest] 仍在使用环境变量采集器凭证，请迁移到采集器台账", flush=True)
+            return {"code": "env-legacy", "name": "环境变量凭证",
+                    "tenant_allow": [], "legacy": True}
+    return None
 
 
-def require_collector(x_collector_key: Optional[str] = Header(None)) -> None:
-    """采集器通道鉴权依赖。
+def require_collector(
+    x_collector_key: Optional[str] = Header(None),
+) -> Dict[str, Any]:
+    """采集器通道鉴权依赖，返回凭证主体供归属判定使用。
 
     写成依赖而不是函数体内判断，是为了让鉴权先于 body 解析执行：否则未携带凭证的请求
     会先被 body schema 拦成 422，既是无效信息暴露，也不符合「未授权一律 401」的语义。
     """
-    if not collector_authorized(x_collector_key):
+    collector = collector_authorized(x_collector_key)
+    if not collector:
         raise HTTPException(status_code=401, detail="采集器凭证无效")
+    return collector
 
 
 _HOST_CACHE: Dict[str, Any] = {"ts": 0.0, "map": {}}
@@ -1358,33 +1407,69 @@ def host_tenant_map() -> Dict[str, str]:
     return _HOST_CACHE["map"]
 
 
-def derive_tenant(rec: Dict[str, Any]) -> str:
-    """租户判定优先级：采集端显式注入 > 主机台账(hosts) > 来源文件名 > 未归属。
+def audit_tenant_decision(action: str, collector: Optional[Dict[str, Any]],
+                          injected: str, inferred: str, final: str,
+                          rec: Dict[str, Any]) -> None:
+    """记录归属冲突 / 越界，便于事后追溯是谁在伪造租户。"""
+    try:
+        pg_exec(
+            """INSERT INTO ingest_security_audit
+               (collector_code, action, injected, inferred, final_tenant, host, src_file, sample)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""",
+            (
+                str((collector or {}).get("code") or ""), action,
+                injected[:128], inferred[:128], final[:128],
+                str(rec.get("host") or "")[:128],
+                str(rec.get("src_file") or "")[:256],
+                json.dumps(rec, ensure_ascii=False)[:1000],
+            ),
+        )
+    except Exception as e:  # noqa: BLE001
+        print(f"[ingest] 安全审计写入失败: {e}", flush=True)
 
-    系统日志、中间件日志、数据库日志正文里没有任何业务租户信息，
-    只能靠"这台机器属于谁"来判断——这是与业务日志最本质的差异。
-    注意不读正文里的自由文本；tenant 字段只在采集端显式注入时存在。
+
+def derive_tenant(rec: Dict[str, Any],
+                  collector: Optional[Dict[str, Any]] = None) -> Tuple[str, str]:
+    """归属判定：服务端推导优先，采集端注入仅作补充，越界拒收。
+
+    旧实现把采集端注入的 tenant_id 放第一优先级——任何持有 collector key 的人
+    都能往任意租户写数据，索引隔离与行级过滤在这个口子下全部失效。现在改为：
+
+      推导值 = 主机台账(hosts) > 来源文件名
+      注入值与推导值冲突 → 以推导为准 + 审计
+      最终值不在 collector.tenant_allow 白名单 → 拒收该条 + 审计
+
+    系统/中间件/数据库日志本身无租户信息，只能靠主机台账（CMDB 雏形）判断。
     """
-    t = str(rec.get("tenant_id") or "").strip()
-    if t:
-        return t
+    injected = str(rec.get("tenant_id") or "").strip()
+    inferred = ""
     host = str(rec.get("host") or "").strip()
     if host:
-        ht = host_tenant_map().get(host)
-        if ht:
-            return ht
+        inferred = host_tenant_map().get(host, "")
     src = str(rec.get("src_file") or "").strip()
-    if src:
+    if not inferred and src:
         base = os.path.basename(src)
         if base.endswith(".log"):
-            return base[: -len(".log")]
-    return ""
+            inferred = base[: -len(".log")]
+
+    final = injected or inferred
+    action = "ok"
+    if injected and inferred and injected != inferred:
+        final, action = inferred, "mismatch"
+
+    allow = set(str(x) for x in ((collector or {}).get("tenant_allow") or []))
+    if allow and final and final not in allow:
+        audit_tenant_decision("out_of_scope", collector, injected, inferred, "", rec)
+        return "", "out_of_scope"
+    if action == "mismatch":
+        audit_tenant_decision("mismatch", collector, injected, inferred, final, rec)
+    return final, action
 
 
 @app.post("/ingest/collector")
 def ingest_collector(
     records: List[Dict[str, Any]] = Body(...),
-    _: None = Depends(require_collector),
+    collector: Dict[str, Any] = Depends(require_collector),
 ):
     """采集器批量上报（Fluent Bit 等）。每条记录按来源元数据判定租户。
 
@@ -1398,10 +1483,18 @@ def ingest_collector(
 
     known = {r["code"] for r in pg_query("SELECT code FROM tenants WHERE enabled")}
     buckets: Dict[str, List[Dict[str, Any]]] = {}
+    rejected = 0      # 越白名单，拒收且不入库（已写审计）
+    mismatches = 0    # 注入值与推导冲突，已按推导纠正
     for rec in records:
         if not isinstance(rec, dict):
+            rejected += 1
             continue
-        tenant = derive_tenant(rec)
+        tenant, action = derive_tenant(rec, collector)
+        if action == "out_of_scope":
+            rejected += 1
+            continue
+        if action == "mismatch":
+            mismatches += 1
         if tenant not in known:
             tenant = ""   # 未归属 → logs-unknown
         # 按租户分桶而不是按索引名分桶：写入目标已改为按天索引 + 写别名，
@@ -1448,9 +1541,16 @@ def ingest_collector(
     return {
         "ok": os_ok > 0 or kafka_ok > 0,
         "accepted": accepted,
+        "rejected": rejected,
+        "tenantMismatches": mismatches,
         "written": {"opensearch": os_ok, "kafka": kafka_ok},
         "storageMode": kafka_writer.mode(),
-        "byIndex": {k: len(v) for k, v in buckets.items()},
+        "byTenant": {k or "unknown": len(v) for k, v in buckets.items()},
         "unassigned": unassigned,
-        "message": "已按来源租户写入" + (f"，其中 {unassigned} 条未归属进 logs-unknown" if unassigned else ""),
+        "message": (
+            "已按服务端推导的租户写入"
+            + (f"，其中 {unassigned} 条未归属进 logs-unknown" if unassigned else "")
+            + (f"，{mismatches} 条注入租户与推导冲突已纠正" if mismatches else "")
+            + (f"，{rejected} 条越出采集器租户白名单被拒收" if rejected else "")
+        ),
     }

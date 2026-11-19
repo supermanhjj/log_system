@@ -3,7 +3,8 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   getPipelineStatus, listParsers, saveParser, deleteParser,
-  listRules, saveRule, deleteRule, previewParse, replayLogs, PARSER_TYPES,
+  listRules, saveRule, deleteRule, previewParse, replayLogs,
+  listCollectors, saveCollector, securityAudit, PARSER_TYPES,
 } from '../api/pipelines'
 import { useAuthStore } from '../stores/auth'
 
@@ -14,15 +15,21 @@ const tab = ref('parsers')
 const status = ref({ mode: 'shadow', ruleCount: 0, parserCount: 0 })
 const parsers = ref([])
 const rules = ref([])
+const collectors = ref([])
+const audits = ref([])
 const loading = ref(false)
 
 async function loadAll() {
   loading.value = true
   try {
-    const [s, p, r] = await Promise.all([getPipelineStatus(), listParsers(), listRules()])
+    const [s, p, r, c, a] = await Promise.all([
+      getPipelineStatus(), listParsers(), listRules(), listCollectors(), securityAudit(),
+    ])
     status.value = s
     parsers.value = p
     rules.value = r
+    collectors.value = c
+    audits.value = a
   } catch (e) {
     ElMessage.error('加载解析规则失败：' + (e.response?.data?.detail || e.message))
   } finally {
@@ -129,6 +136,31 @@ async function doReplay() {
     ElMessage.error(e.response?.data?.detail || '重放失败')
   }
 }
+
+// ---- 采集器凭证 / 租户白名单 ----
+const collectorDialog = ref(false)
+const collectorForm = reactive({ code: '', name: '', tenantAllow: '', key: '' })
+function editCollector(row) {
+  Object.assign(collectorForm, {
+    code: row?.code || '', name: row?.name || '',
+    tenantAllow: (row?.tenant_allow || []).join(', '), key: '',
+  })
+  collectorDialog.value = true
+}
+async function submitCollector() {
+  try {
+    await saveCollector({
+      code: collectorForm.code.trim(), name: collectorForm.name,
+      tenantAllow: collectorForm.tenantAllow.split(/[,，\s]+/).filter(Boolean),
+      key: collectorForm.key,
+    })
+    ElMessage.success('采集器凭证已保存；留空 key 表示沿用原凭证')
+    collectorDialog.value = false
+    loadAll()
+  } catch (e) {
+    ElMessage.error(e.response?.data?.detail || '保存失败')
+  }
+}
 </script>
 
 <template>
@@ -230,6 +262,43 @@ async function doReplay() {
           </div>
           <pre class="result" style="margin-top:12px">{{ replayResult ? JSON.stringify(replayResult, null, 2) : '（尚未执行）' }}</pre>
         </el-tab-pane>
+
+        <!-- 采集器凭证与审计 -->
+        <el-tab-pane label="采集器与审计" name="collectors">
+          <el-alert type="warning" :closable="false" show-icon
+            title="租户白名单为空表示不限制（兼容旧凭证）。生产应为每个采集器显式配置允许的租户，越界日志会被拒收并留审计。" />
+          <div class="toolbar" style="margin-top:12px">
+            <el-button v-if="isAdmin" type="primary" @click="editCollector(null)">新建采集器</el-button>
+            <el-button @click="loadAll">刷新</el-button>
+          </div>
+          <el-table :data="collectors" v-loading="loading" size="small" border>
+            <el-table-column prop="code" label="采集器编码" width="180" />
+            <el-table-column prop="name" label="名称" min-width="160" />
+            <el-table-column label="允许的租户" min-width="240">
+              <template #default="{ row }">
+                <el-tag v-for="t in (row.tenant_allow || [])" :key="t" size="small" style="margin-right:4px">{{ t }}</el-tag>
+                <span v-if="!row.tenant_allow?.length" class="note">不限制（旧凭证兼容）</span>
+              </template>
+            </el-table-column>
+            <el-table-column prop="last_seen" label="最后心跳" width="180" />
+            <el-table-column label="操作" width="90" v-if="isAdmin">
+              <template #default="{ row }">
+                <el-button link type="primary" @click="editCollector(row)">编辑</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+
+          <div class="label" style="margin-top:22px">归属冲突 / 越界审计（最近 100 条）</div>
+          <el-table :data="audits" size="small" border>
+            <el-table-column prop="ts" label="时间" width="180" />
+            <el-table-column prop="collector_code" label="采集器" width="150" />
+            <el-table-column prop="action" label="动作" width="130" />
+            <el-table-column prop="injected" label="注入租户" width="130" />
+            <el-table-column prop="inferred" label="推导租户" width="130" />
+            <el-table-column prop="final_tenant" label="最终归属" width="130" />
+            <el-table-column prop="host" label="主机" min-width="130" />
+          </el-table>
+        </el-tab-pane>
       </el-tabs>
     </el-card>
 
@@ -270,6 +339,24 @@ async function doReplay() {
       <template #footer>
         <el-button @click="ruleDialog = false">取消</el-button>
         <el-button type="primary" @click="submitRule">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="collectorDialog" title="采集器凭证" width="520px">
+      <el-form label-width="100px">
+        <el-form-item label="编码"><el-input v-model="collectorForm.code" :disabled="!!collectorForm.code" /></el-form-item>
+        <el-form-item label="名称"><el-input v-model="collectorForm.name" /></el-form-item>
+        <el-form-item label="允许租户">
+          <el-input v-model="collectorForm.tenantAllow" placeholder="逗号分隔，如 acme, default" />
+        </el-form-item>
+        <el-form-item label="凭证 Key">
+          <el-input v-model="collectorForm.key" type="password" show-password
+            placeholder="新建必填；编辑留空表示沿用原凭证" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="collectorDialog = false">取消</el-button>
+        <el-button type="primary" @click="submitCollector">保存</el-button>
       </template>
     </el-dialog>
   </div>
