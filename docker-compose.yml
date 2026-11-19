@@ -389,6 +389,11 @@ services:
       # 按租户分文件写（<tenant>.log），正文不再带 tenant 字段：
       # 租户归属由采集端按"来源文件"注入，模拟真实系统日志无租户字段的形态。
       LOG_DIR: /var/log/app
+      # 启动回填默认 7 天历史（generate.py 里 BACKFILL_DAYS=7）。这里显式关闭：
+      # 每次重启容器都会重新灌 7 天历史日志，会把"清空后重采"的动作自己覆盖掉，
+      # 且 @timestamp 落在过去 7 天（索引名虽是当天但内容是历史）。
+      # 需要历史分布时用 tools/log-generator/backfill.py 手动补，不放在启动路径里。
+      BACKFILL_DAYS: "0"
       # 一小部分日志模拟"归属不明"的系统，用于验证 logs-unknown 治理通道
       UNASSIGNED_RATE: "0.05"
     volumes:

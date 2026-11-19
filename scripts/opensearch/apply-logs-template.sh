@@ -60,8 +60,20 @@ if code >= 400:
     print(f"  详情：{json.dumps(res, ensure_ascii=False)[:500]}")
     sys.exit(1)
 
-# 2) ISM 生命周期策略：索引创建时由模板的 index.lifecycle.name 自动挂载
-code, res = call("PUT", "/_plugins/_ism/policies/ruilog-detail-retention", policy)
+# 2) ISM 生命周期策略：索引创建时由模板的 index.plugins.index_state_management.policy_id 自动挂载。
+#    策略是幂等播种：先用 GET 拿 if_seq_no/if_primary_term，存在则带版本号更新，不存在则新建。
+#    直接 PUT 同名策略在已存在时会返回 409 version_conflict，导致 init 容器非 0 退出、
+#    阻塞依赖它的 ingest 启动——所以必须走"读版本号再写"这条路。
+pol_path = "/_plugins/_ism/policies/ruilog-detail-retention"
+gcode, gres = call("GET", pol_path)
+put_path = pol_path
+if gcode == 200:
+    seq = gres.get("_seq_no")
+    prim = gres.get("_primary_term")
+    if seq is not None and prim is not None:
+        put_path = f"{pol_path}?if_seq_no={seq}&if_primary_term={prim}"
+# policy 文件顶层已是 {"policy": {...}}，直接作为 body，不再包一层
+code, res = call("PUT", put_path, policy)
 print(f"[apply] ISM ruilog-detail-retention -> HTTP {code} "
       f"{res.get('_version', res.get('error', res))}")
 if code >= 400:
