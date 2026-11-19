@@ -1,6 +1,6 @@
 # 运行总览模块 · 建设思路与开发进展
 
-> 快照日期：2026-11-14（GMT+8）｜基于当前工作区真实代码整理，行号随代码变动可能偏移
+> 快照日期：2026-11-19（GMT+8）｜基于当前工作区真实代码整理，行号随代码变动可能偏移
 > 关联模块：[日志分析](module-log-search.md) · [告警中心](module-alarm-center.md) · [数据接入](module-data-ingestion.md)
 > 设计基线：[技术栈选型与方案设计](tech-stack-selection.md) · [服务清单](service-inventory.md) · [容器化部署](container-deployment.md)
 
@@ -51,6 +51,7 @@
 |---|---|---|---|
 | 页头：面包屑 / 时间范围 / 刷新 / 导出 | `OverviewView.vue:285-325` | — | ✅ 已实现（导出为提示占位，见第 5 节） |
 | 4 张指标卡：今日写入日志、活动告警、检索耗时 P95、在线数据源 | `:326-360`、数据来自 `overview.stats` | `main.py:351-355,379-406,438-448,450-488` | ✅ 真实聚合 |
+| **存储容量概览**（4 卡：总容量/分配配额、已用、可用、占用率 + 趋势） | `OverviewView.vue` `loadStorageCapacity()`，调 `getCapacity()` | 由 `system-service` `/storage/capacity` 提供，详见 `module-log-storage.md` | ✅ 真实取数；**口径按角色**（管理员看平台总容量、租户看本租户配额，四项闭合） |
 | 日志写入趋势（面积折线，环比 + 时间桶） | `:361-375`、`renderChart()` 系列 | `main.py:357-377` `date_histogram` | ✅ 真实 |
 | 告警级别分布（环形图，中心活动告警数） | `:376-389` | `main.py:379-406` `terms(level, size=50)` | ✅ 真实（源自日志 level） |
 | 检索耗时分布（柱图 + 目标线 + 超标标橙） | `:390-410` | `main.py` `percentiles(95)` + 系统参数 `search_p95_target` | ✅ 真实（依赖 Query Insights） |
@@ -59,6 +60,7 @@
 | 60s 自动刷新 / 手动强刷 / 租户联动 / 错误态与重试 | `:54-81,247-282` | `force` 参数 `:319,323-327` | ✅ 已实现 |
 | 东八区展示 | 时间戳本地化 | `main.py:64-81,236,368`（`time_zone: +08:00`） | ✅ 已实现 |
 | ECharts 生命周期（`resize` / `dispose`） | `:79-81,247-282` | — | ✅ 已实现 |
+| 图表 tooltip 不撑开布局 | 趋势图、检索耗时图、环形图三处 tooltip 均加 `appendToBody: true`（气泡挂 body），`.grid-2` 列改 `minmax(0,1fr)` | — | ✅ 修复 hover 时两区块右移、与页面不对齐的问题（2026-11-18） |
 
 ---
 
@@ -75,6 +77,7 @@
 | nginx 路由 | `location /api/dashboards/ { proxy_pass http://dashboard-service:8000/; }`（`nginx/nginx.conf:23`）；注意是复数 `dashboards`，无单数路由 |
 | 异常处理 | 聚合失败抛 `HTTPException(502)`（`main.py:141-153`）；耗时洞察异常单独吞掉并返回 `source:"unavailable"` 空柱（`:253-256`） |
 | 目标值生效 | 参数值按 10 秒 TTL 缓存，返回前用最新目标值重算 `stats.searchP95.sub/status/statusText` 与 `latency.target`——**30 秒结果缓存内的数据也会立刻按新目标重新判定** |
+| 存储容量概览取数 | 前端 `getStorageCapacity()` 调 `GET /api/system/storage/capacity`；后端按登录角色锁定 scope——管理员可看全部（平台总容量口径），非管理员强制本租户（配额口径），返回 `capBasis`/`capLabel` 供前端标注口径。已用来自 OpenSearch `store.size`，非本服务聚合 |
 
 ---
 
@@ -128,6 +131,8 @@
 - 直连接口：`curl 'http://localhost:8003/overview?range_in=今日&tenant=default'`，带 `force=true` 绕过缓存。
 - 本期验证：`GET /api/dashboards/overview` 返回 6 类指标；切租户、`force` 强刷、错误态均实测；18 容器 running、8001–8008 health 200（见 `docs/service-inventory.md:5,110`）。
 - 前端构建：`npm --prefix frontend run build`；`frontend/dist/` 为构建产物，不入库。
+- 存储容量口径按角色（2026-11-18 实测）：管理员看全部 = 40 GB 总容量 / 全租户已用 58.4 MB；管理员切 acme 或省侧运维 = 5 GB 配额 / 16.39 MB 已用；非管理员传 `tenant=all` 被锁回本租户、口径同步切为配额。前端产物含新口径字段，构建通过。
+- 图表对齐（2026-11-18 实测）：给趋势/检索耗时/环形三处 tooltip 加 `appendToBody` 后，hover 不再撑开 `.grid-2` 列，两区块不再右移。
 
 ---
 

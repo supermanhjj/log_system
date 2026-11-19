@@ -1,6 +1,6 @@
 # 数据接入模块 · 建设思路与开发进展
 
-> 快照日期：2026-11-14（GMT+8）｜基于当前工作区真实代码整理，行号随代码变动可能偏移
+> 快照日期：2026-11-18（GMT+8）｜基于当前工作区真实代码整理，行号随代码变动可能偏移
 > 关联模块：[运行总览](module-overview.md) · [日志分析](module-log-search.md) · [告警中心](module-alarm-center.md)
 > 设计基线：[技术栈选型与方案设计](tech-stack-selection.md) · [服务清单](service-inventory.md)｜实现分析另见仓库根目录 `code-data.md`
 
@@ -13,7 +13,8 @@
 | 前端 | 已从 `prototype/` 静态高保真 HTML 升级为 **Vue3 + Element Plus + ECharts + Pinia** 单页应用，构建产物 `frontend/dist` 由 nginx 托管；本次提交的是源码，`dist/` 按 `.gitignore` 不入库，clone 后需 `npm run build` |
 | 网关 | nginx 统一入口 `http://localhost:8080`，`/api/data/ → ingest-service:8000/`、`/api/agents/ → agent-service:8000/`（`nginx/nginx.conf:25-26`） |
 | 后端 | 8 个微服务容器内统一 `:8000`，宿主机 `8001–8008` 暴露；PG 存数据源/Agent 主数据，Redis 存心跳，OpenSearch 存日志 |
-| 采集 | `log-generator` → 共享卷 `app_logs` → Fluent Bit（tail → parser → rewrite_tag）→ 按租户写入 `logs-default / logs-acme / logs-gp` |
+| 采集 | `log-generator` → 按租户分文件 `/var/log/app/<tenant>.log`（正文不含 tenant 字段）→ Fluent Bit（tail + `Path_Key` + `filename_tenant` 解析 + `DB` 断点）→ **HTTP 上报** ingest-service `POST /ingest/collector` → 服务端 `derive_tenant()` 判定后写入 `logs-<tenant>`；判定不出落 `logs-unknown` |
+| 租户归属 | **来源元数据注入型**（对齐上云形态）：租户来自"日志从哪来"，不再从正文探测；统一接入端点 `POST /ingest` 支持 `X-Api-Key`/JWT，写入时强制覆盖 `tenant_id` |
 | 运行环境 | **18 个容器 running，8001–8008 `/health` 全部 200**（`docs/service-inventory.md:5,110`，索引文档数约 1.8 万且持续增长） |
 
 ---
@@ -63,7 +64,7 @@
 
 ## 3. 接口与数据结构
 
-**`ingest-service` 14 个端点**（`services/ingest-service/app/main.py`）：`/health:647`、`/:652`、`GET /meta:667`、`GET/PUT /settings:688,693`、`GET/POST /sources:698,742`、`PUT/DELETE /sources/{key}:753,765`、`POST /sources/batch-status:774`、`GET /sources/{key}:801`、`POST /sources/test:873`、`GET /export:979`；`startup init_db():662-664`。
+**`ingest-service` 端点**（`services/ingest-service/app/main.py`）：`/health`、`/`、`GET /meta`、`GET/PUT /settings`、`GET/POST /sources`、`PUT/DELETE /sources/{key}`、`POST /sources/batch-status`、`GET /sources/{key}`、`POST /sources/test`、`GET /export`、**`POST /ingest`（通用日志写入）**、**`POST /ingest/collector`（采集器专线上报）**；`startup init_db()`。
 
 **`agent-service` 13 个端点**（`services/agent-service/app/main.py`）：`/health:535`、`/:540`、`POST /heartbeat:552`、`GET /agents:618`、`GET/PUT /agents/{host}:649,683`、`POST /agents/{host}/command:705`、`/status:722`、`POST /commands/{id}/ack:729`、`GET/POST /upgrade-tasks:773,784`、取消 `:818`、`GET /install-config:825`。
 
@@ -72,9 +73,58 @@
 | `data_sources` / `ingest_settings` | `ingest-service/app/main.py:167-200` | 数据源登记与接入设置，PG |
 | `agents` / `agent_upgrade_tasks` / `agent_commands` | `agent-service/app/main.py:122-176` | 主机元数据、升级任务、指令队列，PG |
 | Redis | `agent-service/app/main.py:552-615` | 最近心跳时间戳与超时判定 |
-| OpenSearch 索引 | `logs-default / logs-acme / logs-gp`，`all → logs-*`（`ingest-service/app/main.py:64,76-81`；`fluent-bit.conf:58,67,76`） | 索引模板无代码定义 |
+| OpenSearch 索引 | `logs-<tenant>`（约定式，租户清单以 `tenants` 表为唯一真源，不在代码里硬编码）；`all → logs-*`；未归属 → `logs-unknown` | 索引模板由 system-service `ensure_tenant_index()` 显式建 mapping |
 | 前端封装 | `frontend/src/api/data.js:7,20-82`、`agents.js:7,11-66` | `baseURL /api/data`、`/api/agents` |
 | 异常与降级 | `ingest-service/app/main.py:202-213,405-406,841-843` | PG/设置读取异常降级启动，聚合异常转 502；`capabilities` 逐组件 ping（`:559-581`） |
+
+### 3.1 租户归属判定与接入鉴权（2026-11-18 改造）
+
+**判定优先级**（`derive_tenant()`，服务端唯一裁决，不信客户端自称）：
+
+| 优先级 | 依据 | 使用场景 |
+|---|---|---|
+| 1 | 记录自带 `tenant_id`（由采集器注入） | 容器日志（K8s namespace/label）、系统日志（实例 tag→CMDB） |
+| 2 | 来源文件名 `Path_Key` → `filename_tenant` 解析 | 本地多文件模拟；生产对应按目录/文件规则归类 |
+| 3 | 均无法判定 或 租户不存在/已停用 | 落 `logs-unknown`，响应里 `unassigned` 计数，**绝不静默归 default** |
+
+**两条写入通道**：
+
+| 端点 | 鉴权 | 租户来源 | 用途 |
+|---|---|---|---|
+| `POST /ingest` | `X-Api-Key`（Key 绑定租户）或 `Authorization: Bearer <JWT>` | Key 绑定值 / JWT `tenant` 声明，**强制覆盖** body 里的 `tenant` | 各类系统、App 直报 |
+| `POST /ingest/collector` | `X-Collector-Key`，以 `Depends(require_collector)` **前置校验** | 逐条 `derive_tenant()`，同一批可按租户分桶写多个索引 | Fluent Bit 等采集器专线 |
+
+**保护性约束**：`MAX_PAYLOAD=50000`（超限 413，避免不可重试的 400 造成采集端丢数据）、`MAX_BATCH=1000` 服务端分片 `helpers.bulk`；鉴权前置于 body 解析，未授权一律 401 而非 422（不暴露 schema）。
+
+**读取侧**：`/meta`、`/sources*`、`/export` 全部加 `Depends(current_identity)` + `resolve_tenant()`；`/meta` 的 `tenantOptions` 对普通账号只返回本租户，管理员才返回全量+`all`；`PUT /settings` 是平台级全局配置，仅平台管理员可改。
+
+### 3.2 时间语义归一化（2026-11-18 修正）
+
+不同采集器/来源系统表达"事件时间"的方式差异很大，接入层必须统一，否则**时间会静默退化成采集时刻**——表现为历史日志全挤到当天、按天聚合与趋势图失真、上下文相邻日志错乱。
+
+| 来源形态 | 键名 | 取值样例 |
+|---|---|---|
+| Fluent Bit 5.x（JSON 输出） | `date` | `1794877201.0`（epoch 秒，浮点） |
+| 通用采集器 / 自研 SDK | `@timestamp` / `time` / `timestamp` / `ts` / `event_time` | ISO8601 或 epoch |
+| 业务系统直报 | 任意上述键 | `2026-11-17T09:00:01+0800`、`2026-11-17 09:00:01` |
+
+`normalize_record()` 的处理规则：
+
+1. 按优先级在 `TIME_KEYS` 中取第一个非空值，交给 `to_iso_utc()` 归一化为 **UTC ISO8601（毫秒 + Z）**，写入 `@timestamp`。
+2. `to_iso_utc()` 支持 epoch 秒/毫秒（`>1e12` 判为毫秒）、ISO8601 带 `Z`/`±HH:MM`/`±HHMM`、`YYYY-MM-DD HH:MM:SS`（无时区按容器本地时区解释）。
+3. 全部无法识别时才用采集时刻兜底；其余时间键归一化后从文档中移除，避免同一文档存在多套时间字段。
+4. 租户字段仍由服务端强制覆盖，与此无关。
+
+**关键坑（本次实测）**：Fluent Bit 5.2 的 `tail` + `regex` parser 抽取时间后，输出记录里是 `date` 字段而非 `@timestamp`。旧实现只认 `@timestamp/time/timestamp/ts`，于是 4 万条历史日志的 `@timestamp` 全被写成采集瞬间，按天只看到一天。修复后 11-11 ~ 11-18 时间分布恢复正常。
+
+**历史数据补录**：`tools/log-generator/backfill.py` 按日期与时段回填，走真实采集链路（写 `<tenant>.log` → Fluent Bit → `/ingest/collector`），不直写索引：
+
+```bash
+docker compose exec -T log-generator python /app/backfill.py \
+    --date 2026-11-17 --from 09:00 --to 22:00 --per-min 8
+```
+
+`--per-min` 为「每分钟每租户」条数，内部按小时权重浮动（工作时段高、午间与晚间低），`--to` 为右开区间。
 
 ---
 

@@ -1,25 +1,31 @@
 # log_system
 
-统一日志分析平台（Vibe_Coding 工作区）。初始化于 2026-11-11，最近更新 2026-11-16。
+**RuiLog 日志分析平台**（Vibe_Coding 工作区；产品品牌 RuiLog，2026-11-18 定名）。初始化于 2026-11-11，最近更新 2026-11-19。
 
-> 从「高保真原型 + Docker 骨架」推进到「Vue3 前端 + 8 个 FastAPI 微服务 + 真实采集/检索/告警链路 + 登录与 RBAC」；当前为**本地开发与演示环境**，18 个容器 running。
+> 从「高保真原型 + Docker 骨架」推进到「Vue3 前端 + 8 个 FastAPI 微服务 + 真实采集/检索/告警链路 + 登录与 RBAC + **多租户隔离**」；当前为**本地开发与验证环境**，18 个容器 running。
+>
+> 项目定位：对标日志易 / 云智慧 DOLA 的**商用日志分析平台**，本地 Docker 只是开发验证环境；技术方案按「上云、接真实各类系统」的标准设计，不以「本地能演示」为上限。
 
 ## 当前进展
 
 | 模块 | 入口 | 现状 |
 |---|---|---|
 | 登录 | `/login` | 账号/密码/租户真实校验 PG（bcrypt），签发 JWT；失败区分「密码错 401」与「账号停用/租户不匹配 403」；记住账号；改密后强制重新登录 |
-| 运行总览 | `/overview` | 4 指标卡 + 4 图 + 最近告警表，全部取自 OpenSearch 真实聚合；30s 缓存 / 60s 刷新 |
+| 运行总览 | `/overview` | 4 指标卡 + 4 图 + 最近告警表，全部取自 OpenSearch 真实聚合；30s 缓存 / 60s 刷新；**存储容量概览**四卡按角色口径（管理员看平台总容量，租户看本租户配额）；检索耗时 P95 达标线由系统参数驱动 |
 | 日志分析 | `/search` | PPL 单框检索（含 `\|` 走 `/_plugins/_ppl`）、直方图、详情与上下文、告警关联回填；检索页已接入「智能检索」弹窗（自然语言转 PPL、复制、填入检索框执行） |
 | 仪表盘 | `/dashboards`、`/dashboards/:id` | 看板列表（筛选/新建/批量删除）+ 详情 + **拖拽式编辑器**：从组件库拖入图表、画布内重排与调宽、配置展示维度；配置存 PG，图表数据按维度对 OpenSearch 实时聚合（8 类图表 / 9 类维度） |
 | 告警中心 | `/alarms/events`、`/alarms/rules` | 规则 CRUD/启停落 PG、请求时同步判定、状态覆盖、关联 PPL 跳检索页 |
 | 数据接入 | `/data-sources`、`/agents` | 数据源自动发现与真实连通性探测、字段元数据来自真实 mapping、Agent 心跳与指令队列 |
 | 智能管理 | `/ai/management` | 独立 `ai-service`：模型接入两页签（商用 API / 本地自定义）、PPL 语法规则库、AI 能力注册表，以及 **NL→PPL 生成端点与「智能检索预览」**（中文问句 → 规则库 → 已选模型 → PPL） |
-| 平台管理 · 用户与角色 | `/settings/users` | 独立 `system-service`：用户管理（CRUD/启停/重置密码/批量/导出）、角色权限矩阵（改完实时生效）；顶栏显示真实登录用户与角色，菜单按权限过滤 |
+| 平台管理 · 用户角色 | `/settings/users` | 独立 `system-service`：用户管理（CRUD/启停/重置密码/批量/导出）、角色权限矩阵（改完实时生效）；顶栏显示真实登录用户与角色并支持修改密码，菜单按权限过滤 |
 | 平台管理 · 系统设置 | `/settings/system` | 系统参数（操作审计 / 单次检索上限 / **检索耗时目标** / 会话超时 / 默认时区）+ 审计日志（筛选/分页/导出）；检索耗时目标真实驱动运行总览 P95 达标判定 |
-| 平台管理 · 日志空间管理 | `/settings/storage` | 容量概览（含趋势）、存储配置（**平台总容量为配置值**，不再查物理卷）、索引管理（真实体积/文档数/状态/清理）、租户配额（之和受总容量约束）；已用来自 OpenSearch `_cat/indices` 真实取数 |
+| 平台管理 · 日志空间 | `/settings/storage` | 容量概览（含趋势）、存储配置（**平台总容量为配置值**，不再查物理卷）、索引管理（真实体积/文档数/状态/清理，索引由采集自动建）、租户配额（之和受总容量约束）；已用来自 OpenSearch `_cat/indices` 真实取数；**容量四卡口径按角色切换**（平台管理员看平台总容量、租户看本租户配额），三项闭合 |
+| **平台管理 · 租户管理** | `/settings/tenants` | 租户 CRUD（编码不可改、保留字禁用）+ 配额 + 启停 + 删除保护（有用户/有日志/当前登录租户均拒绝）；新建自动建 `logs-<code>` 索引、删除连带 drop |
 
-架构：Vue3 + Element Plus + ECharts → nginx（`/api/*` 反代）→ FastAPI 微服务 → OpenSearch / PostgreSQL / Redis；采集侧 `log-generator`（模拟业务）→ Fluent Bit → `logs-<tenant>`。
+架构：Vue3 + Element Plus + ECharts → nginx（`/api/*` 反代，运行期 DNS 解析）→ FastAPI 微服务 → OpenSearch / PostgreSQL / Redis。
+采集侧：`log-generator`（按租户分文件）→ Fluent Bit（tail + 来源文件名解析 + DB 断点）→ HTTP `POST /ingest/collector` → 服务端判定租户 → `logs-<tenant>`；无法归属落 `logs-unknown`。
+
+**多租户模型**：租户是「日志从哪来」的部署元数据，由采集端注入来源信息（容器日志用 K8s namespace/label、系统日志用实例 tag→CMDB、App 直报用 Token），服务端 `derive_tenant()` 统一裁决，**不从日志正文探测，不静默归 default**。查询侧所有业务端点按 JWT 声明强制解析租户，前端传值仅作意图。
 
 ## 文档索引（`docs/`）
 
@@ -54,7 +60,8 @@ npm --prefix frontend run build
 docker compose up -d --build
 
 # 4. 访问
-#    前端            http://localhost:8080        （需登录，演示账号 admin / Admin@123）
+#    前端            http://localhost:8080        （需登录：admin / Admin@123）
+#    租户管理        http://localhost:8080/settings/tenants
 #    后端 Swagger    http://localhost:8001..8008/docs
 #    OS Dashboards   http://localhost:5601 或 http://localhost:8080/osd/
 #    Flink Web UI    http://localhost:8081
@@ -67,12 +74,13 @@ docker compose down -v
 
 ## 已知边界
 
-- **登录与 RBAC 已落地**，但只在 `auth-service` / `system-service` 生效：其余 6 个业务服务仍不校验 Token，租户由前端透传，跨服务鉴权与行级隔离尚未强绑（详见 `module-platform-admin.md` 第 9 节）。
-- 种子账号密码为演示用（`admin` / `Admin@123`，其余 `Ops@12345`），生产部署前必须用 `AUTH_SEED_ADMIN_PASSWORD` 覆盖并改掉。
+- **登录、RBAC 与多租户隔离已落地**：`search` / `dashboard` / `alarm` / `ingest` 四服务各自引入 `authz.py`，全部业务端点校验 Bearer 并按 JWT 强制解析租户；看板与告警规则已补 `tenant` 列做租户级隔离。剩余 `/agents`、`/ai` 的主机与模型配置尚未租户化（详见 `module-platform-admin.md` 第 9 节）。
+- 种子账号密码为演示用（`admin` / `Admin@123`，其余 `Ops@12345`），生产部署前必须用 `AUTH_SEED_ADMIN_PASSWORD` / `AUTH_SEED_DEMO_PASSWORD` 覆盖并改掉。
 - `/pql` 仅关键字黑名单，缺索引/函数白名单；时间范围已随请求注入（`source` 段后作为独立 `where`）。
 - AI 自然语言转 PPL 的**生成端点、配置页预览与检索页「智能检索 · ChatPPL」弹窗均已可用**；时间范围在 `source` 段后作为独立 `where` 注入，与关键字检索口径一致。
+- 智能检索的**租户维度随检索范围变化**：单租户范围租户是检索上下文（出现即剥除）；「全部租户」范围可用虚拟字段 `tenant`（如 `stats count() by tenant, level`、`where tenant = '总部生产'`），由检索网关翻译为物理字段并在结果中显示租户中文名。详见 `docs/module-log-search.md` 第 9 章。
 - 模型接入只支持**商用 API** 与**本地自定义**（Ollama / oMLX，走 OpenAI 兼容 HTTP）；WorkBuddy / CodeBuddy CLI 接入方式已于 2026-11-17 下线，容器不再挂载宿主 CLI。
-- Kafka / Flink 为设计稿链路，当前日志由 Fluent Bit 直写 OpenSearch；`logs-template` 索引模板无代码定义，部署时需手工 PUT。
+- Kafka / Flink 为设计稿链路；当前采集链路是 Fluent Bit → `POST /ingest/collector` → OpenSearch（服务端统一接入，便于按来源判定租户）。`logs-template` 索引模板已由 `system-service` 的 `ensure_tenant_index()` 显式建 mapping，新建租户自动就绪。
 - 日志空间管理的**总容量/租户配额是配置值**，日志已用与索引数据来自 OpenSearch 真实取数；物理卷读数仅供参考。总容量未配置时如实显示「未配置」，不回落成 Docker 虚拟磁盘大小。容量趋势在每日快照攒满 2 个点前为「按真实日志量推算」，页面已标注来源。清理只在手动触发时按保留期执行，**未接定时任务与 ISM 策略**。
 - 日志源为 `log-generator` 模拟数据，非生产日志。
 

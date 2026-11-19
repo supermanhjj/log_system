@@ -1,7 +1,7 @@
 # 日志空间管理模块 · 建设思路与实现
 
-> 快照日期：2026-11-17（GMT+8）｜基于当前工作区真实代码整理，行号随代码变动可能偏移
-> 入口：`/settings/storage`（平台管理 → 日志空间管理，四个 Tab）
+> 快照日期：2026-11-19（GMT+8）｜基于当前工作区真实代码整理，行号随代码变动可能偏移
+> 入口：`/settings/storage`（平台管理 → 日志空间，页面大标题「日志空间管理」，四个 Tab）
 > 关联文档：[平台管理模块](module-platform-admin.md) · [用户与角色模块（system-service）](service-system.md) · [运行总览](module-overview.md) · [服务清单](service-inventory.md)
 
 ---
@@ -76,6 +76,8 @@
 | 6 | 其余 | 健康 | 单节点下 yellow 属预期，文案里说明 |
 
 第 6 条是本次调过的一处：最初 health ≠ green 一律告警，结果单节点开发环境里**所有索引全红标告警**——把常态当故障，告警就失去意义了。
+
+**索引对象从哪来（2026-11-19 澄清）**：索引不是本页面或后端创建的，也不由采集客户端直接上报给页面，而是**采集链路写入、OpenSearch 首写时自动建**。链路：`log-generator` 按租户分文件写共享卷 → Fluent Bit `tail`（`Path_Key` 从文件名提取租户）→ HTTP `POST /ingest/collector` → 服务端判定租户 → 写 `logs-<tenant>`；新建租户时 `system-service` 的 `ensure_tenant_index()` 显式建 mapping 兜底。页面的「索引管理」是 `fetch_indices()` 实时调 `_cat/indices` 读回的**事后反映**——只做「可观测 + 手动清理」，本身不采集、不存数据。当前是三个固定租户单索引、不按天滚动、单节点；「建议滚动新索引」是告警文案但无 rollover 动作，真正的短板在「清理靠手动、告警无落地动作」，优先该补定时清理/ISM 而非继续加操作按钮（见第 7 节边界）。
 
 ### 2.4 租户配额（两级容量）
 

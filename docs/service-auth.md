@@ -1,6 +1,6 @@
 # 登录与鉴权模块（auth-service）开发记录
 
-> 快照日期：2026-11-16（GMT+8）｜基于当前工作区真实代码整理，行号随代码变动可能偏移
+> 快照日期：2026-11-19（GMT+8）｜基于当前工作区真实代码整理，行号随代码变动可能偏移
 > 模块范围：**登录**（原型 AUTH-0100）+ **鉴权**（JWT 签发、校验、权限点下发）
 > 关联文档：[平台管理模块](module-platform-admin.md) · [用户与角色模块（system-service）](service-system.md) · [服务清单](service-inventory.md) · [技术栈选型](tech-stack-selection.md)
 > 服务 / 端口：`log_system-auth-service-1`，宿主机 `8001` → 容器 `8000`；网关前缀 `/api/auth/`（`nginx/nginx.conf:21`）
@@ -123,10 +123,14 @@ LoginView.vue
 | 接口封装 | `frontend/src/api/auth.js` | `baseURL:'/api/auth'`、`timeout:20000`、`TOKEN_KEY='ls_token'`（`:5-8`） |
 | 登录态 | `frontend/src/stores/auth.js` | Pinia 存 `token/user/permissions`；`has(resource, action)`（`:23`）、`hasAny`（`:26`） |
 | 路由守卫 | `frontend/src/router/index.js` | 无 Token → `/login?redirect=`；有 Token 无 user → `/me` 回填；`meta.perm` 不足 → 提示并回 `/overview`（`:42-75`） |
-| 页面 | `frontend/src/views/LoginView.vue` | 独立页（不套后台布局）：品牌区 + 表单 + 记住账号 + 两态提示 + loading |
-| 顶栏 | `frontend/src/App.vue` | 首字头像 + 真实姓名 + 角色标签 + 当前租户；下拉：修改密码 / 退出登录 |
+| 页面 | `frontend/src/views/LoginView.vue` | 独立页（不套后台布局）：品牌区（**RuiLog 日志分析平台**，logo 后）+ 表单 + 记住账号 + 两态提示 + loading |
+| 顶栏 | `frontend/src/App.vue` | 品牌区（RuiLog 日志分析平台，logo 后）+ 首字头像 + 真实姓名 + 角色标签 + 当前租户；下拉：修改密码 / 退出登录 |
 
 登录选定租户会写入全局 `app.tenant`，刷新时由守卫 `/me` 回填，保证检索、告警、数据接入取数租户一致。
+
+品牌命名（2026-11-18）：产品显示名定为 **RuiLog 日志分析平台**，RuiLog 为主品牌词加粗，"日志分析平台"同色作后缀；顶栏两行堆叠（RuiLog 18px / 后缀 11px 大字距）与 210px 侧栏对齐，登录页标题与浏览器标签同步。
+
+改密弹窗样式（2026-11-18）：`App.vue` 修改密码表单 `label-width` 88→104px 并强制 `white-space:nowrap`，修复「确认新密码」标签折行错乱。
 
 ---
 

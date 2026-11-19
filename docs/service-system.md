@@ -1,6 +1,6 @@
 # 用户、角色与日志空间（system-service）开发记录
 
-> 快照日期：2026-11-16（GMT+8）｜基于当前工作区真实代码整理，行号随代码变动可能偏移
+> 快照日期：2026-11-19（GMT+8）｜基于当前工作区真实代码整理，行号随代码变动可能偏移
 > 模块范围：**用户**（增删改查 / 启停 / 重置密码 / 批量 / 导出）、**角色**（权限矩阵）、**日志空间**（容量 / 配置 / 索引 / 配额），以及依附其上的**系统参数**与**审计日志**
 > 关联文档：[平台管理模块](module-platform-admin.md) · [登录与鉴权模块（auth-service）](service-auth.md) · [日志空间管理](module-log-storage.md) · [服务清单](service-inventory.md) · [技术栈选型](tech-stack-selection.md)
 > 服务 / 端口：`log_system-system-service-1`，宿主机 `8007` → 容器 `8000`；网关前缀 `/api/system/`（`nginx/nginx.conf:27`）
@@ -13,12 +13,13 @@
 |---|---|---|
 | 用户管理（筛选 / CRUD / 启停 / 重置密码 / 批量 / 导出 / 分页） | ✅ 真实读写 PostgreSQL | `app/main.py:215-475` |
 | 角色权限（成员数 / 矩阵编辑 / 实时生效） | ✅ | `app/main.py:501-568` |
-| 系统参数（登记 + 类型校验） | ✅ 登记层能力，未驱动系统 | `app/main.py:578-625` |
+| 系统参数（登记 + 类型校验） | ✅ `search_p95_target` 已驱动运行总览 P95 达标判定；`log_retain_days` 已下线 | `app/main.py`、`dashboard-service/app/main.py` |
 | 审计日志（筛选 / 分页 / 导出） | ✅ | `app/main.py:655-722` |
 | RBAC 六表 + 日志空间三表建表与种子 | ✅ 启动时幂等执行 | `app/db.py` 的 `init_db()` |
-| 日志空间管理（容量 / 配置 / 索引 / 配额 / 清理） | ✅ 总容量来自配置，已用来自 OpenSearch 真实取数，配额之和受总量约束 | `app/storage.py` |
+| 日志空间管理（容量 / 配置 / 索引 / 配额 / 清理） | ✅ 总容量来自配置，已用来自 OpenSearch 真实取数，配额之和受总量约束；**容量口径按角色**（管理员平台口径 / 租户配额口径） | `app/storage.py` |
 | 鉴权闸门 `require(resource, action)` | ✅ 每请求现查权限 | `app/security.py:94-119` |
-| 删除用户 / 角色增删 / 租户管理 | ❌ 未做，用停用代替 | 见第 10 节 |
+| 删除用户 / 角色增删 | ❌ 未做，用停用代替 | 见第 10 节 |
+| 租户管理（CRUD / 配额 / 启停 / 删除保护） | ✅ 已落地，与日志空间共用配额数据 | `app/main.py` `/tenants` 路由 |
 
 代码规模：`main.py` 约 730 行、`db.py` 约 380 行、`security.py` 约 120 行、`storage.py` 约 480 行、`audit.py` 40 行。**共 24 个路由**（22 个业务 + `/health`、`/`），其中 7 个属 `/storage`。库内实测：`tenants 3 / roles 4 / permissions 48 / params 5 / storage_config 1 / tenant_quotas 3`。
 
@@ -232,7 +233,7 @@ for perm in sorted(set(req.permissions)):
 | PUT | `/params` | `param:update` | 按 `ptype` 校验 |
 | GET | `/audit` | `audit:view` | 筛选 + 分页 + 去重动作列表 |
 | GET | `/audit/export.csv` | `audit:export` | 上限 20000 行 |
-| GET | `/storage/capacity` | `storage:view` 或 `overview:view` | 容量四卡 + 趋势；`range` 支持「近 7 天」或纯天数 |
+| GET | `/storage/capacity` | `storage:view` 或 `overview:view` | 容量四卡 + 趋势；`range` 支持「近 7 天」或纯天数；按角色锁定 `scope`——管理员可看全部（平台总容量 `capBasis=platform`），非管理员强制本租户（`capBasis=tenant`），返回 `capLabel`/`unlimited`/`totalGB`（当前口径总量）/`totalSourceGB`（平台配置值） |
 | GET | `/storage/config` | `storage:view` | 存储配置 + 冷热策略选项 |
 | PUT | `/storage/config` | `storage:update` | 局部更新；`totalGB` 为平台总容量（低于已分配配额时 400），`retainDays` 为日志生命周期唯一来源 |
 | GET | `/storage/indexes` | `storage:view` | 索引真实体积/文档数/health/年龄 + 状态与判定依据 |
@@ -268,21 +269,28 @@ for perm in sorted(set(req.permissions)):
 - 保护项：停用自己 → 400；停用 `admin` → 400。
 - 前端四 Tab 与顶栏用户展示正常，回归其余页面控制台零报错。
 
+**2026-11-18~19 补测**：
+
+- 容量口径按角色：以 admin / 省侧运维不同身份调 `/storage/capacity`，管理员看全部 = 40 GB 平台容量、切 acme 或普通账号 = 5 GB 配额口径，非管理员 `tenant=all` 被锁回本租户；越界改配额返回 400 且未落库，审计留痕完整（`audit_log` id 76–81）。
+- 租户配额端到端生效：库内 `default 20 / acme 5 / gp 5`（Super 页面设置）与 `/quotas`、`/config` 接口返回逐项一致；容器重启后数据仍在 PG。
+- 租户管理页 note 文案改为「有用户或有日志数据的租户不允许删除；配额与「日志空间」共用同一份数据。」（后端接口返回，前端 `{{ note }}` 渲染）。
+- `npm run build` / `py_compile` 均通过，前端产物含新口径字段，nginx 首页 200。
+
 ---
 
 ## 10. 已知边界与待办
 
 | 级别 | 项 | 说明 |
 |---|---|---|
-| **P0** | 只有本服务与 auth-service 校验 Token | `search` / `alarm` / `ingest` / `agent` / `dashboard` / `ai` 仍不校验（前端也不带 Token）；真隔离需在 nginx 或各服务加统一中间件 |
-| **P1** | 系统参数多数未驱动系统 | 日志保留天数已与日志空间配置双向联动；`search_limit` / `audit_enabled` 仍是登记层能力（见第 6 节） |
+| ~~P0~~ | ~~只有本服务与 auth-service 校验 Token~~ 已解决（2026-11-18） | `search` / `dashboard` / `alarm` / `ingest` 均已引入 `authz.py` 按 JWT 强制解析租户；剩余 `agent` / `ai` 的主机/模型配置尚未租户化 |
+| **P1** | 系统参数多数未驱动系统 | `search_p95_target` 已驱动运行总览 P95 达标判定；日志保留天数已下线（唯一来源为日志空间存储配置）；`search_limit` / `audit_enabled` 仍是登记层能力（见第 6 节） |
 | **P1** | 日志空间无定时清理 | 保留期只在手动点「清理过期」时生效，未接 OpenSearch ISM 或定时任务（详见 `module-log-storage.md`） |
 | **P1** | 无删除用户接口 | 与原型一致用停用代替；`user:delete` 权限点已定义但无操作 |
 | **P1** | 角色权限替换非事务 | `DELETE` + 逐条 `INSERT` 在 autocommit 下中断会留下不完整权限集 |
 | **P1** | 无角色增删接口 | 只有 4 个内置角色可改，`roles` 表可数据驱动但无管理入口 |
 | **P2** | 审计写入同步且可能静默丢失 | 请求内同步 `INSERT`，失败只打日志；高并发应改异步或队列 |
 | **P2** | `/audit` 不返回 `detail` | 结构化上下文落了库但界面不可见，排查需直接查表 |
-| **P2** | 租户管理无接口 | `tenants` 只读，新增租户要改种子或直接写库 |
+| ~~P2~~ | ~~租户管理无接口~~ 已解决（2026-11-18） | 已实现租户 CRUD + 配额 + 启停 + 删除保护，新建自动建 `logs-<code>`、删除连带 drop |
 | **P2** | 批量重置密码 N 次往返 | 逐条 `UPDATE`，应改 `executemany` 或 `UPDATE ... WHERE id = ANY()` |
 | **P2** | 行级隔离只在 `users` 生效 | 其他业务表（告警、数据源、仪表盘）的 `tenant_id` 强约束未做，检索仍依赖前端透传租户 |
 

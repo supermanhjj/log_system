@@ -1,6 +1,6 @@
 # 日志分析模块 · 建设思路与开发进展
 
-> 快照日期：2026-11-14（GMT+8）｜基于当前工作区真实代码整理，行号随代码变动可能偏移
+> 快照日期：2026-11-19（GMT+8）｜基于当前工作区真实代码整理，行号随代码变动可能偏移
 > 关联模块：[运行总览](module-overview.md) · [告警中心](module-alarm-center.md) · [数据接入](module-data-ingestion.md)
 > 设计基线：[技术栈选型与方案设计](tech-stack-selection.md) · [服务清单](service-inventory.md)｜实现分析另见仓库根目录 `code-search.md`
 
@@ -30,7 +30,7 @@
 |---|---|---|
 | **单检索框 + 语法自动分流** | 用户只面对一个 `splText` 输入框；含 `\|` 判定为 PPL 管道分析走 `/pql`，否则走 DSL 列表查询 `/query`。避免「全文检索 / 管道分析」两个入口割裂 | `frontend/src/views/SearchView.vue:70,135,200-243` |
 | **检索网关隔离引擎细节** | 前端不直连 OpenSearch，4 个接口统一经 `api/search.js` → nginx → `search-service`；后端负责拼 DSL、补 `source=`、透传 `schema/datarows` | `frontend/src/api/search.js:4-24`、`services/search-service/app/main.py:206-353` |
-| **按租户映射索引，前端只传 tenant** | `INDEX_BY_TENANT{default,acme,gp}`，`all/*` → `logs-*`；切租户自动重查 | `main.py:48-58`、`SearchView.vue:190-198,533-539` |
+| **按租户映射索引，前端只传 tenant** | 索引名约定 `logs-<租户编码>`，`all/*` → `logs-*`；租户清单以 `tenants` 表为唯一真源（前端 `app.tenants` 拉取），切租户自动重查 | `main.py:54-58`、`SearchView.vue:190-198,533-539` |
 | **时间范围与直方图联动** | 快捷/自定义时间 → `buildTimeRange()`；点柱缩放时间窗；所有列表/直方图按同一时间窗取数 | `SearchView.vue:13-24,151-161,258-265,290-294` |
 | **详情页用上下文而非只给单条** | `openDetail()` 展示字段全貌，`loadContext()` 按 `_id` 前后取上下文，`loadMore()` 受 `MORE_MAX=200` 上限约束 | `SearchView.vue:303-330,339-340,387-435` |
 
@@ -134,3 +134,52 @@
 | `services/ai-service/app/main.py`、`app/nl2ppl.py` | 智能管理配置中心 + `POST /nl2ppl` 运行时生成端点 |
 | `code-search.md` | 本模块早期实现分析与 curl 实测记录 |
 | `prototype/search.html`、`docs/tech-stack-selection.md`（第 4 章） | 原型与 PPL 选型决策 |
+
+---
+
+## 9. 租户维度：虚拟字段 `tenant`（2026-11-19）
+
+### 9.1 问题
+
+「全部租户」范围下问「按租户和级别统计最近 1 小时」，生成结果是 `stats count() by level | head 100`——**租户维度整段丢失**，统计结论直接失真。
+
+根因不是模型能力，而是规则一刀切：此前为修掉 `where tenant_id = '总部生产'`（中文名匹配机器码 → 恒 0 条 / PPL 500），把租户字段在 prompt、字段白名单、规范化闸门三层全部禁死。这套口径只在**单租户**范围成立；跨租户范围下租户恰恰是唯一能分组统计的维度，禁死等于砍掉分析能力。
+
+### 9.2 契约：租户是「随范围变化」的维度
+
+| 检索范围 | 租户语义 | 语句中的写法 | 处理 |
+|---|---|---|---|
+| 单租户（`default`/`acme`/…） | 索引已物理隔离，维度恒定 | 不应出现；出现则剥除（含 `stats ... by` 里的租户项） | `strip_tenant_predicates()`，并告警说明原因 |
+| 全部租户（`all`/`*`，仅管理员） | 唯一能区分日志来源的维度 | 虚拟字段 **`tenant`**：`stats count() by tenant, level`、`where tenant = '总部生产'` | 网关翻译为物理字段 `tenant_id`，结果换回中文名 |
+
+对外稳定契约只暴露一个 `tenant`，**物理字段名（`tenant_id`）与索引命名（`logs-<code>`）不外泄**，符合「租户是部署元数据、不是日志正文属性」的定调。
+
+### 9.3 三层实现
+
+1. **提示词与白名单（`ai-service/app/nl2ppl.py`）**
+   - `is_cross_tenant()` 判定范围；`build_prompt(cross_tenant=)` 输出两套互斥的租户硬约束，跨租户另附 `CROSS_TENANT_SECTION`（示例即 `stats count() by tenant, level`）。
+   - `allowed_fields(rules, cross_tenant)`：虚拟字段 `tenant` 由**代码**注入白名单，不落规则库——否则单租户范围会跟着一起放开。
+   - 规则库中与租户相关的 `deny` / `example` / `field_alias` 是单租户口径，跨租户时一并过滤，避免「一边说可分组、一边说禁止写」。
+2. **规范化闸门**
+   - 跨租户：`tenant_id / tenant_code / tenant_name` 统一收敛为 `tenant`（字面量内不改，避免误伤 `message like '%tenant%'`）。
+   - 单租户：`where` / `fields` / `stats ... by` 三处租户项全部摘除；`stats count() by tenant` 退化为 `stats count()`。
+   - 问句点名某租户而语句未体现时，**确定性补** `where tenant = '<code>'`（独立 where 段，不与首段 `and` 合并，避免改变 `or` 优先级）。
+3. **检索网关（`search-service/app/main.py`）**
+   - 请求侧 `rewrite_tenant_dimension()`：字段名归一 → `tenant_id`；比较右侧的中文租户名 → 机器码（`'总部生产'` → `'default'`），只改租户比较的字面量。
+   - 结果侧 `localize_tenant_columns()`：`tenant_id` 列改名 `tenant` 并换回中文名；`/query`、`/context` 的 `hits` 同时返回 `tenant_id`（编码，导出对账用）与 `tenant`（中文名，展示用）。
+
+### 9.4 验收（2026-11-19 实测）
+
+| 用例 | 期望 | 实测 |
+|---|---|---|
+| `tenant=all`「按租户和级别统计最近 1 小时」 | `stats count() by tenant, level` | ✅ 生成一致，执行返 4 租户 × 3 级别 |
+| `tenant=all`「查询总部生产最近 10 分钟的错误日志」 | `where tenant = '总部生产' and level = 'ERROR'` | ✅ 200 条全为「总部生产」 |
+| `tenant=all`「对比各省侧租户最近一小时的错误数」 | `where level='ERROR' \| stats count() by tenant` | ✅ |
+| `tenant=default`「按租户和级别统计最近 1 小时」 | `stats count() by level`（租户恒定，分组无意义） | ✅ 说明中写明原因 |
+| 手写 PPL `where tenant = '总部生产'`（单租户范围） | 翻译为 `tenant_id='default'`，本租户有数据则命中 | ✅ 语义等价，不再 500 |
+
+### 9.5 边界
+
+- 虚拟字段只在**查询层**存在，索引里没有 `tenant` 字段；直接查 OpenSearch 或 OpenSearch Dashboards 仍需用 `tenant_id`。
+- 租户中文名 → 编码的翻译依赖 `tenants` 表；表不可达时退化为原样透传（不阻断检索）。
+- `stats` 的租户项剥离按 list 项位置处理，未覆盖 `dc(tenant)` 这类把租户塞进聚合函数的写法（PPL 上不成立，且闸门会告警）。

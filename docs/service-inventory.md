@@ -42,14 +42,14 @@
 | `log_system-alarm-service-1` | alarm-service | log_system-backend | localhost | 8004 | 8000 | running | 告警 |
 | `log_system-ingest-service-1` | ingest-service | log_system-backend | localhost | 8005 | 8000 | running | 日志接入 |
 | `log_system-agent-service-1` | agent-service | log_system-backend | localhost | 8006 | 8000 | running | 运维 Agent 管控面 |
-| `log_system-system-service-1` | [system-service](service-system.md) | log_system-backend | localhost | 8007 | 8000 | running | 平台管理：用户 / 角色权限 / 系统参数 / 审计日志 / 日志空间管理（九表建表方，容量与索引实时取数） |
+| `log_system-system-service-1` | [system-service](service-system.md) | log_system-backend | localhost | 8007 | 8000 | running | 平台管理：用户 / 角色权限 / **租户管理** / 系统参数 / 审计日志 / 日志空间管理（九表建表方，容量与索引实时取数） |
 | `log_system-ai-service-1` | ai-service | log_system-backend | localhost | 8008 | 8000 | running | AI 能力配置中心 + NL→PPL 生成端点（模型接入 / PPL 语法规则库 / 能力注册表 / 智能检索预览） |
 
 ### 3. 采集层 & 测试模拟器
 
 | 容器名 | 服务 | 镜像 | 宿主机地址 | 映射端口 | 容器端口 | 状态 | 角色 |
 |---|---|---|---|---|---|---|---|
-| `log_system-fluentbit-1` | fluentbit | log_system-fluentbit | （仅容器网络） | — | 2020 | running | 采集 agent（tail 读取共享卷日志 → 写 OpenSearch / Kafka） |
+| `log_system-fluentbit-1` | fluentbit | log_system-fluentbit | （仅容器网络） | — | 2020 | running | 采集 agent（tail 多来源文件 → 注入来源租户 → HTTP 上报 ingest-service `/ingest/collector`） |
 | `log_system-log-generator-1` | log-generator | log_system-log-generator | （无端口） | — | — | running | 测试业务模拟器，向共享卷持续输出多租户日志 |
 
 ---
@@ -58,7 +58,8 @@
 
 | 看什么 | 地址 | 说明 |
 |---|---|---|
-| 前端页面 | http://localhost:8080 | Vue3 SPA（frontend/dist 挂载），无需登录 |
+| 前端页面 | http://localhost:8080 | Vue3 SPA（frontend/dist 挂载），**需登录**：`admin / Admin@123`（平台管理员）、`ops_gaoyuan / Ops@12345`（acme 租户普通账号） |
+| 租户管理 | http://localhost:8080/settings/tenants | 平台管理 → 租户管理（新建/编辑/配额/启停/删除，需 `tenant:*` 权限） |
 | 日志看板（OpenSearch Dashboards） | http://localhost:5601 | 日志检索 / 可视化，**免登录** |
 | Flink 流处理界面 | http://localhost:8081 | 实时作业监控 |
 | 看板（经 nginx 反代） | http://localhost:8080/osd/ | 与 5601 等价，走 web 网关 |
@@ -82,23 +83,71 @@
 | `/api/agents/` | agent-service:8000 |
 | `/api/system/` | system-service:8000 |
 | `/api/ai/` | ai-service:8000 |
+
+> **上游解析**：nginx 对 `proxy_pass` 的域名默认只在启动时解析一次，后端容器重建换 IP 后会打到错的服务（表现为串服务 / 404）。因此 `nginx.conf` 里统一用 `resolver 127.0.0.11 valid=10s` + 变量形式 `proxy_pass`，让解析发生在运行期；变量形式不会自动剥离 location 前缀，故每条路由配一条 `rewrite ... break`。**改完后端不再需要重启 web**。
 | `/osd/` | opensearch-dashboards:5601（含 WebSocket 升级，看板便捷入口） |
 
 ---
 
 ## 五、采集数据现状（OpenSearch 索引）
 
-数据链路：`log-generator`（多租户日志）→ `fluentbit`（tail 采集）→ `opensearch`，按租户分索引。
+数据链路（**来源元数据注入型**，租户不再依赖日志正文）：
+
+```
+log-generator  →  按租户分文件写出 /var/log/app/<tenant>.log（正文无 tenant 字段）
+                        │
+                  fluentbit  tail（Path_Key 记录来源文件名，DB 断点防重复）
+                        │
+                  parser filename_tenant：由文件名解析出 tenant_id
+                        │
+                  HTTP 上报 ingest-service POST /ingest/collector（X-Collector-Key 鉴权）
+                        │
+                  normalize_record()：来源事件时间 → @timestamp（归一化为 UTC）
+                                     + 租户服务端强制覆盖
+                        │
+                  derive_tenant() 判定 → helpers.bulk 分片写入 logs-<tenant>
+                        └─ 判定不出 / 租户不存在 → logs-unknown（绝静默归 default）
+```
+
+> **时间语义**：Fluent Bit 5.x 把抽取到的事件时间放在 `date`（epoch 秒）字段，而不是
+> `@timestamp`。接入层必须识别 `date`/`time`/`ts` 等多种时间键并归一化，否则会全部退化成
+> 采集时刻——历史日志会整体挤到当天，按天聚合与趋势图失真（本项已于 2026-11-18 修正）。
 
 | 索引 | 文档数 | 存储 | 说明 |
 |---|---|---|---|
-| `logs-default` | 6076 | 517.9kb | default 租户日志 |
-| `logs-acme` | 6086 | 476.7kb | acme 租户日志 |
-| `logs-gp` | 5984 | 449.5kb | gp 租户日志 |
-| `top_queries-2026.11.12-89283` | 79 | 604.2kb | 查询分析索引 |
+| `logs-default` | 13884 | 2.8mb | default 租户日志 |
+| `logs-acme` | 13792 | 2.8mb | acme 租户日志 |
+| `logs-gp` | 13891 | 2.8mb | gp 租户日志 |
+| `logs-unknown` | 2208 | 585kb | **未归属日志**：来源无法判定租户的被隔离在此，供治理归位 |
+| `top_queries-*` | — | — | 查询分析索引（性能观测用） |
 | `.kibana_1` 等系统索引 | — | — | Dashboards 内部索引（无需关注） |
 
-> 文档数随 `log-generator` 持续输出实时增长（当前约 1.8 万条）。
+**时间分布**（按 `@timestamp`，本地时区）：
+
+| 日期 | 条数 | 说明 |
+|---|---|---|
+| 2026-11-11 ~ 11-16 | 每人 2880 | 启动回填基线，2 条/分钟 |
+| 2026-11-17 | 23040 | 基线 + 09:00-22:00 补录（8 条/分钟·租户，按业务峰谷浮动） |
+| 2026-11-18 | 持续增长 | 凌晨至 11:47 基线 + 11:47 起实时流（1 条/秒） |
+
+补录工具：`tools/log-generator/backfill.py`，走与实时流完全相同的采集链路（写
+`/var/log/app/<tenant>.log` → Fluent Bit → `/ingest/collector`），不绕过采集器直写索引：
+
+```bash
+docker compose exec -T log-generator python /app/backfill.py \
+    --date 2026-11-17 --from 09:00 --to 22:00 --per-min 8
+```
+
+> 文档数随 `log-generator` 持续输出实时增长。`unattributed.log` 以 5% 比例模拟「来源不明系统」，用于验证未归属治理链路。
+
+**租户归属四类来源（生产对应关系）**：
+
+| 日志类型 | 生产环境打标方式 | 本地模拟 |
+|---|---|---|
+| 容器 / 应用日志 | K8s namespace、label → 采集器逐条注入 | 按租户分文件，文件名注入 |
+| 云主机 / 系统日志 | 采集器实例 tag → CMDB 映射 | 采集器配置固定 `tenant_id` |
+| App 直报 | 接入 Token 绑定租户 / OTLP resource | `POST /ingest` 用 `X-Api-Key` |
+| 归属不明 | 落 `logs-unknown` 并告警 | `unattributed.log` |
 
 **在面板查看步骤**：OpenSearch Dashboards（5601）→ Stack Management → Index Patterns → 新建 `logs-*`（时间字段选 `@timestamp`）→ Discover 选 `logs-*`、把时间范围调大即可看到日志流；再经 Visualize + Dashboards 可拼成固定看板。
 
