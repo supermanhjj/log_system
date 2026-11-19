@@ -6,7 +6,10 @@
   的 app_log 解析器以 Time_Key=event_time 抽出并写入 @timestamp —— 即"日志自带时间戳"的
   真实语义，而非采集时刻（ingestion time）。这是上下文按时间流分析、直方图按真实事件时间
   聚合的前提。
-- 行格式：`[事件时间] [LEVEL] <msg> source=<svc> host=<host> traceId=<id> tenant=<id> status=<code>`。
+- **租户不在正文里**：每个租户写到独立文件 `<tenant>.log`，另有一个 `unattributed.log`
+  模拟"来源归属不明"的系统。租户归属由采集端按**来源（文件/通道）**注入，而不是解析正文——
+  这正是真实系统日志的形态（系统日志/中间件日志往往根本没有租户字段）。
+- 行格式：`[事件时间] [LEVEL] <msg> source=<svc> host=<host> traceId=<id> status=<code>`。
 - 启动时可回填历史（BACKFILL_DAYS / BACKFILL_PER_MIN），使索引具备真实的时间分布，
   近一周 / 近一月检索与上下文相邻日志才有意义；随后进入实时流式。
 - source/host/traceId/status 字段支撑 search/overview/dashboard/alarm 页面所需的列与聚合。
@@ -19,7 +22,7 @@ import random
 import uuid
 from datetime import datetime, timedelta
 
-LOG_PATH = os.getenv("LOG_PATH", "/var/log/app/app.log")
+LOG_DIR = os.getenv("LOG_DIR", os.path.dirname(os.getenv("LOG_PATH", "/var/log/app/app.log")))
 INTERVAL = float(os.getenv("LOG_INTERVAL", "1.0"))
 TENANTS = [t.strip() for t in os.getenv("TENANTS", "default,acme,gp").split(",") if t.strip()]
 ERROR_RATE = float(os.getenv("ERROR_RATE", "0.2"))
@@ -28,6 +31,10 @@ WARN_RATE = float(os.getenv("WARN_RATE", "0.25"))
 # 设为 0 可关闭回填（仅实时流）。开发期默认 7 天 / 2 条每分钟，使近一周检索与上下文有真实分布。
 BACKFILL_DAYS = float(os.getenv("BACKFILL_DAYS", "7"))
 BACKFILL_PER_MIN = float(os.getenv("BACKFILL_PER_MIN", "2"))
+# 模拟"无法判定租户"的来源占比：写入 unattributed.log，采集端会落到 logs-unknown，
+# 用于验证"识别不出租户不静默归 default"这条治理规则。
+UNASSIGNED_RATE = float(os.getenv("UNASSIGNED_RATE", "0.05"))
+UNASSIGNED_FILE = os.getenv("UNASSIGNED_FILE", "unattributed")
 
 # 业务服务名与主机名池：让 source/host 列在检索/大盘里有真实分布
 SOURCES = ["order-service", "user-service", "payment-gateway", "inventory-svc", "api-gateway"]
@@ -80,13 +87,20 @@ def fmt_time(dt: datetime) -> str:
     return dt.astimezone().strftime("%Y-%m-%dT%H:%M:%S%z")
 
 
+def partition_of(tenant: str) -> str:
+    """租户 → 落盘文件（= 采集端的来源标识）。归属不明时进 unattributed。"""
+    return UNASSIGNED_FILE if tenant == "" else tenant
+
+
 def emit(dt: datetime, level: str, msg: str, tenant: str, source: str, host: str,
          trace_id: str, status: int) -> None:
+    # 正文不再包含 tenant=：租户由采集端按来源（哪个文件/通道）注入
     line = (
         f"[{fmt_time(dt)}] [{level}] {msg} source={source} host={host} "
-        f"traceId={trace_id} tenant={tenant} status={status}\n"
+        f"traceId={trace_id} status={status}\n"
     )
-    with open(LOG_PATH, "a") as f:
+    path = os.path.join(LOG_DIR, f"{partition_of(tenant)}.log")
+    with open(path, "a") as f:
         f.write(line)
 
 
@@ -105,7 +119,7 @@ def backfill() -> None:
     count = 0
     while t < now:
         level, msg = pick()
-        tenant = random.choice(TENANTS)
+        tenant = "" if random.random() < UNASSIGNED_RATE else random.choice(TENANTS)
         source = random.choice(SOURCES)
         host = random.choice(HOSTS)
         trace_id = uuid.uuid4().hex[:16]
@@ -117,14 +131,15 @@ def backfill() -> None:
 
 
 def main() -> None:
-    os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
-    print(f"[log-generator] -> {LOG_PATH} tenants={TENANTS} interval={INTERVAL}s "
+    os.makedirs(LOG_DIR, exist_ok=True)
+    print(f"[log-generator] -> {LOG_DIR}/<tenant>.log tenants={TENANTS} "
+          f"unassigned={UNASSIGNED_RATE:.0%} interval={INTERVAL}s "
           f"err={ERROR_RATE} warn={WARN_RATE} backfill={BACKFILL_DAYS}d@{BACKFILL_PER_MIN}/min",
           flush=True)
     backfill()  # 先回填历史，使时间分布真实可检索
     while True:
         level, msg = pick()
-        tenant = random.choice(TENANTS)
+        tenant = "" if random.random() < UNASSIGNED_RATE else random.choice(TENANTS)
         source = random.choice(SOURCES)
         host = random.choice(HOSTS)
         trace_id = uuid.uuid4().hex[:16]
