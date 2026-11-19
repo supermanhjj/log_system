@@ -39,6 +39,8 @@ from opensearchpy import OpenSearch, helpers
 from pydantic import BaseModel, Field
 
 from .authz import current_identity, is_admin, resolve_ingest_tenant, resolve_tenant
+from . import kafka_writer
+from . import log_schema
 
 # ---------------------------------------------------------------------------
 # 连接（惰性；模块导入不触网）
@@ -88,6 +90,13 @@ def index_for(tenant: Optional[str], override: str = "") -> str:
     if not tenant:
         return "logs-unknown"
     return f"logs-{tenant}"
+
+
+def tenant_from_index(idx: str) -> str:
+    """从索引名反解租户编码（logs-<tenant> → <tenant>），供 Kafka key 使用。"""
+    if idx.startswith("logs-"):
+        return idx[len("logs-"):]
+    return ""
 
 
 def now_ms() -> int:
@@ -208,6 +217,43 @@ def init_db() -> None:
             )
             """
         )
+        # ------------------------------------------------------------------
+        # 主机台账：系统/中间件/数据库日志的**唯一**归属依据。
+        # 这类日志正文里没有业务租户信息，只能靠"这台机器属于谁"来判定。
+        # 生产环境应由 CMDB 同步写入（主机名 / 租户 / 环境 / 角色），
+        # 本地开发用种子数据模拟。
+        # ------------------------------------------------------------------
+        pg_exec(
+            """
+            CREATE TABLE IF NOT EXISTS hosts (
+                host       TEXT PRIMARY KEY,
+                tenant     TEXT NOT NULL,
+                env        TEXT NOT NULL DEFAULT 'prod',
+                role       TEXT,
+                note       TEXT,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+            """
+        )
+        # 平台自身组件即采集源（真实进程、真实格式），host 由采集端静态打标。
+        # 归属统一为 default：这些是"日志平台自己"的基础设施，不对应任何业务租户；
+        # 生产环境按 namespace/标签分租户时，这里换成对应租户编码即可。
+        seed = [
+            ("sys-sim",  "default", "dev", "linux-host", "系统日志主机（syslogd 真实落盘）"),
+            ("web",      "default", "dev", "web",        "平台前端/API 网关 nginx"),
+            ("redis",    "default", "dev", "cache",      "平台缓存/会话 redis"),
+            ("postgres", "default", "dev", "db",         "平台元数据库 PostgreSQL"),
+            ("kafka",    "default", "dev", "mq",         "日志主干 Kafka broker"),
+        ]
+        for host, tenant, env, role, note in seed:
+            pg_exec(
+                """
+                INSERT INTO hosts (host, tenant, env, role, note)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (host) DO NOTHING
+                """,
+                (host, tenant, env, role, note),
+            )
     except Exception as e:  # noqa: BLE001
         print(f"[ingest-service] init_db skipped: {e}", flush=True)
 
@@ -655,7 +701,12 @@ def _upsert_sql(p: SourceIn) -> Tuple[str, Dict[str, Any]]:
 # ---------------------------------------------------------------------------
 @app.get("/health")
 def health():
-    return {"status": "ok", "service": "ingest-service"}
+    return {
+        "status": "ok",
+        "service": "ingest-service",
+        "storageMode": kafka_writer.mode(),
+        "kafkaWriter": kafka_writer.health(),
+    }
 
 
 @app.get("/")
@@ -776,6 +827,13 @@ def normalize_record(rec: Dict[str, Any], tenant: str) -> Dict[str, Any]:
     for k in TIME_KEYS:
         if k != "@timestamp":
             doc.pop(k, None)
+    # 分类/级别/特有字段归一 + 敏感信息脱敏（契约见 docs/log-ingestion-model.md）。
+    # 放在租户覆盖之前：这一步只改日志自身语义，不应影响归属结果。
+    try:
+        doc = log_schema.normalize(doc)
+    except Exception as e:  # noqa: BLE001
+        # 归一化失败不能丢日志：保留原始形态入库，后续按 source_type 治理
+        print(f"[ingest] 日志归一化失败（保留原始记录）: {e}", flush=True)
     # 服务端强制覆盖：正文里的 tenant 字段不可信，一律以入口判定结果为准
     doc["tenant_id"] = tenant or "unknown"
     return doc
@@ -819,19 +877,37 @@ def ingest(
     docs = [normalize_record(r, tenant) for r in records if isinstance(r, dict)]
     if not docs:
         raise HTTPException(status_code=400, detail="records 中没有有效的日志对象")
-    try:
-        helpers.bulk(os_client, [{"_index": idx, "_source": d} for d in docs])
-    except Exception as e:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"opensearch write error: {e}")
+
+    written = {"opensearch": False, "kafka": False}
+    errors = []
+    # 双引擎写入链路（阶段2）：按 STORAGE_MODE 决定落点。
+    #  - Kafka 失败不丢数据语义：dual 模式下 OS 仍写，Kafka 报错如实返回 502 让采集端重试；
+    #  - kafka 模式下由 Flink 统一消费后写 OS+CH。
+    if kafka_writer.use_opensearch():
+        try:
+            helpers.bulk(os_client, [{"_index": idx, "_source": d} for d in docs])
+            written["opensearch"] = True
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"opensearch: {e}")
+    if kafka_writer.use_kafka():
+        try:
+            kafka_writer.publish(docs, tenant)
+            written["kafka"] = True
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"kafka: {e}")
+    if errors and not any(written.values()):
+        raise HTTPException(status_code=502, detail="; ".join(errors))
 
     if not tenant:
         print(f"[ingest-service] 未归属日志 {len(docs)} 条已写入 logs-unknown，请检查接入端租户绑定",
               flush=True)
     return {
-        "ok": True,
+        "ok": any(written.values()),
         "accepted": len(docs),
         "tenant": tenant or "unknown",
         "index": idx,
+        "written": written,
+        "storageMode": kafka_writer.mode(),
         "unassigned": not bool(tenant),
         "message": ("已写入 " + idx) if tenant else
                    "无法判定租户，已写入 logs-unknown 待治理（请为接入端绑定租户或 API Key）",
@@ -1239,14 +1315,43 @@ def require_collector(x_collector_key: Optional[str] = Header(None)) -> None:
         raise HTTPException(status_code=401, detail="采集器凭证无效")
 
 
-def derive_tenant(rec: Dict[str, Any]) -> str:
-    """租户判定优先级：采集端显式注入的 tenant_id > 来源文件名 > 未归属。
+_HOST_CACHE: Dict[str, Any] = {"ts": 0.0, "map": {}}
+_HOST_CACHE_TTL = 30.0
 
+
+def host_tenant_map() -> Dict[str, str]:
+    """主机台账缓存（30s）：系统/中间件/数据库日志的归属依据。
+
+    为什么缓存：采集器一次上报几百条，逐条查库会把 PostgreSQL 打满；
+    而台账变更频率极低（CMDB 同步），30s 的陈旧度完全可接受。
+    查库失败时**不缓存空结果**，避免一次抖动导致整批日志全落 unknown。
+    """
+    now = time.time()
+    if now - _HOST_CACHE["ts"] > _HOST_CACHE_TTL:
+        try:
+            rows = pg_query("SELECT host, tenant FROM hosts WHERE tenant <> ''")
+            _HOST_CACHE["map"] = {str(r["host"]): str(r["tenant"]) for r in rows}
+            _HOST_CACHE["ts"] = now
+        except Exception as e:  # noqa: BLE001
+            print(f"[ingest] hosts 台账查询失败（沿用旧缓存）: {e}", flush=True)
+    return _HOST_CACHE["map"]
+
+
+def derive_tenant(rec: Dict[str, Any]) -> str:
+    """租户判定优先级：采集端显式注入 > 主机台账(hosts) > 来源文件名 > 未归属。
+
+    系统日志、中间件日志、数据库日志正文里没有任何业务租户信息，
+    只能靠"这台机器属于谁"来判断——这是与业务日志最本质的差异。
     注意不读正文里的自由文本；tenant 字段只在采集端显式注入时存在。
     """
     t = str(rec.get("tenant_id") or "").strip()
     if t:
         return t
+    host = str(rec.get("host") or "").strip()
+    if host:
+        ht = host_tenant_map().get(host)
+        if ht:
+            return ht
     src = str(rec.get("src_file") or "").strip()
     if src:
         base = os.path.basename(src)
@@ -1281,23 +1386,40 @@ def ingest_collector(
         buckets.setdefault(index_for(tenant), []).append(normalize_record(rec, tenant))
 
     accepted = 0
-    try:
-        for idx, docs in buckets.items():
-            # 采集器一次 flush 可能上千条：服务端按 MAX_BATCH 分片写，避免整个 chunk 因
-            # 单批过大被拒后无限重试（这是采集链路上最常见的数据丢失点）。
-            for i in range(0, len(docs), MAX_BATCH):
-                part = docs[i:i + MAX_BATCH]
-                helpers.bulk(os_client, [{"_index": idx, "_source": d} for d in part])
-                accepted += len(part)
-    except Exception as e:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"opensearch write error: {e}")
+    kafka_ok = 0
+    os_ok = 0
+    errors = []
+    # 逐个租户写：OS 按索引分片 bulk，Kafka 按租户 key 分区。
+    for idx, docs in buckets.items():
+        tenant = tenant_from_index(idx)
+        # 采集器一次 flush 可能上千条：按 MAX_BATCH 分片，避免整个 chunk 因单批过大被拒后
+        # 无限重试（采集链路上最常见的数据丢失点）。
+        for i in range(0, len(docs), MAX_BATCH):
+            part = docs[i:i + MAX_BATCH]
+            if kafka_writer.use_opensearch():
+                try:
+                    helpers.bulk(os_client, [{"_index": idx, "_source": d} for d in part])
+                    os_ok += len(part)
+                except Exception as e:  # noqa: BLE001
+                    errors.append(f"opensearch[{idx}]: {e}")
+            if kafka_writer.use_kafka():
+                try:
+                    kafka_ok += kafka_writer.publish(part, tenant)
+                except Exception as e:  # noqa: BLE001
+                    errors.append(f"kafka[{idx}]: {e}")
+            accepted += len(part)
+
+    if errors and os_ok == 0 and kafka_ok == 0:
+        raise HTTPException(status_code=502, detail="; ".join(errors[:5]))
 
     unassigned = len(buckets.get("logs-unknown", []))
     if unassigned:
         print(f"[ingest-service] 采集器上报中 {unassigned} 条无法归属，已写入 logs-unknown", flush=True)
     return {
-        "ok": True,
+        "ok": os_ok > 0 or kafka_ok > 0,
         "accepted": accepted,
+        "written": {"opensearch": os_ok, "kafka": kafka_ok},
+        "storageMode": kafka_writer.mode(),
         "byIndex": {k: len(v) for k, v in buckets.items()},
         "unassigned": unassigned,
         "message": "已按来源租户写入" + (f"，其中 {unassigned} 条未归属进 logs-unknown" if unassigned else ""),

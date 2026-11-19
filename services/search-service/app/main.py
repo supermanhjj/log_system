@@ -183,6 +183,31 @@ def localize_tenant_columns(data: Dict[str, Any],
     return data
 
 
+def _terms_clause(field: str, value) -> Optional[Dict[str, Any]]:
+    """统一处理单值 / 逗号串 / 数组三种入参形态。
+
+    前端筛选控件可能传 "system"，也可能传多选数组 ["system","middleware"]，
+    直接 term 会让数组变成非法 DSL（OpenSearch 400），所以在这里收口。
+    """
+    if value is None or value == "":
+        return None
+    if isinstance(value, (list, tuple, set)):
+        vals = [str(v) for v in value if v not in (None, "")]
+        if not vals:
+            return None
+        if len(vals) == 1:
+            return {"term": {field: vals[0]}}
+        return {"terms": {field: vals}}
+    if isinstance(value, str) and "," in value:
+        vals = [v.strip() for v in value.split(",") if v.strip()]
+        if not vals:
+            return None
+        if len(vals) == 1:
+            return {"term": {field: vals[0]}}
+        return {"terms": {field: vals}}
+    return {"term": {field: value}}
+
+
 def build_must(time_range, filters, tenant) -> List[Dict[str, Any]]:
     must: List[Dict[str, Any]] = []
     tr = time_range_clause(time_range)
@@ -192,6 +217,21 @@ def build_must(time_range, filters, tenant) -> List[Dict[str, Any]]:
         # 跨索引(=all)时按 tenant_id 过滤，保证行级隔离语义一致
         pass  # 固定索引已天然隔离；all 场景如需强隔离可在此附加 term tenant_id
     if filters:
+        # 来源分类维度：log_class 先于具体 source_type 收窄，OS 侧两字段都是 keyword
+        # （index template 显式声明），命中走倒排，不会退化成扫描。
+        for f in ("logClass", "log_class"):
+            c = _terms_clause("log_class", filters.get(f))
+            if c:
+                must.append(c)
+                break
+        for f in ("sourceType", "source_type"):
+            c = _terms_clause("source_type", filters.get(f))
+            if c:
+                must.append(c)
+                break
+        c = _terms_clause("app", filters.get("app"))
+        if c:
+            must.append(c)
         if filters.get("level"):
             must.append({"term": {"level": filters["level"]}})
         if filters.get("source"):
@@ -257,6 +297,27 @@ class ContextReq(BaseModel):
 # ----------------------------------------------------------------------------
 # 工具
 # ----------------------------------------------------------------------------
+LOG_FIELDS = [
+    "@timestamp",
+    "level",
+    "source",
+    "host",
+    "traceId",
+    "message",
+    "status",
+    "tenant_id",
+    "raw",
+    # v2.1 多类型采集新增维度（与 index template 显式字段一一对应）
+    "log_class",
+    "source_type",
+    "app",
+    "instance",
+    "facility",
+    "severity",
+    "attrs",
+]
+
+
 def normalize_hit(hit: Dict[str, Any], code2name: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     s = hit.get("_source", {})
     code = s.get("tenant_id")
@@ -273,6 +334,14 @@ def normalize_hit(hit: Dict[str, Any], code2name: Optional[Dict[str, str]] = Non
         "tenant_id": code,  # 编码，稳定标识（导出/对账用）
         "tenant": (code2name or {}).get(code, code),  # 中文名，展示用（虚拟维度）
         "raw": s.get("raw"),  # 原始整行日志（采集端 app_log 解析器整体捕获）
+        # 多类型维度：log_class 是筛选主轴，source_type 是细分来源，attrs 存各类特有字段
+        "log_class": s.get("log_class"),
+        "source_type": s.get("source_type"),
+        "app": s.get("app"),
+        "instance": s.get("instance"),
+        "facility": s.get("facility"),
+        "severity": s.get("severity"),
+        "attrs": s.get("attrs"),
     }
 
 
@@ -307,17 +376,7 @@ def query(req: QueryReq, identity: Dict[str, Any] = Depends(current_identity)):
         "size": req.pageSize,
         "query": {"bool": {"must": must}} if must else {"match_all": {}},
         "sort": [req.sort or {"@timestamp": {"order": "desc"}}],
-        "_source": [
-            "@timestamp",
-            "level",
-            "source",
-            "host",
-            "traceId",
-            "message",
-            "status",
-            "tenant_id",
-            "raw",
-        ],
+        "_source": LOG_FIELDS,
     }
     try:
         resp = client.search(index=idx, body=body)
@@ -418,6 +477,9 @@ def histogram(req: HistReq, identity: Dict[str, Any] = Depends(current_identity)
         "aggs": {
             "over_time": {"date_histogram": over_time},
             "by_level": {"terms": {"field": "level", "size": 10}},
+            # 日志类型分布：检索页「按类型筛选」的候选值来源，也让占比一目了然
+            "by_log_class": {"terms": {"field": "log_class", "size": 10}},
+            "by_source_type": {"terms": {"field": "source_type", "size": 20}},
         },
     }
     try:
@@ -433,6 +495,14 @@ def histogram(req: HistReq, identity: Dict[str, Any] = Depends(current_identity)
                 {"level": b["key"], "count": b["doc_count"]}
                 for b in aggs["by_level"]["buckets"]
             ],
+            "by_log_class": [
+                {"logClass": b["key"], "count": b["doc_count"]}
+                for b in aggs.get("by_log_class", {}).get("buckets", [])
+            ],
+            "by_source_type": [
+                {"sourceType": b["key"], "count": b["doc_count"]}
+                for b in aggs.get("by_source_type", {}).get("buckets", [])
+            ],
         }
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"opensearch error: {e}")
@@ -447,7 +517,7 @@ def context(req: ContextReq, identity: Dict[str, Any] = Depends(current_identity
     """
     tenant = resolve_tenant(identity, req.tenant)
     idx = index_for(tenant)
-    src = ["@timestamp", "level", "source", "host", "traceId", "message", "status", "tenant_id", "raw"]
+    src = LOG_FIELDS
     code2name = {str(t.get("code")): str(t.get("name")) for t in tenant_directory()}
     base_must = []
     if req.source:

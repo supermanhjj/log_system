@@ -19,6 +19,7 @@ const overview = reactive({
   stats: {},
   writeTrend: { unit: '万条', points: [] },
   alarmDist: [],
+  logClassDist: [],
   latency: { unit: 'ms', target: 800, points: [] },
   sources: [],
   recentAlarms: [],
@@ -27,6 +28,9 @@ const overview = reactive({
 const updatedAtText = computed(() => fmt(updatedAt.value))
 const descText = computed(() => `数据截至 ${updatedAtText.value}，每 60 秒自动刷新`)
 const alarmTotal = computed(() => overview.alarmDist.reduce((s, x) => s + x.value, 0))
+// 日志类型分布：四类采集上线后新增维度，占比按当前时间窗内总量计算
+const logClassTotal = computed(() => overview.logClassDist.reduce((s, x) => s + x.value, 0))
+const logClassPct = (v) => Math.round((v / Math.max(logClassTotal.value, 1)) * 100)
 
 const storageCapacity = reactive({
   totalText: '—', usedText: '—', availableText: '—', occupancy: '—',
@@ -93,6 +97,7 @@ async function loadData(showTip = false, force = false) {
     overview.stats = data.stats
     overview.writeTrend = data.writeTrend
     overview.alarmDist = data.alarmDist
+    overview.logClassDist = data.logClassDist || []
     overview.latency = data.latency
     overview.sources = data.sources
     overview.recentAlarms = data.recentAlarms
@@ -480,6 +485,41 @@ onBeforeUnmount(() => {
       </el-card>
     </section>
 
+    <!-- 日志类型分布：系统 / 中间件 / 数据库 / 业务 四类采集的占比与量级 -->
+    <section aria-label="日志类型分布">
+      <el-card shadow="never" class="card">
+        <template #header>
+          <div class="card-head">
+            <span class="card-title">日志类型分布</span>
+            <router-link to="/search" class="lnk">去检索页按类型筛选</router-link>
+          </div>
+        </template>
+        <div v-if="overview.logClassDist.length" class="lc-wrap">
+          <div class="lc-stack">
+            <div
+              v-for="it in overview.logClassDist"
+              :key="it.raw || it.name"
+              class="lc-stack__seg"
+              :style="{ width: Math.max(logClassPct(it.value), 1) + '%', background: it.color }"
+              :title="`${it.name} ${it.value} 条`"
+            ></div>
+          </div>
+          <ul class="lc-legend">
+            <li v-for="it in overview.logClassDist" :key="it.raw || it.name">
+              <span class="lg-dot" :style="{ background: it.color }"></span>
+              <span class="lg-name">{{ it.name }}</span>
+              <span class="lg-val">{{ it.value.toLocaleString() }} 条 · {{ logClassPct(it.value) }}%</span>
+            </li>
+          </ul>
+        </div>
+        <el-empty v-else description="当前时间窗内暂无分类日志" :image-size="60" />
+        <div class="chart-foot">
+          <span>数据来源：日志仓库 · {{ rangeShort }}</span>
+          <span>注：分类由采集端打标，未打标的历史日志不计入</span>
+        </div>
+      </el-card>
+    </section>
+
     <!-- 检索耗时与数据源健康 -->
     <section class="grid-2" aria-label="检索耗时与数据源健康">
       <el-card shadow="never" class="card">
@@ -628,6 +668,14 @@ onBeforeUnmount(() => {
 .lg-dot { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
 .lg-name { flex: 1; }
 .lg-val { color: var(--color-text-3); font-variant-numeric: tabular-nums; }
+
+/* 日志类型分布：堆叠条 + 图例，一眼看出四类日志的相对量级 */
+.lc-wrap { display: flex; flex-direction: column; gap: 12px; }
+.lc-stack { display: flex; height: 14px; border-radius: 7px; overflow: hidden; background: #EEF1F4; }
+.lc-stack__seg { height: 100%; transition: width 0.3s ease; }
+.lc-stack__seg + .lc-stack__seg { box-shadow: inset 1px 0 0 rgba(255, 255, 255, 0.6); }
+.lc-legend { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 0 24px; }
+.lc-legend li { display: flex; align-items: center; gap: 8px; padding: 7px 0; font-size: 13px; color: var(--color-text-2); border-bottom: 1px dashed var(--color-border-1); }
 
 /* 数据源健康度 */
 .health-list { display: flex; flex-direction: column; gap: 14px; }

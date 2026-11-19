@@ -23,9 +23,13 @@ MAX_HEAD = 500
 DEFAULT_HEAD = 100
 WRITE_WORDS = {"drop", "delete", "update", "insert", "create", "alter", "grant",
                "truncate", "replace", "remove", "put", "post", "patch"}
-# 基础字段：动态 mapping 下允许时间字段与常见系统字段，其余以规则库 field_alias 为准
+# 基础字段：动态 mapping 下允许时间字段与常见系统字段，其余以规则库 field_alias 为准。
+# v2.1 起接入系统 / 中间件 / 数据库 / 业务四类日志，分类维度必须放进白名单，否则智能检索
+# 生成 `where log_class = 'system'` 会被当成未知字段剥掉，问「数据库慢查询」永远查不出东西。
 BASE_FIELDS = {"@timestamp", "_time", "level", "status", "source", "host",
-               "message", "raw", "traceId"}
+               "message", "raw", "traceId",
+               "log_class", "source_type", "app", "instance", "facility",
+               "severity", "attrs"}
 # 租户维度的可用性**取决于检索范围**，不能一刀切：
 #
 # 单租户范围：租户是「日志从哪来」的部署元数据，由检索上下文（请求 tenant 参数 +

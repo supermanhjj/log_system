@@ -31,6 +31,8 @@ export const NOTIFY_OPTIONS = [
 // 由规则结构化字段生成「判定条件」可读文案，避免后端拼接、保持前后端一致
 export function conditionText(r) {
   const parts = []
+  if (r.matchLogClass) parts.push(`类型:${r.matchLogClass}`)
+  if (r.matchSourceType) parts.push(`来源:${r.matchSourceType}`)
   if (r.matchLevel) parts.push(`level:${r.matchLevel}`)
   if (r.matchStatusGte != null) parts.push(`status≥${r.matchStatusGte}`)
   if (r.keyword) parts.push(`包含"${r.keyword}"`)

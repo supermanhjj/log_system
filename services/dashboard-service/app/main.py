@@ -34,6 +34,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from opensearchpy import OpenSearch
 
 from .authz import current_identity, resolve_tenant
+from . import ch_client
 
 OPENSEARCH_HOST = os.getenv("OPENSEARCH_HOST", "opensearch")
 OPENSEARCH_PORT = int(os.getenv("OPENSEARCH_PORT", "9200"))
@@ -158,7 +159,37 @@ def _time_must(gte: int, lte: int) -> Dict[str, Any]:
     return {"range": {"@timestamp": {"gte": gte, "lte": lte}}}
 
 
+def _tenant_of(idx: str) -> Optional[str]:
+    """从索引名反解租户（logs-<tenant> → tenant；logs-* → None=全部）。"""
+    if idx and idx.startswith("logs-") and idx != "logs-*":
+        return idx[len("logs-"):]
+    return None
+
+
 def count_docs(idx: str, gte: int, lte: int, extra_must: Optional[List[Dict]] = None) -> int:
+    # 双引擎：AGG_ENGINE=ch 时走 ClickHouse 聚合（失败回退 OS，保证可用性）
+    if ch_client.use_ch():
+        try:
+            extra_sql = None
+            if extra_must:
+                # 仅支持把常见 term/terms 条件翻译成 CH 谓词；复杂条件回退 OS
+                parts = []
+                for m in extra_must:
+                    if "term" in m:
+                        for k, v in m["term"].items():
+                            parts.append(f"{k} = '{str(v).replace(chr(39), chr(39)*2)}'")
+                    elif "terms" in m:
+                        for k, vs in m["terms"].items():
+                            inside = ",".join(f"'{str(v).replace(chr(39), chr(39)*2)}'" for v in vs)
+                            parts.append(f"{k} IN ({inside})")
+                    elif "range" in m:
+                        for k, rng in m["range"].items():
+                            if "gte" in rng:
+                                parts.append(f"{k} >= {rng['gte']}")
+                extra_sql = " AND ".join(parts) if parts else None
+            return ch_client.count_docs(_tenant_of(idx), gte, lte, extra_sql)
+        except Exception as ce:  # noqa: BLE001
+            print(f"[dashboard] CH count failed, fallback OS: {ce}", flush=True)
     must = [_time_must(gte, lte)]
     if extra_must:
         must.extend(extra_must)
@@ -179,6 +210,11 @@ def agg_search(idx: str, body: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def terms_on(idx: str, field: str, gte: int, lte: int, size: int = 50) -> Dict[str, int]:
+    if ch_client.use_ch():
+        try:
+            return ch_client.terms_on(_tenant_of(idx), field, gte, lte, size)
+        except Exception as ce:  # noqa: BLE001
+            print(f"[dashboard] CH terms_on failed, fallback OS: {ce}", flush=True)
     body = {
         "size": 0,
         "query": {"bool": {"must": [_time_must(gte, lte)]}},
@@ -382,7 +418,8 @@ def apply_target(data: Dict[str, Any], target: int) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 @app.get("/health")
 def health():
-    return {"status": "ok", "service": "dashboard-service"}
+    return {"status": "ok", "service": "dashboard-service", "aggEngine": ch_client.engine(),
+            "clickhouse": ch_client.health()}
 
 
 @app.get("/")
@@ -442,30 +479,46 @@ def overview(
     write_trend_pct = pct_change(write_cur, write_prev)
     write_sub = "较昨日同期" if key == "today" else "较上一周期"
 
-    # 2) 写入趋势（date_histogram）
-    hist_body = {
-        "size": 0,
-        "query": {"bool": {"must": [_time_must(frm, to)]}},
-        "aggs": {
-            "over_time": {
-                "date_histogram": {
-                    "field": "@timestamp",
-                    "fixed_interval": interval,
-                    "min_doc_count": 0,
-                    "format": fmt,
-                    "time_zone": "+08:00",
+    # 2) 写入趋势（date_histogram）—— CH 引擎下按固定秒级桶聚合，再按东八区格式化
+    write_points = None
+    if ch_client.use_ch():
+        try:
+            # interval 形如 "5m"/"1h"/"1d"，转换为秒
+            unit = interval[-1]
+            num = int(interval[:-1])
+            sec = {"s": 1, "m": 60, "h": 3600, "d": 86400}.get(unit, 60) * num
+            ch_hist = ch_client.histogram(_tenant_of(idx), frm, to, sec)
+            write_points = [
+                {"t": ms_to_label(p["ts"], fmt), "v": p["count"]} for p in ch_hist
+            ]
+        except Exception as ce:  # noqa: BLE001
+            print(f"[dashboard] CH histogram failed, fallback OS: {ce}", flush=True)
+    if write_points is None:
+        hist_body = {
+            "size": 0,
+            "query": {"bool": {"must": [_time_must(frm, to)]}},
+            "aggs": {
+                "over_time": {
+                    "date_histogram": {
+                        "field": "@timestamp",
+                        "fixed_interval": interval,
+                        "min_doc_count": 0,
+                        "format": fmt,
+                        "time_zone": "+08:00",
+                    }
                 }
-            }
-        },
-    }
-    hist_resp = agg_search(idx, hist_body)
-    write_points = [
-        {"t": b.get("key_as_string") or ms_to_label(b["key"], fmt), "v": b["doc_count"]}
-        for b in hist_resp["aggregations"]["over_time"]["buckets"]
-    ]
+            },
+        }
+        hist_resp = agg_search(idx, hist_body)
+        write_points = [
+            {"t": b.get("key_as_string") or ms_to_label(b["key"], fmt), "v": b["doc_count"]}
+            for b in hist_resp["aggregations"]["over_time"]["buckets"]
+        ]
 
     # 3) 级别分布（terms on level）—— 展示全部级别，而非仅严重/警告
     level_counts = terms_on(idx, "level", frm, to, size=50)
+    # 日志类型分布：四类采集上线后，总览必须能回答"这些日志来自哪类系统"
+    log_class_counts = terms_on(idx, "log_class", frm, to, size=10)
     # 严重级别归类仍用于“活动告警”KPI（WARN 及以上视为告警；INFO/DEBUG 为正常日志不计入）
     sev = {"严重": 0, "警告": 0, "提示": 0}
     for lv, c in level_counts.items():
@@ -491,6 +544,19 @@ def overview(
             "color": LEVEL_META.get(lv.upper(), DEFAULT_META)[1],
         }
         for lv, c in sorted(level_counts.items(), key=lambda kv: -kv[1])
+    ]
+
+    # 日志类型分布：固定配色 + 中文名，占比口径与级别分布一致（同一时间窗、同一租户索引）
+    # 空 log_class 是 v2.1 采集模型上线前写入的历史日志（分类字段当时还不存在），
+    # 单独标注为「未分类（改造前）」而不是悄悄归到某一类——宁可显示"不知道"也不伪造口径。
+    log_class_dist = [
+        {
+            "raw": k,
+            "name": LOG_CLASS_LABELS.get(k, k or "未分类（改造前）"),
+            "value": c,
+            "color": LOG_CLASS_COLORS.get(k, "#CFD8DC"),
+        }
+        for k, c in sorted(log_class_counts.items(), key=lambda kv: -kv[1])
     ]
 
     # 4) 最近告警（WARN+ 事件，按时间倒序）
@@ -618,6 +684,7 @@ def overview(
         },
         "writeTrend": {"unit": "条", "points": write_points},
         "alarmDist": alarm_dist,
+        "logClassDist": log_class_dist,
         "latency": {
             "unit": "ms",
             "target": target,
@@ -647,6 +714,10 @@ def overview(
 DIMENSIONS = {
     "none":     {"label": "总量（单值）", "field": None,       "kind": "scalar"},
     "time":     {"label": "时间趋势",     "field": "@timestamp", "kind": "time"},
+    # 多类型采集后新增的两个分类维度：先把「系统/中间件/数据库/业务」分开看，
+    # 再下钻到 source_type，否则四类日志混在一个总量里，看板看不出是哪类在涨。
+    "logClass": {"label": "日志类型",     "field": "log_class", "kind": "terms"},
+    "sourceType": {"label": "来源类型",   "field": "source_type", "kind": "terms"},
     "level":    {"label": "日志级别",     "field": "level",    "kind": "terms"},
     "source":   {"label": "来源服务",     "field": "source",   "kind": "terms"},
     "host":     {"label": "主机",         "field": "host",     "kind": "terms"},
@@ -661,10 +732,10 @@ CHART_TYPES = {
     "kpi":       {"label": "指标卡",   "dims": ["none"]},
     "line":      {"label": "折线图",   "dims": ["time"]},
     "area":      {"label": "面积图",   "dims": ["time"]},
-    "bar":       {"label": "柱状图",   "dims": ["level", "source", "host", "status", "traceId", "tenant"]},
-    "hbar":      {"label": "横向排行", "dims": ["level", "source", "host", "status", "traceId", "tenant"]},
-    "pie":       {"label": "占比饼图", "dims": ["level", "source", "host", "status", "tenant"]},
-    "donut":     {"label": "环形占比", "dims": ["level", "source", "host", "status", "tenant"]},
+    "bar":       {"label": "柱状图",   "dims": ["logClass", "sourceType", "level", "source", "host", "status", "traceId", "tenant"]},
+    "hbar":      {"label": "横向排行", "dims": ["logClass", "sourceType", "level", "source", "host", "status", "traceId", "tenant"]},
+    "pie":       {"label": "占比饼图", "dims": ["logClass", "sourceType", "level", "source", "host", "status", "tenant"]},
+    "donut":     {"label": "环形占比", "dims": ["logClass", "sourceType", "level", "source", "host", "status", "tenant"]},
     "table":     {"label": "日志明细表", "dims": ["records"]},
 }
 
@@ -673,12 +744,23 @@ LEVEL_COLORS = {
     "FATAL": "#B71C1C", "ERROR": "#E53935", "WARN": "#EA720F",
     "INFO": "#03857E", "DEBUG": "#757575", "NOTICE": "#8E24AA", "TRACE": "#90A4AE",
 }
+# 日志类型固定配色：同一类型在总览/看板/检索页保持同色，便于横向对照
+LOG_CLASS_COLORS = {
+    "system": "#2178D8", "middleware": "#EA720F", "database": "#E53935",
+    "business": "#03857E", "network": "#5C6BC0", "container": "#8E24AA",
+}
+LOG_CLASS_LABELS = {
+    "system": "系统日志", "middleware": "中间件日志", "database": "数据库日志",
+    "business": "业务日志", "network": "网络日志", "container": "容器日志",
+}
 PALETTE = ["#03857E", "#19A5A0", "#2178D8", "#EA720F", "#8E24AA", "#E53935", "#757575", "#00A9A3", "#5C6BC0", "#26A69A"]
 
 
 def _color_for(dim: str, key: Any, idx: int) -> str:
     if dim == "level":
         return LEVEL_COLORS.get(str(key).upper(), "#CFD8DC")
+    if dim in ("logClass", "log_class"):
+        return LOG_CLASS_COLORS.get(str(key).lower(), "#CFD8DC")
     return PALETTE[idx % len(PALETTE)]
 
 
@@ -742,6 +824,8 @@ def _seed_dashboards() -> List[Dict[str, Any]]:
          "filter": {"level": ["ERROR", "FATAL"]}, "limit": 10},
         {"id": "w11", "type": "table", "title": "异常日志明细", "dimension": "records", "span": 4,
          "filter": {"level": ["ERROR", "FATAL", "WARN"]}, "limit": 6},
+        {"id": "w12", "type": "donut", "title": "日志类型分布", "dimension": "logClass", "span": 1,
+         "filter": {}, "limit": 10},
     ]
     return [
         {
@@ -948,11 +1032,17 @@ def _must_for(frm: int, to: int, flt: Dict[str, Any]) -> List[Dict[str, Any]]:
     must = [_time_must(frm, to)]
     if not flt:
         return must
-    lv = flt.get("level")
-    if lv:
-        levels = lv if isinstance(lv, list) else [lv]
-        must.append({"terms": {"level": levels}})
-    for key in ("source", "host", "status", "traceId", "tenant_id"):
+    # 级别 / 日志类型 / 来源类型天然是多选语义（"看系统+中间件"很常见），统一走 terms。
+    for src_key, field in (("level", "level"), ("logClass", "log_class"),
+                           ("log_class", "log_class"), ("sourceType", "source_type"),
+                           ("source_type", "source_type")):
+        val = flt.get(src_key)
+        if not val:
+            continue
+        vals = val if isinstance(val, list) else [v.strip() for v in str(val).split(",") if v.strip()]
+        if vals:
+            must.append({"terms": {field: vals}})
+    for key in ("source", "host", "status", "traceId", "tenant_id", "app", "instance"):
         val = flt.get(key)
         if val not in (None, "", "all"):
             must.append({"term": {key: val}})
@@ -996,7 +1086,7 @@ def aggregate_widget(w: Dict[str, Any], idx: str, frm: int, to: int, interval: s
             "size": limit,
             "query": {"bool": {"must": must}},
             "sort": [{"@timestamp": {"order": "desc"}}],
-            "_source": ["@timestamp", "level", "source", "host", "message", "status"],
+            "_source": ["@timestamp", "log_class", "source_type", "level", "source", "host", "message", "status"],
         }
         resp = agg_search(idx, body)
         rows = []
@@ -1004,6 +1094,8 @@ def aggregate_widget(w: Dict[str, Any], idx: str, frm: int, to: int, interval: s
             s = h.get("_source", {})
             rows.append({
                 "time": to_local(s.get("@timestamp")),
+                "logClass": s.get("log_class", ""),
+                "sourceType": s.get("source_type", ""),
                 "level": s.get("level", "—"),
                 "source": s.get("source", "—"),
                 "host": s.get("host", "—"),
@@ -1057,6 +1149,12 @@ def aggregate_widget(w: Dict[str, Any], idx: str, frm: int, to: int, interval: s
     # terms 维度
     field = dmeta["field"]
     terms_node: Dict[str, Any] = {"terms": {"field": field, "size": limit}}
+    # 分类维度必须把"缺字段"的文档显式收敛到一个桶：OpenSearch 的 terms 聚合默认
+    # 直接丢弃 missing 文档，会让图里各类之和小于总量（看起来"少了几千条"）。
+    # 用 missing="" 落桶后，前端把它显示为「未分类（改造前）」，口径与 ClickHouse 一致
+    # （CH 里这些历史行 log_class 就是空串）。
+    if field in ("log_class", "source_type", "app", "instance", "facility"):
+        terms_node["terms"]["missing"] = ""
     if sub:
         terms_node["aggs"] = sub
     body = {"size": 0, "query": {"bool": {"must": must}}, "aggs": {"t": terms_node}}
@@ -1068,6 +1166,9 @@ def aggregate_widget(w: Dict[str, Any], idx: str, frm: int, to: int, interval: s
         name = str(b["key"])
         if dim == "level":
             name = level_label.get(name.upper(), name)
+        elif dim == "logClass":
+            # 机器码（system/middleware）翻中文，图例直接可读；空值=改造前历史数据
+            name = LOG_CLASS_LABELS.get(name, name or "未分类（改造前）")
         items.append({
             "name": name, "value": _bucket_value(b, metric),
             "color": _color_for(dim, b["key"], i),

@@ -21,6 +21,8 @@ services:
     ports: ["6379:6379"]
   kafka:
     ports: ["9092:9092"]
+  clickhouse:
+    ports: ["8123:8123", "9000:9000"]
   flink-jobmanager:
     ports: ["8081:8081"]
 
@@ -65,6 +67,8 @@ services:
     volumes:
       - ./fluentbit/fluent-bit.conf:/fluent-bit/etc/fluent-bit.conf:ro
       - ./fluentbit/parsers.conf:/fluent-bit/config/parsers.conf:ro
+      # 采集配置按日志类型拆分：系统/中间件/数据库各一个文件，dev 期热更
+      - ./fluentbit/conf.d:/fluent-bit/etc/conf.d:ro
       - ./fluentbit/scripts:/fluent-bit/scripts:ro
       # 注：不再挂载 ./fluentbit/sample 覆盖 /var/log/app，保留主 compose 的 app_logs 命名卷（与 log-generator 共享实时多租户日志）
 

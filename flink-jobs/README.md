@@ -1,18 +1,72 @@
-# Flink 实时告警 Job（占位）
+# Flink 实时流处理 Job（阶段3 · 正式，替换原占位）
 
-实时判定逻辑：消费 Kafka 日志流 → 匹配 `alarm_rules` 规则 `condition` → 触发 →
-写告警事件（PostgreSQL）+ 通知（`notify` 渠道）。对应 docs/tech-stack-selection.md 3.2(6) / ALM-0402。
+## 定位
 
-## 本骨架状态
+对标云智慧 DOLA 的 Flink 流处理层。数据主干：
 
-- `docker-compose.yml` 已拉起 `flink-jobmanager` + `flink-taskmanager`（官方 `flink:1.18-scala_2.12`，
-  Apple Silicon 下以 `platform: linux/amd64` 模拟运行）。
-- 真实 Job 包（JAR / PyFlink）待实现后，通过以下方式提交：
-  - 命令行：`docker compose exec flink-jobmanager flink run -d /opt/flink/jobs/alarm-job.jar`
-  - 或 Web UI：`http://localhost:8081`
+```
+Fluent Bit → ingest-service → Kafka(ruilog.logs.raw) → Flink Job →
+    ├─ ClickHouse(ruilog.logs)   聚合宽表（ReplacingMergeTree + event_id 幂等）
+    ├─ OpenSearch(logs-<tenant>) 明细索引（FLINK_WRITE_OS=true 时启用）
+    └─ Kafka(ruilog.logs.dlq)    解析失败死信（不丢数据）
+```
 
-## 语言选型待定（见设计文档待拍板项）
+实时告警判定仍由 alarm-service 承担（对 CH/OS 聚合查询），Flink 先把数据面打通；
+告警判定迁移到 Flink 窗口算子列为后续演进（见 tech-stack-selection.md）。
 
-- 标准 Flink Job：**Java / Scala**（性能最佳，生态最成熟）。
-- 或 **PyFlink**：与本栈 Python 生态统一，但 arm64 模拟环境下踩坑概率略高。
-- 选定后在此目录落地 `pom.xml` / `build.gradle` 或 `alarm_job.py` + 提交脚本。
+## 可靠性设计（商用级）
+
+| 机制 | 实现 |
+|------|------|
+| 消费位置 | KafkaSource from **committed offsets**，earliest 兜底 |
+| 容错 | Checkpoint **EXACTLY_ONCE** / 10s，状态写挂载卷 `flinkckpt`（重启不丢） |
+| 写入幂等 | CH `ReplacingMergeTree(ver)` + 确定性 `event_id`；OS `_id=event_id` 覆盖写 |
+| 死信 | 解析失败旁路写 `ruilog.logs.dlq`，主流不中断 |
+| 重启策略 | fixed-delay / 3 次（compose FLINK_PROPERTIES 配置） |
+| 反压 | Flink 原生背压 + Kafka 分区缓冲；并行度 2，可在线调 |
+
+## 构建（本机无 JDK，用 Maven 容器）
+
+```bash
+cd flink-jobs/java
+docker run --rm -v "$PWD":/w -v "$HOME/.m2":/root/.m2 -w /w \
+  maven:3.9-eclipse-temurin-17 \
+  mvn -s /w/settings.xml -q clean package
+# 产物：java/target/log-pipeline.jar（fat jar，含 httpclient/jackson/jdbc）
+```
+
+> settings.xml 已配阿里云 mirror。首次构建需下载 Flink/HTTP/Jackson/JDBC 依赖。
+> Flink/Kafka connector 依赖声明为 provided（由集群 lib 提供，不重复打进 jar）。
+
+## Kafka connector
+
+Flink 官方镜像**不含** Kafka connector，需把 fat jar 放进集群 `lib/`：
+
+```bash
+curl -sSL -o flink-jobs/lib/flink-sql-connector-kafka-1.18.1.jar \
+  https://repo1.maven.org/maven2/org/apache/flink/flink-sql-connector-kafka/1.18.1/flink-sql-connector-kafka-1.18.1.jar
+# 用阿里云 mirror 备选：https://maven.aliyun.com/repository/public/...
+```
+
+compose 已把 `flink-jobs/lib` 挂到 JM/TM 的 `/opt/flink/lib`（见 docker-compose.yml）。
+版本必须与 Flink runtime 一致（1.18.1）。
+
+## 部署 + 提交
+
+1. `java/target/log-pipeline.jar` 编译完成，`lib/` 内有 Kafka connector jar。
+2. 重启集群让挂载生效：`docker compose up -d flink-jobmanager flink-taskmanager`
+3. 提交：`FLINK_WRITE_OS=false sh flink-jobs/submit-job.sh`
+
+| FLINK_WRITE_OS | 阶段 | OS 明细由谁写 |
+|----------------|------|--------------|
+| `false` | dual 过渡（默认） | ingest 直写（Flink 只写 CH） |
+| `true` | kafka 主干 | Flink 统一写 OS+CH，同时 ingest 切 `INGEST_STORAGE_MODE=kafka` |
+
+## 验证
+
+```bash
+docker exec log_system-flink-jobmanager-1 flink list -r          # 作业在跑
+docker exec log_system-kafka-1 /opt/bitnami/kafka/bin/kafka-consumer-groups.sh \
+  --bootstrap-server localhost:9092 --describe --group ruilog-pipeline   # 消费位移
+curl -s 'http://localhost:8123/?query=SELECT%20count(),tenant_id%20FROM%20ruilog.logs%20GROUP%20BY%20tenant_id%20FORMAT%20TSV'  # CH 数据
+```

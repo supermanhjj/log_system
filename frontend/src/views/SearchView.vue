@@ -86,15 +86,33 @@ const zoomRange = ref(null)
 
 const FIELDS = [
   { key: 'time', label: '时间', fixed: true },
+  { key: 'log_class', label: '日志类型' },
+  { key: 'source_type', label: '来源类型' },
   { key: 'level', label: '级别' },
   { key: 'source', label: '来源' },
   { key: 'host', label: '主机' },
+  { key: 'app', label: '应用' },
   { key: 'traceId', label: 'traceId' },
   { key: 'status', label: '状态' },
   { key: 'tenant', label: '租户' },
   { key: 'message', label: '内容', fixed: true },
 ]
-const visibleFields = ref(['time', 'level', 'source', 'host', 'message'])
+const visibleFields = ref(['time', 'log_class', 'level', 'source', 'host', 'message'])
+
+// 日志类型枚举 → 中文/配色。log_class 是 v2.1 多类型采集的筛选主轴，
+// 值域由 ingest-service log_schema.LOG_CLASSES 统一收敛，前端只做展示映射。
+const LOG_CLASS_META = {
+  system: { label: '系统', type: 'info' },
+  middleware: { label: '中间件', type: 'warning' },
+  database: { label: '数据库', type: 'danger' },
+  business: { label: '业务', type: 'success' },
+  network: { label: '网络', type: 'info' },
+  container: { label: '容器', type: 'info' },
+}
+const logClassLabel = (c) => (LOG_CLASS_META[c]?.label || c || '-')
+const logClassTag = (c) => LOG_CLASS_META[c]?.type || 'info'
+// 没有 log_class 的历史数据（v2.0 及以前只有业务日志）按业务日志展示，避免出现空标签
+const logClassOf = (r) => r.log_class || (r.source ? 'business' : '')
 const isVisible = (k) => visibleFields.value.includes(k)
 const toggleField = (k) => {
   const f = FIELDS.find((x) => x.key === k)
@@ -135,6 +153,8 @@ const pqlRows = ref([])
 const PPL_COL_LABELS = {
   tenant: '租户', tenant_id: '租户', level: '级别', source: '来源', host: '主机',
   status: '状态', traceId: 'traceId', message: '内容', raw: '原始日志',
+  log_class: '日志类型', source_type: '来源类型', app: '应用', instance: '实例',
+  facility: '设施', severity: '严重度',
   '@timestamp': '时间', 'count()': '条数',
 }
 const pplColLabel = (c) => PPL_COL_LABELS[c] || c
@@ -144,10 +164,11 @@ const pqlLoading = ref(false)
 const isPql = computed(() => /\|/.test(splText.value))
 
 const CHIPS = [
+  'log_class:system',
+  'log_class:database',
   'level:ERROR',
   'status>=500',
-  "source=logs-default | where level='ERROR'",
-  'source=logs-default | stats count() by level',
+  "source=logs-default | stats count() by log_class, level",
 ]
 
 function intervalMs(iv) {
@@ -174,6 +195,10 @@ function parseSpl(raw) {
   const filters = {}
   if (!text) return { filters }
   let m
+  // 日志类型 / 来源类型 / 应用：多类型采集后按分类收窄的主入口
+  if ((m = text.match(/\b(log_class|logClass|日志类型)\s*[:=]\s*([\w\-]+)/i))) filters.logClass = m[2].toLowerCase()
+  if ((m = text.match(/\b(source_type|sourceType|来源类型)\s*[:=]\s*([\w\-]+)/i))) filters.sourceType = m[2].toLowerCase()
+  if ((m = text.match(/\bapp\s*[:=]\s*([\w.\-]+)/i))) filters.app = m[1]
   if ((m = text.match(/\blevel\s*:\s*(DEBUG|INFO|WARN|ERROR|FATAL)/i))) filters.level = m[1].toUpperCase()
   if ((m = text.match(/\bsource\s*:\s*([\w.\-]+)/i))) filters.source = m[1]
   if ((m = text.match(/\bhost\s*:\s*([\w.\-]+)/i))) filters.host = m[1]
@@ -188,6 +213,7 @@ function parseSpl(raw) {
     else filters.status = v
   }
   let kw = text
+    .replace(/\b(log_class|logClass|日志类型|source_type|sourceType|来源类型|app)\s*[:=]\s*[\w.\-]+/gi, ' ')
     .replace(/\b(level|source|host|traceId|status)\s*[:><=]+\s*[\w.\-]+/gi, ' ')
     .replace(/\b(AND|OR)\b/gi, ' ')
     .replace(/\s+/g, ' ')
@@ -561,7 +587,7 @@ function exportSelected() {
     ElMessage.warning('请先勾选日志')
     return
   }
-  const header = ['time', 'level', 'source', 'host', 'traceId', 'status', 'message']
+  const header = ['time', 'log_class', 'source_type', 'level', 'source', 'host', 'app', 'traceId', 'status', 'message']
   const lines = selectedRows.value.map((r) => header.map((h) => `"${(r[h] ?? '').toString().replace(/"/g, '""')}"`).join(','))
   const csv = [header.join(','), ...lines].join('\n')
   const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8' })
@@ -813,6 +839,14 @@ watch(
           >
             <el-table-column type="selection" width="44" />
             <el-table-column v-if="isVisible('time')" prop="time" label="时间" width="180" />
+            <el-table-column v-if="isVisible('log_class')" label="类型" width="88">
+              <template #default="{ row }">
+                <el-tag :type="logClassTag(logClassOf(row))" size="small" effect="plain">
+                  {{ logClassLabel(logClassOf(row)) }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column v-if="isVisible('source_type')" prop="source_type" label="来源类型" width="130" />
             <el-table-column v-if="isVisible('level')" label="级别" width="92">
               <template #default="{ row }">
                 <el-tag :type="levelTagType(row.level)" size="small" effect="light">{{ row.level }}</el-tag>
@@ -820,6 +854,7 @@ watch(
             </el-table-column>
             <el-table-column v-if="isVisible('source')" prop="source" label="来源" width="150" />
             <el-table-column v-if="isVisible('host')" prop="host" label="主机" width="140" />
+            <el-table-column v-if="isVisible('app')" prop="app" label="应用" width="120" />
             <el-table-column v-if="isVisible('traceId')" prop="traceId" label="traceId" width="170" />
             <el-table-column v-if="isVisible('status')" prop="status" label="状态" width="80" />
             <el-table-column v-if="isVisible('tenant')" prop="tenant" label="租户" width="100" />
@@ -853,14 +888,33 @@ watch(
     <el-drawer v-model="drawerVisible" title="日志详情" size="480px">
       <el-descriptions v-if="currentRow" :column="1" border>
         <el-descriptions-item label="时间">{{ currentRow.time }}</el-descriptions-item>
+        <el-descriptions-item label="日志类型">
+          <el-tag :type="logClassTag(logClassOf(currentRow))" size="small" effect="plain">
+            {{ logClassLabel(logClassOf(currentRow)) }}
+          </el-tag>
+          <span v-if="currentRow.source_type" class="mono" style="margin-left: 8px">{{ currentRow.source_type }}</span>
+        </el-descriptions-item>
         <el-descriptions-item label="级别">
           <el-tag :type="levelTagType(currentRow.level)" size="small" effect="light">{{ currentRow.level }}</el-tag>
+          <span v-if="currentRow.facility || currentRow.severity" class="hint" style="margin-left: 8px">
+            {{ currentRow.facility || '-' }}.{{ currentRow.severity ?? '-' }}
+          </span>
         </el-descriptions-item>
         <el-descriptions-item label="来源">{{ currentRow.source }}</el-descriptions-item>
         <el-descriptions-item label="主机">{{ currentRow.host }}</el-descriptions-item>
+        <el-descriptions-item v-if="currentRow.app || currentRow.instance" label="应用 / 实例">
+          {{ currentRow.app || '-' }}<span v-if="currentRow.instance"> / {{ currentRow.instance }}</span>
+        </el-descriptions-item>
         <el-descriptions-item label="traceId">{{ currentRow.traceId }}</el-descriptions-item>
         <el-descriptions-item label="状态">{{ currentRow.status }}</el-descriptions-item>
         <el-descriptions-item label="租户">{{ currentRow.tenant }}</el-descriptions-item>
+        <el-descriptions-item v-if="currentRow.attrs && Object.keys(currentRow.attrs).length" label="扩展属性">
+          <div class="attrs-list">
+            <div v-for="(v, k) in currentRow.attrs" :key="k" class="attrs-item">
+              <span class="attrs-key">{{ k }}</span><span class="attrs-val">{{ v }}</span>
+            </div>
+          </div>
+        </el-descriptions-item>
         <el-descriptions-item label="日志内容">{{ currentRow.message }}</el-descriptions-item>
       </el-descriptions>
 
@@ -1060,6 +1114,11 @@ watch(
 .spl-input { flex: 1; }
 .spl-input :deep(.el-input-group__prepend) { background: #f7f9fa; }
 .mono { font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace; font-size: 12px; }
+/* 扩展属性：各类日志的特有字段（如 nginx request_time、mysql query_time、syslog facility） */
+.attrs-list { display: flex; flex-direction: column; gap: 4px; }
+.attrs-item { display: flex; gap: 8px; font-size: 12px; line-height: 1.5; }
+.attrs-key { flex: 0 0 130px; color: var(--color-text-3); font-family: 'SFMono-Regular', Consolas, Menlo, monospace; word-break: break-all; }
+.attrs-val { flex: 1; color: var(--color-text-1); word-break: break-all; }
 .chips-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
 .chips-label { font-size: 13px; color: var(--color-text-2); }
 .chip { font-family: 'SFMono-Regular', Consolas, monospace; font-size: 12px; color: var(--color-primary); }

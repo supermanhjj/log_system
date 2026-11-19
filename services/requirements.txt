@@ -8,7 +8,9 @@ pydantic-settings==2.5.0
 psycopg2-binary==2.9.9
 redis==5.1.0
 kafka-python==2.0.2
+confluent-kafka==2.3.0
 opensearch-py==2.6.0
+clickhouse-driver==0.2.7
 
 # 鉴权 / 安全
 python-jose[cryptography]==3.3.0

@@ -47,3 +47,9 @@ frontend/vite.config.js.timestamp-*.mjs
 # ---- 产品说明书与截图（大体积交付物，不入库源码仓库）----
 docs/*.docx
 docs/screenshots/
+
+# ---- Java / Flink 构建产物（源码入库，jar 由 maven 构建）----
+flink-jobs/java/target/
+*.class
+# 例外：flink-jobs/lib/ 下的 connector jar 是 Dockerfile COPY 的运行时依赖，
+# 官方 Flink 镜像不含，必须随仓库提供以保证可复现构建，故不忽略。

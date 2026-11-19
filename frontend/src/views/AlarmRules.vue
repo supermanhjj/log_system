@@ -37,6 +37,8 @@ const form = reactive({
   id: null,
   name: '',
   matchSource: '',
+  matchLogClass: '',
+  matchSourceType: '',
   matchLevel: '',
   matchStatusGte: null,
   keyword: '',
@@ -46,6 +48,26 @@ const form = reactive({
   notify: ['wecom'],
   enabled: true,
   owner: '黄金金',
+})
+// 日志类型 / 来源类型：与 ingest-service log_schema 枚举一致，规则按类型圈定范围
+const LOG_CLASS_OPTIONS = [
+  { value: 'system', label: '系统日志' },
+  { value: 'middleware', label: '中间件日志' },
+  { value: 'database', label: '数据库日志' },
+  { value: 'business', label: '业务日志' },
+  { value: 'network', label: '网络日志' },
+  { value: 'container', label: '容器日志' },
+]
+// 来源类型按日志类型联动，避免选出「系统日志 + mysql-slow」这种不存在的组合
+const SOURCE_TYPE_BY_CLASS = {
+  system: ['syslog', 'auth', 'kern', 'cron', 'user'],
+  middleware: ['nginx-access', 'nginx-error', 'redis'],
+  database: ['mysql-error', 'mysql-slow', 'postgres'],
+  business: ['app'],
+}
+const sourceTypeOptions = computed(() => {
+  if (form.matchLogClass) return SOURCE_TYPE_BY_CLASS[form.matchLogClass] || []
+  return Object.values(SOURCE_TYPE_BY_CLASS).flat()
 })
 const rules = {
   name: [{ required: true, message: '请输入规则名称', trigger: 'blur' }],
@@ -118,6 +140,8 @@ function openCreate() {
     id: null,
     name: '',
     matchSource: '',
+    matchLogClass: '',
+    matchSourceType: '',
     matchLevel: '',
     matchStatusGte: null,
     keyword: '',
@@ -136,6 +160,8 @@ function openEdit(row) {
     id: row.id,
     name: row.name,
     matchSource: row.matchSource || '',
+    matchLogClass: row.matchLogClass || '',
+    matchSourceType: row.matchSourceType || '',
     matchLevel: row.matchLevel || '',
     matchStatusGte: row.matchStatusGte,
     keyword: row.keyword || '',
@@ -156,6 +182,8 @@ async function onSubmit() {
     const payload = {
       name: form.name.trim(),
       match_source: form.matchSource || null,
+      match_log_class: form.matchLogClass || null,
+      match_source_type: form.matchSourceType || null,
       match_level: form.matchLevel || null,
       match_status_gte: form.matchStatusGte != null && form.matchStatusGte !== '' ? Number(form.matchStatusGte) : null,
       keyword: form.keyword.trim() || null,
@@ -295,8 +323,14 @@ onMounted(() => loadRules(false))
             <el-tag v-if="row.tenant === 'all'" size="small" type="warning" effect="plain" class="plat-tag">平台级</el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="matchSource" label="关联数据源" width="160" align="left" header-align="left">
-          <template #default="{ row }">{{ row.matchSource || '全部数据源' }}</template>
+        <el-table-column label="作用范围" width="170" align="left" header-align="left">
+          <template #default="{ row }">
+            <el-tag v-if="row.matchLogClass" size="small" effect="plain">
+              {{ LOG_CLASS_OPTIONS.find((o) => o.value === row.matchLogClass)?.label || row.matchLogClass }}
+            </el-tag>
+            <span v-if="row.matchSourceType" class="mono-scope">{{ row.matchSourceType }}</span>
+            <span v-if="!row.matchLogClass" class="hint-scope">{{ row.matchSource || '全部数据源' }}</span>
+          </template>
         </el-table-column>
         <el-table-column label="判定条件" min-width="280" show-overflow-tooltip align="left" header-align="left">
           <template #default="{ row }">
@@ -348,6 +382,22 @@ onMounted(() => loadRules(false))
       <el-form ref="formRef" :model="form" :rules="rules" label-width="108px">
         <el-form-item label="规则名称" prop="name">
           <el-input v-model="form.name" placeholder="例如：订单服务错误率突增" />
+        </el-form-item>
+        <el-form-item label="日志类型">
+          <el-select
+            v-model="form.matchLogClass"
+            clearable
+            placeholder="全部类型"
+            style="width: 100%"
+            @change="() => (form.matchSourceType = '')"
+          >
+            <el-option v-for="o in LOG_CLASS_OPTIONS" :key="o.value" :label="o.label" :value="o.value" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="来源类型">
+          <el-select v-model="form.matchSourceType" clearable placeholder="全部来源类型" style="width: 100%">
+            <el-option v-for="st in sourceTypeOptions" :key="st" :label="st" :value="st" />
+          </el-select>
         </el-form-item>
         <el-form-item label="关联数据源">
           <el-select v-model="form.matchSource" placeholder="选择数据源" style="width: 100%">
@@ -430,6 +480,9 @@ onMounted(() => loadRules(false))
 .op-hint { font-size: 12px; }
 .plat-tag { margin-left: 6px; }
 .cond { color: var(--color-text-2); font-size: 13px; }
+/* 作用范围列：类型标签 + 来源类型机器码并列，未按类型圈定时回落到数据源名 */
+.mono-scope { margin-left: 6px; font-family: 'SFMono-Regular', Consolas, Menlo, monospace; font-size: 12px; color: var(--color-text-3); }
+.hint-scope { color: var(--color-text-3); font-size: 13px; }
 .notify { color: var(--color-text-2); font-size: 13px; }
 .hint { font-size: 12px; color: var(--color-text-3); margin-left: 10px; }
 .total-line { font-size: 13px; color: var(--color-text-3); margin-top: 12px; }

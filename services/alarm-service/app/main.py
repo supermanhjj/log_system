@@ -152,6 +152,8 @@ def init_db() -> None:
                 tenant TEXT NOT NULL DEFAULT 'default',
                 name TEXT NOT NULL,
                 match_source TEXT,
+                match_log_class TEXT,
+                match_source_type TEXT,
                 match_level TEXT,
                 match_status_gte INT,
                 keyword TEXT,
@@ -169,6 +171,9 @@ def init_db() -> None:
         # 迁移：告警规则归属租户（tenant='all' 表示平台级通用规则，对所有租户生效）
         pg_exec("ALTER TABLE alarm_rules ADD COLUMN IF NOT EXISTS tenant TEXT NOT NULL DEFAULT 'default'")
         pg_exec("CREATE INDEX IF NOT EXISTS idx_alarm_rules_tenant ON alarm_rules (tenant)")
+        # 迁移：按日志类型圈定规则范围（v2.1 多类型采集）。空 = 全类型，兼容既有规则。
+        pg_exec("ALTER TABLE alarm_rules ADD COLUMN IF NOT EXISTS match_log_class TEXT")
+        pg_exec("ALTER TABLE alarm_rules ADD COLUMN IF NOT EXISTS match_source_type TEXT")
         pg_exec(
             """
             CREATE TABLE IF NOT EXISTS alarm_event_states (
@@ -185,6 +190,9 @@ def init_db() -> None:
         existing = pg_query("SELECT COUNT(*) AS c FROM alarm_rules")
         if not existing or existing[0]["c"] == 0:
             _seed_rules()
+        # 四类日志规则模板独立幂等播种：老环境规则表非空也要补齐，否则系统/中间件/
+        # 数据库日志纳管后没有任何规则在看，等于"采了不用"。
+        _seed_multiclass_rules()
     except Exception as e:  # noqa: BLE001
         # 开发期 PG 暂不可用时降级：服务仍可启动，规则/事件接口会返回明确错误
         print(f"[alarm-service] init_db skipped: {e}", flush=True)
@@ -224,12 +232,89 @@ def _seed_rules() -> None:
         )
 
 
+# 四类日志（系统 / 中间件 / 数据库 / 业务）的**开箱规则模板**。
+#
+# 定位：tenant='all' 的平台级通用规则——所有租户生效、普通账号只读（与既有
+#   _rule_writable 的语义一致）。运营侧按自身阈值另建租户级规则覆盖即可。
+# 为什么按 log_class + source_type 圈定而不是 match_source：
+#   系统日志的 source 是 facility（daemon/authpriv/kern…），中间件/数据库的
+#   source 各实例不同，用 match_source 等于逐台配规则，不可维护。
+# 阈值取保守值（真实生产需按基线调），此处目的是给出可直接启用的骨架。
+MULTICLASS_RULE_SEEDS = [
+    dict(name="系统日志致命事件（kern/daemon CRIT+）", match_log_class="system",
+         match_source_type=None, match_level="FATAL", match_status_gte=None, keyword=None,
+         window_minutes=5, threshold=1, level="严重", notify="wecom,sms", enabled=True,
+         owner="系统", note="内核/服务致命错误，单条即告警"),
+    dict(name="系统认证失败激增（authpriv）", match_log_class="system",
+         match_source_type="auth", match_level="WARN", match_status_gte=None, keyword=None,
+         window_minutes=10, threshold=10, level="警告", notify="wecom", enabled=True,
+         owner="系统", note="疑似暴力破解或凭据失效，10 分钟内 >10 次"),
+    # MySQL 两条默认关闭：本地开发不再部署 MySQL（改用平台自身的 PostgreSQL），
+    # 规则保留是为了接入真实 MySQL 时能直接开箱启用，不必重新定义条件。
+    dict(name="MySQL 慢查询堆积", match_log_class="database",
+         match_source_type="mysql-slow", match_level=None, match_status_gte=None, keyword=None,
+         window_minutes=10, threshold=5, level="警告", notify="wecom", enabled=False,
+         owner="系统", note="接入真实 MySQL 后启用；10 分钟内慢查询 >5 条"),
+    dict(name="MySQL 错误日志", match_log_class="database",
+         match_source_type="mysql-error", match_level="ERROR", match_status_gte=None, keyword=None,
+         window_minutes=5, threshold=1, level="严重", notify="wecom,sms", enabled=False,
+         owner="系统", note="接入真实 MySQL 后启用；实例级 ERROR（连接失败/表损坏/复制中断）"),
+    # 平台自身 PG 的 log_min_duration_statement=200ms，慢查询正文固定带 "duration:"，
+    # 用它圈定比按 source_type 圈全部 PG 日志更准（checkpoint/连接日志不该算慢查询）。
+    dict(name="PostgreSQL 慢查询堆积", match_log_class="database",
+         match_source_type="postgres", match_level=None, match_status_gte=None, keyword="duration:",
+         window_minutes=10, threshold=5, level="警告", notify="wecom", enabled=True,
+         owner="系统", note="10 分钟内慢查询 >5 条，需结合 attrs.dbuser 定位"),
+    dict(name="PostgreSQL 错误日志", match_log_class="database",
+         match_source_type="postgres", match_level="ERROR", match_status_gte=None, keyword=None,
+         window_minutes=5, threshold=1, level="严重", notify="wecom", enabled=True,
+         owner="系统", note="PG 服务端 ERROR 及以上"),
+    dict(name="网关 5xx 突增（nginx access）", match_log_class="middleware",
+         match_source_type="nginx-access", match_level=None, match_status_gte=500, keyword=None,
+         window_minutes=5, threshold=5, level="严重", notify="wecom", enabled=True,
+         owner="系统", note="上游不可用或后端超时"),
+    dict(name="网关错误日志（nginx error）", match_log_class="middleware",
+         match_source_type="nginx-error", match_level="ERROR", match_status_gte=None, keyword=None,
+         window_minutes=10, threshold=3, level="警告", notify="wecom", enabled=True,
+         owner="系统", note="含 upstream timeout / connect() failed"),
+    dict(name="Redis 持久化或内存告警", match_log_class="middleware",
+         match_source_type="redis", match_level="WARN", match_status_gte=None, keyword=None,
+         window_minutes=10, threshold=1, level="警告", notify="wecom", enabled=True,
+         owner="系统", note="BGSAVE 失败 / 达到 maxmemory"),
+]
+
+
+def _seed_multiclass_rules() -> None:
+    """按 name 幂等补齐四类日志规则模板（已存在则跳过，不覆盖运营侧改动）。"""
+    for s in MULTICLASS_RULE_SEEDS:
+        try:
+            hit = pg_query("SELECT id FROM alarm_rules WHERE name=%s AND tenant='all'", (s["name"],))
+            if hit:
+                continue
+            pg_exec(
+                """
+                INSERT INTO alarm_rules
+                    (tenant, name, match_source, match_log_class, match_source_type,
+                     match_level, match_status_gte, keyword, window_minutes, threshold,
+                     level, notify, enabled, owner)
+                VALUES ('all', %(name)s, NULL, %(match_log_class)s, %(match_source_type)s,
+                        %(match_level)s, %(match_status_gte)s, %(keyword)s, %(window_minutes)s,
+                        %(threshold)s, %(level)s, %(notify)s, %(enabled)s, %(owner)s)
+                """,
+                s,
+            )
+        except Exception as e:  # noqa: BLE001
+            print(f"[alarm-service] seed multiclass rule failed ({s['name']}): {e}", flush=True)
+
+
 # ---------------------------------------------------------------------------
 # 规则模型
 # ---------------------------------------------------------------------------
 class RuleIn(BaseModel):
     name: str = Field(..., min_length=1, max_length=120)
     match_source: Optional[str] = None          # 关联数据源；空 = 全部
+    match_log_class: Optional[str] = None       # 日志类型：system/middleware/database/business；空 = 全类型
+    match_source_type: Optional[str] = None     # 来源类型：syslog/nginx-access/mysql-slow…；空 = 全部
     match_level: Optional[str] = None           # ERROR / WARN / INFO / 空=全部
     match_status_gte: Optional[int] = None      # HTTP 状态码 ≥
     keyword: Optional[str] = None               # 关键字（message / raw 命中）
@@ -263,6 +348,8 @@ def row_to_rule(r: Dict[str, Any]) -> Dict[str, Any]:
         "tenant": r.get("tenant") or "default",
         "name": r["name"],
         "matchSource": r.get("match_source"),
+        "matchLogClass": r.get("match_log_class"),
+        "matchSourceType": r.get("match_source_type"),
         "matchLevel": r.get("match_level"),
         "matchStatusGte": r.get("match_status_gte"),
         "keyword": r.get("keyword"),
@@ -282,6 +369,13 @@ def row_to_rule(r: Dict[str, Any]) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 def _must_for_rule(rule: Dict[str, Any], gte: int, lte: int) -> List[Dict[str, Any]]:
     must = [{"range": {"@timestamp": {"gte": gte, "lte": lte}}}]
+    # 日志类型 / 来源类型：四类采集上线后，规则可按类型圈定范围。
+    # 例如「系统日志出现 OOM」只需 match_log_class='system' + keyword='Out of memory'，
+    # 不必靠 match_source 猜主机名。未设置时保持全类型（向后兼容既有规则）。
+    if rule.get("match_log_class"):
+        must.append({"term": {"log_class": rule["match_log_class"]}})
+    if rule.get("match_source_type"):
+        must.append({"term": {"source_type": rule["match_source_type"]}})
     if rule.get("match_level"):
         must.append({"term": {"level": rule["match_level"]}})
     if rule.get("match_source"):
@@ -328,7 +422,8 @@ def evaluate_rule(rule: Dict[str, Any], idx: str, now: int) -> Optional[Dict[str
         "size": 1,
         "query": query,
         "sort": [{"@timestamp": {"order": "desc"}}],
-        "_source": ["@timestamp", "level", "source", "host", "traceId", "message", "status", "raw"],
+        "_source": ["@timestamp", "log_class", "source_type", "level", "source", "host",
+                    "traceId", "message", "status", "raw"],
     }
     try:
         agg = os_client.search(index=idx, body=body)
@@ -341,14 +436,22 @@ def evaluate_rule(rule: Dict[str, Any], idx: str, now: int) -> Optional[Dict[str
     if aggs.get("first", {}).get("value") is not None:
         first_ts = datetime.fromtimestamp(aggs["first"]["value"] / 1000, tz=timezone.utc)
     src = sample["hits"]["hits"][0]["_source"] if sample["hits"]["hits"] else {}
+    # 事件「关联数据源」展示：按类型圈定的规则显示类型名，否则回落到数据源名/全部
+    scope = rule.get("match_source") or "全部数据源"
+    if rule.get("match_log_class"):
+        scope = LOG_CLASS_LABELS.get(rule["match_log_class"], rule["match_log_class"])
+        if rule.get("match_source_type"):
+            scope = f"{scope} · {rule['match_source_type']}"
     return {
         "ruleId": rule["id"],
         "name": rule["name"],
         "level": rule["level"],
-        "source": rule.get("match_source") or "全部数据源",
+        "source": scope,
         "windowMinutes": rule["window_minutes"],
         "threshold": rule["threshold"],
         # 规则判定条件（供前端「查看关联日志」组织等价 PPL，确保关联日志=触发集合）
+        "matchLogClass": rule.get("match_log_class"),
+        "matchSourceType": rule.get("match_source_type"),
         "matchLevel": rule.get("match_level"),
         "matchStatusGte": rule.get("match_status_gte"),
         "keyword": rule.get("keyword"),
@@ -360,6 +463,8 @@ def evaluate_rule(rule: Dict[str, Any], idx: str, now: int) -> Optional[Dict[str
         "matchedHosts": [b["key"] for b in aggs.get("hosts", {}).get("buckets", [])],
         "sample": {
             "time": to_local(src.get("@timestamp")),
+            "logClass": src.get("log_class"),
+            "sourceType": src.get("source_type"),
             "level": src.get("level"),
             "source": src.get("source"),
             "host": src.get("host"),
@@ -466,6 +571,11 @@ CONTENT_TYPES = {"text", "match_only_text", "wildcard"}
 DIM_TYPES = {"keyword"}
 TEXT_TYPES = CONTENT_TYPES | DIM_TYPES          # 字段角色候选（level/source 常为 keyword）
 SCALAR_TYPES = NUMERIC_TYPES | DIM_TYPES | {"boolean", "ip", "date"}
+# 日志类型中文名（与检索页 / 总览 / 看板同一套映射，避免三处叫法不一）
+LOG_CLASS_LABELS = {
+    "system": "系统日志", "middleware": "中间件日志", "database": "数据库日志",
+    "business": "业务日志", "network": "网络日志", "container": "容器日志",
+}
 
 # 字段角色候选名：按优先级探测，避免把字段名写死（不同业务日志命名不同）
 ROLE_CANDIDATES = {
@@ -558,6 +668,12 @@ def build_related_pql(rule: Dict[str, Any], ev: Dict[str, Any], tenant: str) -> 
         skipped.append("时间窗口(索引无 date 字段)")
 
     # 结构化条件：仅当规则配置了该条件才尝试，字段不存在/类型不匹配则跳过
+    if rule.get("match_log_class"):
+        add(f"log_class='{_esc(rule['match_log_class'])}'",
+            "日志类型(log_class)", "log_class" if "log_class" in fields else None)
+    if rule.get("match_source_type"):
+        add(f"source_type='{_esc(rule['match_source_type'])}'",
+            "来源类型(source_type)", "source_type" if "source_type" in fields else None)
     if rule.get("match_source"):
         add(f"{source_f}='{_esc(rule['match_source'])}'", f"来源({source_f or 'source'})", source_f)
     if rule.get("match_level"):
@@ -586,6 +702,14 @@ def build_related_pql(rule: Dict[str, Any], ev: Dict[str, Any], tenant: str) -> 
             if pred(f, t):
                 cols.append(f)
     cols = cols[:10]
+    # 关键列优先：v2.1 新增 log_class/source_type/app/instance/facility 等 keyword 后，
+    # 10 个槽位容易被"维度列"吃满，而排查时最需要的是「时间 + 级别 + 类型 + 来源 + 主机 + 正文」。
+    # 这里把关键列钉在最前面，其余按 mapping 顺序补齐，既保住正文也不丢分类维度。
+    pinned = [f for f in ("@timestamp", "level", "log_class", "source_type",
+                          "source", "host", "app") if f in fields]
+    if text_fs:
+        pinned.append(text_fs[0])
+    cols = (pinned + [f for f in cols if f not in pinned])[:10]
     if not cols:
         cols = [f for f in fields if "." not in f][:10]
 
@@ -686,9 +810,11 @@ def create_rule(
     row = pg_query(
         """
         INSERT INTO alarm_rules
-            (tenant, name, match_source, match_level, match_status_gte, keyword,
+            (tenant, name, match_source, match_log_class, match_source_type,
+             match_level, match_status_gte, keyword,
              window_minutes, threshold, level, notify, enabled, owner)
-        VALUES (%(tenant)s,%(name)s,%(match_source)s,%(match_level)s,%(match_status_gte)s,%(keyword)s,
+        VALUES (%(tenant)s,%(name)s,%(match_source)s,%(match_log_class)s,%(match_source_type)s,
+                %(match_level)s,%(match_status_gte)s,%(keyword)s,
                 %(window_minutes)s,%(threshold)s,%(level)s,%(notify)s,%(enabled)s,%(owner)s)
         RETURNING id
         """,
@@ -696,6 +822,8 @@ def create_rule(
             "tenant": tenant,
             "name": payload.name,
             "match_source": payload.match_source or None,
+            "match_log_class": payload.match_log_class or None,
+            "match_source_type": payload.match_source_type or None,
             "match_level": payload.match_level or None,
             "match_status_gte": payload.match_status_gte,
             "keyword": payload.keyword or None,
@@ -740,7 +868,9 @@ def update_rule(
     pg_exec(
         """
         UPDATE alarm_rules SET
-            name=%(name)s, match_source=%(match_source)s, match_level=%(match_level)s,
+            name=%(name)s, match_source=%(match_source)s,
+            match_log_class=%(match_log_class)s, match_source_type=%(match_source_type)s,
+            match_level=%(match_level)s,
             match_status_gte=%(match_status_gte)s, keyword=%(keyword)s,
             window_minutes=%(window_minutes)s, threshold=%(threshold)s, level=%(level)s,
             notify=%(notify)s, enabled=%(enabled)s, owner=%(owner)s, updated_at=now()
@@ -750,6 +880,8 @@ def update_rule(
             "id": rule_id,
             "name": payload.name,
             "match_source": payload.match_source or None,
+            "match_log_class": payload.match_log_class or None,
+            "match_source_type": payload.match_source_type or None,
             "match_level": payload.match_level or None,
             "match_status_gte": payload.match_status_gte,
             "keyword": payload.keyword or None,
@@ -853,6 +985,8 @@ def event_related_query(event_id: str, tenant: str = Query("default"),
     rule = dict(rows[0]) if rows else {
         # 规则已被删除时的降级：仅使用事件中残留的条件信息
         "match_source": None if ev.get("source") == "全部数据源" else ev.get("source"),
+        "match_log_class": ev.get("matchLogClass"),
+        "match_source_type": ev.get("matchSourceType"),
         "match_level": ev.get("matchLevel") or ev.get("sample", {}).get("level"),
         "match_status_gte": ev.get("matchStatusGte"),
         "keyword": ev.get("keyword"),

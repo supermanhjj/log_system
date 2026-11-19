@@ -1,0 +1,38 @@
+{
+  "index_patterns": ["logs-*"],
+  "priority": 200,
+  "template": {
+    "settings": {
+      "number_of_shards": 1,
+      "number_of_replicas": 0,
+      "refresh_interval": "1s",
+      "index.mapping.total_fields.limit": 2000
+    },
+    "mappings": {
+      "dynamic": false,
+      "properties": {
+        "@timestamp": { "type": "date" },
+        "tenant_id": { "type": "keyword" },
+        "log_class": { "type": "keyword" },
+        "source_type": { "type": "keyword" },
+        "app": { "type": "keyword" },
+        "instance": { "type": "keyword" },
+        "host": { "type": "keyword" },
+        "level": { "type": "keyword" },
+        "severity": { "type": "integer" },
+        "facility": { "type": "keyword" },
+        "pid": { "type": "integer" },
+        "source": { "type": "keyword" },
+        "traceId": { "type": "keyword" },
+        "status": { "type": "integer" },
+        "message": { "type": "text" },
+        "raw": { "type": "text" },
+        "attrs": { "type": "flat_object" },
+        "src_file": { "type": "keyword" },
+        "collector_id": { "type": "keyword" },
+        "env": { "type": "keyword" },
+        "ingested_at": { "type": "date" }
+      }
+    }
+  }
+}

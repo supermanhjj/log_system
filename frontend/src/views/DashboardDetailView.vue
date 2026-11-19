@@ -21,6 +21,8 @@ function formatVal(v) { return v === undefined || v === null ? '—' : Number(v)
 function filterText(flt) {
   if (!flt || !Object.keys(flt).length) return '全部'
   const parts = []
+  if (flt.logClass?.length) parts.push(flt.logClass.map(logClassLabel).join('/'))
+  if (flt.sourceType?.length) parts.push(`类型=${flt.sourceType.join('/')}`)
   if (flt.level?.length) parts.push(flt.level.join('/'))
   if (flt.source) parts.push(`source=${flt.source}`)
   if (flt.host) parts.push(`host=${flt.host}`)
@@ -302,6 +304,22 @@ function scheduleRecompute() {
 
 // —— 筛选态映射（编辑面板）——
 const levelOptions = ['FATAL', 'ERROR', 'WARN', 'INFO', 'DEBUG', 'NOTICE', 'TRACE']
+// 日志类型（log_class）：筛选与分组共用同一枚举，与 ingest-service log_schema.LOG_CLASSES 对齐
+const logClassOptions = [
+  { value: 'system', label: '系统' },
+  { value: 'middleware', label: '中间件' },
+  { value: 'database', label: '数据库' },
+  { value: 'business', label: '业务' },
+  { value: 'network', label: '网络' },
+  { value: 'container', label: '容器' },
+]
+const logClassLabel = (v) => logClassOptions.find((x) => x.value === v)?.label || v
+const sourceTypeOptions = [
+  'syslog', 'auth', 'kern', 'cron',
+  'nginx-access', 'nginx-error', 'redis',
+  'mysql-error', 'mysql-slow', 'postgres',
+  'app',
+]
 const metricOptions = [
   { value: 'count', label: '日志条数' },
   { value: 'distinct_host', label: '去重主机数' },
@@ -419,6 +437,9 @@ onBeforeUnmount(() => {
             <div class="chart-title">{{ w.title }}</div>
             <el-table :data="dataMap[w.id]?.rows || []" size="small" stripe class="detail-table">
               <el-table-column prop="time" label="时间" width="170" />
+              <el-table-column label="类型" width="90">
+                <template #default="{ row }">{{ logClassLabel(row.logClass) }}</template>
+              </el-table-column>
               <el-table-column prop="level" label="级别" width="90">
                 <template #default="{ row }">
                   <span class="level-pill" :class="`lv-${String(row.level).toLowerCase()}`">{{ row.level }}</span>
@@ -535,6 +556,16 @@ onBeforeUnmount(() => {
                   <el-radio-button :value="2">1/2</el-radio-button>
                   <el-radio-button :value="4">整行</el-radio-button>
                 </el-radio-group>
+              </el-form-item>
+              <el-form-item label="日志类型">
+                <el-select v-model="selected.filter.logClass" multiple collapse-tags collapse-tags-tooltip clearable placeholder="全部类型" @change="onFilterChange(selected)">
+                  <el-option v-for="lc in logClassOptions" :key="lc.value" :label="lc.label" :value="lc.value" />
+                </el-select>
+              </el-form-item>
+              <el-form-item label="来源类型">
+                <el-select v-model="selected.filter.sourceType" multiple collapse-tags collapse-tags-tooltip clearable placeholder="全部来源类型" @change="onFilterChange(selected)">
+                  <el-option v-for="st in sourceTypeOptions" :key="st" :label="st" :value="st" />
+                </el-select>
               </el-form-item>
               <el-form-item label="级别筛选">
                 <el-select v-model="selected.filter.level" multiple collapse-tags collapse-tags-tooltip clearable placeholder="全部级别" @change="onFilterChange(selected)">
