@@ -30,6 +30,7 @@ from .db import (
     ACTION_LABELS,
     ALL_PERMS,
     PERMISSION_TREE,
+    RESERVED_TENANT_CODES,
     init_db,
     pg_exec,
     pg_query,
@@ -118,7 +119,7 @@ def root():
         "service": "system-service",
         "version": "0.3.0",
         "scope": "平台管理：用户 / 角色权限 / 系统参数 / 审计日志 / 日志空间",
-        "endpoints": ["/meta", "/users", "/roles", "/params", "/audit",
+        "endpoints": ["/meta", "/users", "/tenants", "/roles", "/params", "/audit",
                       "/storage/capacity", "/storage/config", "/storage/indexes", "/storage/quotas"],
     }
 
@@ -461,6 +462,278 @@ def reset_password(
                               request.client.host if request.client else ""))
     return {"ok": True, "tempPassword": raw,
             "message": f"{target['name']} 的密码已重置，临时密码仅显示一次"}
+
+
+# ---------------------------------------------------------------------------
+# 租户管理（日志隔离空间）
+#
+# 商用口径要点：
+# 1. tenants 表是**全系统租户的唯一真源**：前端下拉、各查询服务路由、采集端归属
+#    都以它为准；新增租户不再改代码，只需在本页登记。
+# 2. 租户编码（code）直接决定 OpenSearch 索引名 logs-<code>，是隔离边界，
+#    创建后不可修改（改名只改 display name）。
+# 3. 保护性约束：编码唯一且不可用保留字；有用户/有日志数据的租户不可删除；
+#    不允许停用或删除当前登录租户（避免把自己锁在门外）。
+# 4. 所有变更写审计；配额沿用 tenant_quotas（与「日志空间」共用同一份数据）。
+# ---------------------------------------------------------------------------
+TENANT_CODE_RULE = "租户编码由小写字母开头，可含小写字母、数字与下划线，长度 2-32"
+
+
+class TenantIn(BaseModel):
+    code: Optional[str] = None
+    name: Optional[str] = None
+    enabled: Optional[bool] = None
+    quotaGB: Optional[int] = None
+
+
+class TenantEnabledIn(BaseModel):
+    enabled: bool
+
+
+def tenant_code_valid(code: str) -> bool:
+    if not (2 <= len(code) <= 32):
+        return False
+    if not code[0].isalpha() or not code[0].islower():
+        return False
+    return all(c.islower() or c.isdigit() or c == "_" for c in code)
+
+
+def tenant_index_stats() -> Dict[str, Dict[str, int]]:
+    """按租户汇总 logs-<code> 的真实体积与文档数（取不到时返回空，不编造）。"""
+    try:
+        from .storage import fetch_indices
+
+        stats: Dict[str, Dict[str, int]] = {}
+        for ix in fetch_indices(""):
+            code = ix["name"][len("logs-"):] if ix["name"].startswith("logs-") else ix["name"]
+            cur = stats.setdefault(code, {"bytes": 0, "docs": 0})
+            cur["bytes"] += int(ix.get("bytes") or 0)
+            cur["docs"] += int(ix.get("docs") or 0)
+        return stats
+    except Exception as e:  # noqa: BLE001
+        print(f"[system-service] tenant_index_stats skipped: {e}", flush=True)
+        return {}
+
+
+def tenant_row(r: Dict[str, Any], stats: Dict[str, Dict[str, int]]) -> Dict[str, Any]:
+    code = r["code"]
+    st = stats.get(code, {"bytes": 0, "docs": 0})
+    return {
+        "code": code,
+        "name": r["name"],
+        "enabled": r["enabled"],
+        "userCount": int(r.get("user_count") or 0),
+        "quotaGB": int(r.get("quota_gb") or 0),
+        "usedBytes": st["bytes"],
+        "docs": st["docs"],
+        "isReserved": code in RESERVED_TENANT_CODES,
+        "index": f"logs-{code}",
+        "createdAt": to_cst_str(r.get("created_at")),
+        "updatedAt": to_cst_str(r.get("updated_at")),
+    }
+
+
+SELECT_TENANT = """
+    SELECT t.id, t.code, t.name, t.enabled, t.created_at,
+           (SELECT max(q.updated_at) FROM tenant_quotas q WHERE q.tenant_code = t.code) AS updated_at,
+           COALESCE(q.quota_gb, 0) AS quota_gb,
+           (SELECT count(*) FROM users u WHERE u.tenant_id = t.id) AS user_count
+      FROM tenants t
+      LEFT JOIN tenant_quotas q ON q.tenant_code = t.code
+"""
+
+
+@app.get("/tenants")
+def list_tenants(
+    keyword: str = "",
+    enabled: str = "",
+    user: Dict[str, Any] = Depends(require("tenant", "view")),
+):
+    where = ["1=1"]
+    params: List[Any] = []
+    if keyword.strip():
+        where.append("(t.code ILIKE %s OR t.name ILIKE %s)")
+        kw = f"%{keyword.strip()}%"
+        params += [kw, kw]
+    if enabled in ("true", "false"):
+        where.append("t.enabled = %s")
+        params.append(enabled == "true")
+    rows = pg_query(f"{SELECT_TENANT} WHERE {' AND '.join(where)} ORDER BY t.id", tuple(params))
+    stats = tenant_index_stats()
+    return {
+        "items": [tenant_row(r, stats) for r in rows],
+        "note": ("有用户或有日志数据的租户不允许删除；配额与「日志空间」共用同一份数据。"),
+    }
+
+
+@app.post("/tenants", status_code=201)
+def create_tenant(
+    req: TenantIn,
+    request: Request,
+    user: Dict[str, Any] = Depends(require("tenant", "create")),
+):
+    code = (req.code or "").strip().lower()
+    name = (req.name or "").strip()
+    if not code or not name:
+        raise HTTPException(status_code=400, detail="租户编码与名称不能为空")
+    if not tenant_code_valid(code):
+        raise HTTPException(status_code=400, detail=TENANT_CODE_RULE)
+    if code in RESERVED_TENANT_CODES:
+        raise HTTPException(status_code=400, detail=f"「{code}」为系统保留编码，不可使用")
+    if tenant_code_exists(code):
+        raise HTTPException(status_code=409, detail="该租户编码已存在")
+
+    quota = int(req.quotaGB or 0)
+    if quota < 0:
+        raise HTTPException(status_code=400, detail="配额不能为负数（0 表示不设上限）")
+    # 两级配额：租户配额之和不得超过平台总容量
+    if quota > 0:
+        from .storage import allocated_gb, read_config
+
+        total = read_config()["totalGB"]
+        already = allocated_gb()
+        if total > 0 and already + quota > total:
+            raise HTTPException(
+                status_code=400,
+                detail=(f"其他租户已分配 {already} GB，新增该租户 {quota} GB 后将超过"
+                        f"平台总容量 {total} GB（剩余可分配 {max(total - already, 0)} GB）。"),
+            )
+
+    pg_exec("INSERT INTO tenants (code, name, enabled) VALUES (%s, %s, %s)",
+            (code, name, True if req.enabled is None else req.enabled))
+    pg_exec(
+        """INSERT INTO tenant_quotas (tenant_code, quota_gb) VALUES (%s, %s)
+           ON CONFLICT (tenant_code) DO UPDATE SET quota_gb=EXCLUDED.quota_gb, updated_at=now()""",
+        (code, quota),
+    )
+    from .storage import ensure_tenant_index
+
+    index_ok = ensure_tenant_index(code)
+    write_audit(user, "新建租户", f"{name}（{code}）", {"quotaGB": quota, "indexCreated": index_ok},
+                client_ip(request.headers.get("x-forwarded-for"),
+                          request.client.host if request.client else ""))
+    return {"ok": True, "code": code, "index": f"logs-{code}",
+            "message": f"租户「{name}」已创建，日志索引 logs-{code} 已就绪" if index_ok
+                       else f"租户「{name}」已创建，但索引 logs-{code} 创建失败，请检查 OpenSearch"}
+
+
+@app.put("/tenants/{code}")
+def update_tenant(
+    code: str,
+    req: TenantIn,
+    request: Request,
+    user: Dict[str, Any] = Depends(require("tenant", "update")),
+):
+    rows = pg_query("SELECT code, name, enabled FROM tenants WHERE code=%s", (code,))
+    if not rows:
+        raise HTTPException(status_code=404, detail="租户不存在")
+    cur = rows[0]
+
+    name = (req.name or "").strip() if req.name is not None else cur["name"]
+    if not name:
+        raise HTTPException(status_code=400, detail="租户名称不能为空")
+    if req.code is not None and req.code.strip().lower() != code:
+        raise HTTPException(
+            status_code=400,
+            detail="租户编码即索引隔离边界，创建后不可修改；如需更换请新建租户并迁移数据",
+        )
+    if req.enabled is False and code in RESERVED_TENANT_CODES:
+        raise HTTPException(status_code=400, detail=f"系统保留租户「{code}」不可停用")
+    if req.enabled is False and code == user["tenant_code"]:
+        raise HTTPException(status_code=400, detail="不能停用当前登录账号所属的租户")
+
+    pg_exec("UPDATE tenants SET name=%s, enabled=%s WHERE code=%s",
+            (name, cur["enabled"] if req.enabled is None else req.enabled, code))
+    if req.quotaGB is not None:
+        quota = int(req.quotaGB)
+        if quota < 0:
+            raise HTTPException(status_code=400, detail="配额不能为负数（0 表示不设上限）")
+        from .storage import allocated_gb, read_config
+
+        total = read_config()["totalGB"]
+        others = allocated_gb(exclude_tenant=code)
+        if total > 0 and others + quota > total:
+            raise HTTPException(
+                status_code=400,
+                detail=(f"其他租户已分配 {others} GB，本租户设 {quota} GB 后将超过平台总容量 "
+                        f"{total} GB（剩余可分配 {max(total - others, 0)} GB）。"),
+            )
+        pg_exec(
+            """INSERT INTO tenant_quotas (tenant_code, quota_gb, updated_at)
+               VALUES (%s, %s, now())
+               ON CONFLICT (tenant_code) DO UPDATE SET quota_gb=EXCLUDED.quota_gb, updated_at=now()""",
+            (code, quota),
+        )
+    write_audit(user, "修改租户", code, req.model_dump(exclude_none=True),
+                client_ip(request.headers.get("x-forwarded-for"),
+                          request.client.host if request.client else ""))
+    return {"ok": True, "message": "租户信息已保存"}
+
+
+@app.put("/tenants/{code}/enabled")
+def toggle_tenant(
+    code: str,
+    req: TenantEnabledIn,
+    request: Request,
+    user: Dict[str, Any] = Depends(require("tenant", "update")),
+):
+    rows = pg_query("SELECT code, name FROM tenants WHERE code=%s", (code,))
+    if not rows:
+        raise HTTPException(status_code=404, detail="租户不存在")
+    if not req.enabled and code in RESERVED_TENANT_CODES:
+        raise HTTPException(status_code=400, detail=f"系统保留租户「{code}」不可停用")
+    if not req.enabled and code == user["tenant_code"]:
+        raise HTTPException(status_code=400, detail="不能停用当前登录账号所属的租户")
+    if not req.enabled:
+        # 停用后该租户账号将无法登录；有启用账号时要求先处理，避免"停租户即锁死一批账号"
+        alive = pg_scalar(
+            "SELECT count(*) FROM users u JOIN tenants t ON t.id=u.tenant_id "
+            "WHERE t.code=%s AND u.enabled", (code,))
+        if alive:
+            raise HTTPException(
+                status_code=400,
+                detail=f"该租户下仍有 {int(alive)} 个启用账号，请先停用或迁移这些账号再停用租户",
+            )
+    pg_exec("UPDATE tenants SET enabled=%s WHERE code=%s", (req.enabled, code))
+    write_audit(user, "启用租户" if req.enabled else "停用租户", code, {},
+                client_ip(request.headers.get("x-forwarded-for"),
+                          request.client.host if request.client else ""))
+    return {"ok": True, "enabled": req.enabled,
+            "message": f"租户「{rows[0]['name']}」已{'启用' if req.enabled else '停用'}"}
+
+
+@app.delete("/tenants/{code}")
+def delete_tenant(
+    code: str,
+    request: Request,
+    user: Dict[str, Any] = Depends(require("tenant", "delete")),
+):
+    rows = pg_query("SELECT code, name FROM tenants WHERE code=%s", (code,))
+    if not rows:
+        raise HTTPException(status_code=404, detail="租户不存在")
+    if code in RESERVED_TENANT_CODES:
+        raise HTTPException(status_code=400, detail=f"系统保留租户「{code}」不可删除")
+    if code == user["tenant_code"]:
+        raise HTTPException(status_code=400, detail="不能删除当前登录账号所属的租户")
+    users_cnt = int(pg_scalar("SELECT count(*) FROM users WHERE tenant_id=(SELECT id FROM tenants WHERE code=%s)", (code,)) or 0)
+    if users_cnt:
+        raise HTTPException(status_code=409, detail=f"该租户下仍有 {users_cnt} 个用户，请先迁移后再删除")
+    stats = tenant_index_stats().get(code, {"docs": 0})
+    if int(stats.get("docs") or 0) > 0:
+        raise HTTPException(
+            status_code=409,
+            detail=(f"该租户仍有 {int(stats['docs'])} 条日志（logs-{code}），"
+                    "请先在「日志空间」清理索引后再删除租户"),
+        )
+    pg_exec("DELETE FROM tenant_quotas WHERE tenant_code=%s", (code,))
+    pg_exec("DELETE FROM tenants WHERE code=%s", (code,))
+    from .storage import drop_tenant_index
+
+    drop_tenant_index(code)
+    write_audit(user, "删除租户", f"{rows[0]['name']}（{code}）", {},
+                client_ip(request.headers.get("x-forwarded-for"),
+                          request.client.host if request.client else ""))
+    return {"ok": True, "message": f"租户「{rows[0]['name']}」已删除"}
 
 
 # ---------------------------------------------------------------------------

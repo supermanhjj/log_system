@@ -641,8 +641,12 @@ def sync_fields(tenant: str = Query("default")):
     elif isinstance(fields, list):
         for f in fields:
             normalized[str(f.get("name", ""))] = str(f.get("type", "")) if isinstance(f, dict) else ""
-    # text 字段的 .keyword 子字段不是独立业务字段，不作为别名入库
-    normalized = {k: v for k, v in normalized.items() if k and not k.endswith(".keyword")}
+    # text 字段的 .keyword 子字段不是独立业务字段，不作为别名入库；
+    # 租户字段同样排除：租户是检索上下文不是查询条件，导进来只会诱导模型生成无效过滤
+    normalized = {
+        k: v for k, v in normalized.items()
+        if k and not k.endswith(".keyword") and k not in nl2ppl.TENANT_FIELDS
+    }
     if not normalized:
         raise HTTPException(status_code=502, detail="/meta 未返回字段清单，未写入任何规则")
     for name, ftype in normalized.items():
@@ -707,9 +711,15 @@ def nl_to_ppl(req: Nl2PplIn):
             "ok": False, "stage": "grammar", "question": q,
             "error": f"读取 PPL 语法规则库失败：{e}", "detail": "", "hint": "", "elapsedMs": 0,
         }
+    # 租户清单用于「问句点名租户 vs 当前检索租户」一致性提示；查不到不影响主流程
+    try:
+        tenants = pg_query("SELECT code, name FROM tenants WHERE enabled ORDER BY id")
+    except Exception:  # noqa: BLE001
+        tenants = []
     return nl2ppl.generate(
         q, rows[0], rules, tenant=(req.tenant or "default").strip(),
         model_name=req.model_name, include_prompt=req.include_prompt,
+        tenants=tenants,
     )
 
 

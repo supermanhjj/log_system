@@ -38,6 +38,9 @@ PERMISSION_TREE: List[Dict[str, Any]] = [
     {"resource": "settings", "label": "平台管理", "actions": ["view"]},
     {"resource": "user", "label": "用户管理", "actions": ["view", "create", "update", "delete", "export"]},
     {"resource": "role", "label": "角色权限", "actions": ["view", "update"]},
+    # 租户是独立一级资源：租户编码决定日志索引隔离边界，变更属高危操作，
+    # 故与「用户/角色」分开授权，并单独记录审计。
+    {"resource": "tenant", "label": "租户管理", "actions": ["view", "create", "update", "delete"]},
     {"resource": "param", "label": "系统参数", "actions": ["view", "update"]},
     {"resource": "audit", "label": "审计日志", "actions": ["view", "export"]},
     {"resource": "storage", "label": "日志空间", "actions": ["view", "update", "clean"]},
@@ -86,7 +89,13 @@ TENANT_SEEDS = [
     ("default", "总部生产"),
     ("acme", "省侧运维"),
     ("gp", "测试租户"),
+    # 未归属：采集端无法判定来源租户时统一写入 logs-unknown，供管理员治理，
+    # 禁止静默归入 default（否则造成跨租户数据污染，比查不到更危险）。
+    ("unknown", "未归属日志"),
 ]
+
+# 保留租户编码：不能被新建，也不能删除（unknown 是采集兜底落点）
+RESERVED_TENANT_CODES = ("all", "*", "unknown")
 
 # 种子用户：(账号, 姓名, 角色, 租户, 启用, 手机号, 是否内置)
 USER_SEEDS = [

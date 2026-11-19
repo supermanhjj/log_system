@@ -24,6 +24,7 @@ import os
 import json
 import time
 import socket
+import secrets
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
@@ -31,11 +32,13 @@ from urllib.parse import urlparse
 import httpx
 import psycopg2
 import psycopg2.extras
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
-from opensearchpy import OpenSearch
+from opensearchpy import OpenSearch, helpers
 from pydantic import BaseModel, Field
+
+from .authz import current_identity, is_admin, resolve_ingest_tenant, resolve_tenant
 
 # ---------------------------------------------------------------------------
 # 连接（惰性；模块导入不触网）
@@ -61,7 +64,6 @@ os_client = OpenSearch(
 )
 
 CST = timezone(timedelta(hours=8))
-INDEX_BY_TENANT = {"default": "logs-default", "acme": "logs-acme", "gp": "logs-gp"}
 INGEST_TYPES = ["Agent", "Syslog", "HTTP", "Kafka", "自定义"]
 
 app = FastAPI(title="ingest-service", version="0.5.0")
@@ -74,11 +76,18 @@ app.add_middleware(
 
 
 def index_for(tenant: Optional[str], override: str = "") -> str:
+    """索引命名是约定（logs-<租户编码>）；租户清单以 tenants 表为唯一真源。
+
+    空租户 → logs-unknown：采集/接入端无法归属时集中落这里等待治理，
+    绝不静默写入 default（跨租户污染比查不到更危险）。
+    """
     if override:
         return override
-    if tenant in ("all", "*", "", None):
+    if tenant in ("all", "*"):
         return "logs-*"
-    return INDEX_BY_TENANT.get(tenant, f"logs-{tenant}")
+    if not tenant:
+        return "logs-unknown"
+    return f"logs-{tenant}"
 
 
 def now_ms() -> int:
@@ -654,8 +663,178 @@ def root():
     return {
         "service": "ingest-service",
         "docs": "/docs",
-        "endpoints": ["/meta", "/sources (自动发现 + 配置合并)", "/sources/{key}",
-                      "/sources/test", "/sources/batch-status", "/export", "/settings"],
+        "endpoints": ["/ingest (通用日志写入)", "/meta", "/sources (自动发现 + 配置合并)",
+                      "/sources/{key}", "/sources/test", "/sources/batch-status", "/export", "/settings"],
+    }
+
+
+# ---------------------------------------------------------------------------
+# 数据面：统一日志写入（各类系统接入的唯一入口）
+#
+# 为什么需要它：Fluent Bit 适合主机/容器侧采集，但数据库、网络设备、第三方 SaaS、
+# App 直报等无法部署采集器的系统，需要一个通用 HTTP 入口。租户归属在这里确定：
+# - 机器接入：X-Api-Key → 映射到租户（租户绑在凭证上，与日志正文无关）
+# - 控制台/调试：Authorization: Bearer <JWT> → 用登录身份所属租户
+# - 无法归属：写 logs-unknown 并告警，绝不静默归 default
+# ---------------------------------------------------------------------------
+INGEST_API_KEYS = os.getenv("INGEST_API_KEYS", "")
+MAX_BATCH = int(os.getenv("INGEST_MAX_BATCH", "1000"))
+MAX_PAYLOAD = int(os.getenv("INGEST_MAX_PAYLOAD", "50000"))
+
+
+def tenant_by_api_key(key: str) -> Optional[str]:
+    for pair in INGEST_API_KEYS.split(","):
+        k, _, t = pair.partition("=")
+        if k.strip() and t.strip() and secrets.compare_digest(k.strip(), key.strip()):
+            return t.strip()
+    return None
+
+
+def tenant_enabled(code: str) -> bool:
+    try:
+        return bool(pg_query("SELECT 1 FROM tenants WHERE code=%s AND enabled", (code,)))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+# 来源系统/采集器可能用各种键名与取值形态表达「事件时间」。接入层负责统一归一化，
+# 而不是强求每个来源都改成同一种格式——这正是商用平台"兼容各类系统接入"的要求：
+#   - @timestamp / time / timestamp / ts / event_time / date 等键名
+#   - ISO8601（带 Z / 带 ±HH:MM / 带 ±HHMM）、"YYYY-MM-DD HH:MM:SS"、epoch 秒/毫秒
+TIME_KEYS = ("@timestamp", "time", "timestamp", "ts", "event_time", "date")
+_TIME_FORMATS = (
+    "%Y-%m-%dT%H:%M:%S.%f%z",
+    "%Y-%m-%dT%H:%M:%S%z",
+    "%Y-%m-%dT%H:%M:%S.%f",
+    "%Y-%m-%dT%H:%M:%S",
+    "%Y-%m-%d %H:%M:%S.%f",
+    "%Y-%m-%d %H:%M:%S",
+    "%Y/%m/%d %H:%M:%S",
+)
+
+
+def _iso_utc(dt: datetime) -> str:
+    """统一成 OpenSearch date 类型可直接吃的 UTC ISO8601（毫秒 + Z）。"""
+    if dt.tzinfo is None:
+        # 无时区信息按接入侧本地时区解释（部署在 Asia/Shanghai，与来源主机一致）
+        dt = dt.astimezone()
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+
+def to_iso_utc(value: Any) -> Optional[str]:
+    """把来源时间值归一化为 UTC ISO8601；无法识别返回 None（调用方用采集时刻兜底）。
+
+    epoch 启发式：> 1e12 视为毫秒，> 1e9 视为秒；小于 1e9 的多半不是时间戳。
+    """
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        num = float(value)
+        if num > 1e12:
+            num /= 1000.0
+        if num > 1e9:
+            try:
+                return _iso_utc(datetime.fromtimestamp(num, tz=timezone.utc))
+            except (OverflowError, OSError, ValueError):
+                return None
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    # 纯数字字符串（epoch）
+    if text.replace(".", "", 1).isdigit():
+        return to_iso_utc(float(text))
+    # RFC3339 的 +08:00 在 %z 下可用；再补一份无冒号形态（Python 3.7+ %z 均支持）
+    normalized = text.replace("Z", "+0000") if text.endswith("Z") else text
+    for fmt in _TIME_FORMATS:
+        try:
+            return _iso_utc(datetime.strptime(normalized, fmt))
+        except ValueError:
+            continue
+    try:  # 兜底：交给 fromisoformat 处理少见形态
+        return _iso_utc(datetime.fromisoformat(text))
+    except ValueError:
+        return None
+
+
+def normalize_record(rec: Dict[str, Any], tenant: str) -> Dict[str, Any]:
+    """统一记录形态：时间归一化 + 租户服务端强制覆盖。
+
+    时间语义严格按「来源自带的事件时间」优先，采集时刻只作最后兜底。
+    Fluent Bit 等采集器把事件时间放在 date（epoch 秒）字段，若只认 @timestamp
+    就会全部退化成采集时刻——历史日志会整体挤到当天，按时间聚合失真。
+    """
+    doc = dict(rec or {})
+    raw_ts = next((doc[k] for k in TIME_KEYS if doc.get(k) not in (None, "")), None)
+    iso = to_iso_utc(raw_ts)
+    if iso is None:
+        iso = _iso_utc(datetime.now(timezone.utc))
+    doc["@timestamp"] = iso
+    # 采集器的时间键已归一化进 @timestamp，不重复落库（避免 date/time 多套时间字段并存）
+    for k in TIME_KEYS:
+        if k != "@timestamp":
+            doc.pop(k, None)
+    # 服务端强制覆盖：正文里的 tenant 字段不可信，一律以入口判定结果为准
+    doc["tenant_id"] = tenant or "unknown"
+    return doc
+
+
+@app.post("/ingest")
+def ingest(
+    payload: Dict[str, Any],
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    x_api_key: Optional[str] = Header(None),
+):
+    """通用日志写入：POST /ingest
+
+    body: {"tenant": "acme", "records": [{...}, ...]}
+      或单条 {"tenant": "acme", "message": "...", "level": "ERROR"}
+    鉴权二选一：
+      - X-Api-Key: <key>   （机器接入，租户由 Key 绑定，body.tenant 被忽略）
+      - Authorization: Bearer <JWT>（控制台/调试，租户取登录身份）
+    """
+    records = payload.get("records")
+    if records is None:
+        records = payload.get("logs")
+    if records is None:
+        records = [payload] if any(k in payload for k in ("message", "msg", "raw")) else []
+    if not isinstance(records, list) or not records:
+        raise HTTPException(status_code=400, detail="records 不能为空（需为非空数组或单条日志对象）")
+    if len(records) > MAX_BATCH:
+        raise HTTPException(status_code=400, detail=f"单批最多 {MAX_BATCH} 条，请拆分后再发送")
+
+    if x_api_key:
+        key_tenant = tenant_by_api_key(x_api_key)
+        if key_tenant is None:
+            raise HTTPException(status_code=401, detail="API Key 无效")
+        tenant = key_tenant if tenant_enabled(key_tenant) else ""
+    else:
+        identity = current_identity(authorization)
+        tenant = resolve_ingest_tenant(identity, payload.get("tenant"))
+
+    idx = index_for(tenant)
+    docs = [normalize_record(r, tenant) for r in records if isinstance(r, dict)]
+    if not docs:
+        raise HTTPException(status_code=400, detail="records 中没有有效的日志对象")
+    try:
+        helpers.bulk(os_client, [{"_index": idx, "_source": d} for d in docs])
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"opensearch write error: {e}")
+
+    if not tenant:
+        print(f"[ingest-service] 未归属日志 {len(docs)} 条已写入 logs-unknown，请检查接入端租户绑定",
+              flush=True)
+    return {
+        "ok": True,
+        "accepted": len(docs),
+        "tenant": tenant or "unknown",
+        "index": idx,
+        "unassigned": not bool(tenant),
+        "message": ("已写入 " + idx) if tenant else
+                   "无法判定租户，已写入 logs-unknown 待治理（请为接入端绑定租户或 API Key）",
     }
 
 
@@ -665,8 +844,15 @@ def _startup():
 
 
 @app.get("/meta")
-def meta(tenant: str = Query("default")):
-    """新建/编辑表单所需的真实环境信息：索引、字段角色候选、接入类型、组件可达性。"""
+def meta(
+    tenant: str = Query("default"),
+    identity: Dict[str, Any] = Depends(current_identity),
+):
+    """新建/编辑表单所需的真实环境信息：索引、字段角色候选、接入类型、组件可达性。
+
+    租户由服务端按登录身份解析，前端传入值只作管理员选择用，普通账号无法越权探测他租户索引结构。
+    """
+    tenant = resolve_tenant(identity, tenant)
     idx = index_for(tenant)
     fields = fields_for(idx)
     settings = load_settings()
@@ -680,18 +866,30 @@ def meta(tenant: str = Query("default")):
         "typeOptions": INGEST_TYPES,
         "settings": settings,
         "capabilities": capabilities(),
-        "tenantOptions": ["default", "acme", "gp", "all"],
+        "tenantOptions": (
+            [r["code"] for r in pg_query(
+                "SELECT code FROM tenants WHERE enabled ORDER BY id")] + ["all"]
+            if is_admin(identity) else [tenant]
+        ),
         "note": "字段角色按索引真实 mapping 自动探测；上线后日志字段命名不同，可在接入设置里覆盖",
+        "tenant": tenant,
     }
 
 
 @app.get("/settings")
-def get_settings():
+def get_settings(identity: Dict[str, Any] = Depends(current_identity)):
+    """平台级接入设置：需登录可读。"""
     return {"settings": load_settings(), "defaults": DEFAULT_SETTINGS}
 
 
 @app.put("/settings")
-def put_settings(payload: Dict[str, Any]):
+def put_settings(
+    payload: Dict[str, Any],
+    identity: Dict[str, Any] = Depends(current_identity),
+):
+    """平台级接入设置：全局生效，仅平台管理员可改（避免单租户改坏他租户字段映射）。"""
+    if not is_admin(identity):
+        raise HTTPException(status_code=403, detail="仅平台管理员可修改接入设置")
     return {"settings": save_settings(payload.get("settings") or payload)}
 
 
@@ -706,7 +904,9 @@ def list_sources(
     page: int = Query(1, ge=1),
     pageSize: int = Query(20, ge=1, le=200),
     force: bool = Query(False),
+    identity: Dict[str, Any] = Depends(current_identity),
 ):
+    tenant = resolve_tenant(identity, tenant)
     settings = load_settings()
     if force:
         _cache.clear()
@@ -740,7 +940,8 @@ def list_sources(
 
 
 @app.post("/sources", status_code=201)
-def create_source(payload: SourceIn):
+def create_source(payload: SourceIn, identity: Dict[str, Any] = Depends(current_identity)):
+    payload.tenant = resolve_tenant(identity, payload.tenant)
     sql, vals = _upsert_sql(payload)
     try:
         rows = pg_query(sql, vals)
@@ -751,8 +952,10 @@ def create_source(payload: SourceIn):
 
 
 @app.put("/sources/{source_key}")
-def update_source(source_key: str, payload: SourceIn):
+def update_source(source_key: str, payload: SourceIn,
+                  identity: Dict[str, Any] = Depends(current_identity)):
     payload.source_key = source_key
+    payload.tenant = resolve_tenant(identity, payload.tenant)
     sql, vals = _upsert_sql(payload)
     try:
         rows = pg_query(sql, vals)
@@ -763,8 +966,10 @@ def update_source(source_key: str, payload: SourceIn):
 
 
 @app.delete("/sources/{source_key}")
-def delete_source(source_key: str, tenant: str = Query("default")):
+def delete_source(source_key: str, tenant: str = Query("default"),
+                  identity: Dict[str, Any] = Depends(current_identity)):
     """仅删除平台侧登记配置；不会、也不能删除已写入 OpenSearch 的真实日志。"""
+    tenant = resolve_tenant(identity, tenant)
     pg_exec("DELETE FROM data_sources WHERE tenant=%s AND source_key=%s", (tenant, source_key))
     _cache.clear()
     return {"ok": True, "sourceKey": source_key,
@@ -772,11 +977,12 @@ def delete_source(source_key: str, tenant: str = Query("default")):
 
 
 @app.post("/sources/batch-status")
-def batch_status(payload: Dict[str, Any]):
+def batch_status(payload: Dict[str, Any],
+                 identity: Dict[str, Any] = Depends(current_identity)):
     """批量启用/停用/维护：真实写入状态覆盖。未登记的来源会自动补一条最小登记。"""
     keys = payload.get("keys") or []
     status = payload.get("status") or ""   # ""＝恢复正常，维护中，已停用
-    tenant = payload.get("tenant") or "default"
+    tenant = resolve_tenant(identity, payload.get("tenant"))
     if not keys:
         raise HTTPException(status_code=400, detail="keys 不能为空")
     override = {"维护中": "维护中", "已停用": "已停用"}.get(status, None)
@@ -799,7 +1005,9 @@ def batch_status(payload: Dict[str, Any]):
 
 
 @app.get("/sources/{source_key}")
-def source_detail(source_key: str, tenant: str = Query("default")):
+def source_detail(source_key: str, tenant: str = Query("default"),
+                  identity: Dict[str, Any] = Depends(current_identity)):
+    tenant = resolve_tenant(identity, tenant)
     """详情：登记配置 + 真实趋势 / 级别分布 / 字段覆盖率 / 样例原始日志。"""
     settings = load_settings()
     data = merge_sources(tenant, settings)
@@ -977,7 +1185,9 @@ def test_connectivity(req: TestReq):
 
 
 @app.get("/export")
-def export_config(tenant: str = Query("default")):
+def export_config(tenant: str = Query("default"),
+                  identity: Dict[str, Any] = Depends(current_identity)):
+    tenant = resolve_tenant(identity, tenant)
     """导出真实登记配置 + 自动发现清单，供新环境导入/存档。"""
     settings = load_settings()
     data = merge_sources(tenant, settings)
@@ -1001,3 +1211,94 @@ def export_config(tenant: str = Query("default")):
         media_type="application/json; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{fname}"'},
     )
+
+
+# ---- 采集器通道：受信任的采集端按来源打标后批量上报 ----
+# 鉴权用独立的 COLLECTOR_KEY（基础设施凭证），与"应用 API Key"区分开：
+# 采集器是受信基础设施，允许每条记录带不同租户（一个采集器可跨多租户）；
+# 应用直报则必须用绑定租户的 API Key，不允许自报租户。
+COLLECTOR_KEYS = os.getenv("INGEST_COLLECTOR_KEYS", "")
+
+
+def collector_authorized(key: Optional[str]) -> bool:
+    if not key:
+        return False
+    for k in COLLECTOR_KEYS.split(","):
+        if k.strip() and secrets.compare_digest(k.strip(), key.strip()):
+            return True
+    return False
+
+
+def require_collector(x_collector_key: Optional[str] = Header(None)) -> None:
+    """采集器通道鉴权依赖。
+
+    写成依赖而不是函数体内判断，是为了让鉴权先于 body 解析执行：否则未携带凭证的请求
+    会先被 body schema 拦成 422，既是无效信息暴露，也不符合「未授权一律 401」的语义。
+    """
+    if not collector_authorized(x_collector_key):
+        raise HTTPException(status_code=401, detail="采集器凭证无效")
+
+
+def derive_tenant(rec: Dict[str, Any]) -> str:
+    """租户判定优先级：采集端显式注入的 tenant_id > 来源文件名 > 未归属。
+
+    注意不读正文里的自由文本；tenant 字段只在采集端显式注入时存在。
+    """
+    t = str(rec.get("tenant_id") or "").strip()
+    if t:
+        return t
+    src = str(rec.get("src_file") or "").strip()
+    if src:
+        base = os.path.basename(src)
+        if base.endswith(".log"):
+            return base[: -len(".log")]
+    return ""
+
+
+@app.post("/ingest/collector")
+def ingest_collector(
+    records: List[Dict[str, Any]] = Body(...),
+    _: None = Depends(require_collector),
+):
+    """采集器批量上报（Fluent Bit 等）。每条记录按来源元数据判定租户。
+
+    无法判定或租户不存在的记录统一落 logs-unknown，并在响应里如实计数，
+    绝不静默归 default。鉴权由 require_collector 依赖前置完成。
+    """
+    if not isinstance(records, list) or not records:
+        raise HTTPException(status_code=400, detail="records 不能为空")
+    if len(records) > MAX_PAYLOAD:
+        raise HTTPException(status_code=413, detail=f"单次上报超过 {MAX_PAYLOAD} 条，请减小采集批大小")
+
+    known = {r["code"] for r in pg_query("SELECT code FROM tenants WHERE enabled")}
+    buckets: Dict[str, List[Dict[str, Any]]] = {}
+    for rec in records:
+        if not isinstance(rec, dict):
+            continue
+        tenant = derive_tenant(rec)
+        if tenant not in known:
+            tenant = ""   # 未归属 → logs-unknown
+        buckets.setdefault(index_for(tenant), []).append(normalize_record(rec, tenant))
+
+    accepted = 0
+    try:
+        for idx, docs in buckets.items():
+            # 采集器一次 flush 可能上千条：服务端按 MAX_BATCH 分片写，避免整个 chunk 因
+            # 单批过大被拒后无限重试（这是采集链路上最常见的数据丢失点）。
+            for i in range(0, len(docs), MAX_BATCH):
+                part = docs[i:i + MAX_BATCH]
+                helpers.bulk(os_client, [{"_index": idx, "_source": d} for d in part])
+                accepted += len(part)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"opensearch write error: {e}")
+
+    unassigned = len(buckets.get("logs-unknown", []))
+    if unassigned:
+        print(f"[ingest-service] 采集器上报中 {unassigned} 条无法归属，已写入 logs-unknown", flush=True)
+    return {
+        "ok": True,
+        "accepted": accepted,
+        "byIndex": {k: len(v) for k, v in buckets.items()},
+        "unassigned": unassigned,
+        "message": "已按来源租户写入" + (f"，其中 {unassigned} 条未归属进 logs-unknown" if unassigned else ""),
+    }

@@ -21,10 +21,12 @@ from typing import Any, Dict, List, Optional
 
 import psycopg2
 import psycopg2.extras
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from opensearchpy import OpenSearch
 from pydantic import BaseModel, Field
+
+from .authz import current_identity, is_admin, resolve_tenant
 
 # ---------------------------------------------------------------------------
 # 连接（惰性，模块导入不触网；首次请求才建连）
@@ -69,14 +71,14 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 # 租户 → 索引 + 时区（与 search/dashboard 完全一致）
 # ---------------------------------------------------------------------------
-INDEX_BY_TENANT = {"default": "logs-default", "acme": "logs-acme", "gp": "logs-gp"}
 CST = timezone(timedelta(hours=8))
 
 
 def index_for(tenant: Optional[str]) -> str:
+    """索引命名是约定（logs-<租户编码>）：租户清单以 tenants 表为唯一真源。"""
     if tenant in ("all", "*", "", None):
         return "logs-*"
-    return INDEX_BY_TENANT.get(tenant, f"logs-{tenant}")
+    return f"logs-{tenant}"
 
 
 def to_local(ts):
@@ -147,6 +149,7 @@ def init_db() -> None:
             """
             CREATE TABLE IF NOT EXISTS alarm_rules (
                 id SERIAL PRIMARY KEY,
+                tenant TEXT NOT NULL DEFAULT 'default',
                 name TEXT NOT NULL,
                 match_source TEXT,
                 match_level TEXT,
@@ -163,6 +166,9 @@ def init_db() -> None:
             )
             """
         )
+        # 迁移：告警规则归属租户（tenant='all' 表示平台级通用规则，对所有租户生效）
+        pg_exec("ALTER TABLE alarm_rules ADD COLUMN IF NOT EXISTS tenant TEXT NOT NULL DEFAULT 'default'")
+        pg_exec("CREATE INDEX IF NOT EXISTS idx_alarm_rules_tenant ON alarm_rules (tenant)")
         pg_exec(
             """
             CREATE TABLE IF NOT EXISTS alarm_event_states (
@@ -235,10 +241,26 @@ class RuleIn(BaseModel):
     owner: str = "system"
 
 
+def _rule_visible(rule: Dict[str, Any], tenant: str) -> bool:
+    """可见性：管理员 all 巡检可见全部；否则只能看本租户规则与平台级通用规则。"""
+    if tenant == "all":
+        return True
+    return (rule.get("tenant") or "default") in (tenant, "all")
+
+
+def _rule_writable(rule: Dict[str, Any], tenant: str) -> bool:
+    """可写性：平台级通用规则（tenant='all'）不允许普通账号改；其余限本租户。"""
+    owner_tenant = rule.get("tenant") or "default"
+    if owner_tenant == "all":
+        return tenant == "all"
+    return tenant == "all" or owner_tenant == tenant
+
+
 def row_to_rule(r: Dict[str, Any]) -> Dict[str, Any]:
     notify = [x for x in (r.get("notify") or "").split(",") if x]
     return {
         "id": r["id"],
+        "tenant": r.get("tenant") or "default",
         "name": r["name"],
         "matchSource": r.get("match_source"),
         "matchLevel": r.get("match_level"),
@@ -366,13 +388,20 @@ def eval_cache_put(tenant: str, data):
 
 
 def build_events(tenant: str) -> List[Dict[str, Any]]:
-    """对所有 enabled 规则实时判定，合并 Postgres 人工状态覆盖。"""
+    """按租户判定告警：本租户规则 + 平台级通用规则（tenant='all'）合并评估。"""
     cached = eval_cache_get(tenant)
     if cached is not None:
         return cached
     idx = index_for(tenant)
     now = now_ms()
-    rules = pg_query("SELECT * FROM alarm_rules WHERE enabled = TRUE ORDER BY id")
+    # 规则严格按归属租户取用：避免 A 租户规则扫描 B 租户日志产生串租户告警
+    if tenant == "all":
+        rules = pg_query("SELECT * FROM alarm_rules WHERE enabled = TRUE ORDER BY id")
+    else:
+        rules = pg_query(
+            "SELECT * FROM alarm_rules WHERE enabled = TRUE AND tenant IN (%s,'all') ORDER BY id",
+            (tenant,),
+        )
     events: List[Dict[str, Any]] = []
     for r in rules:
         try:
@@ -611,13 +640,23 @@ def _startup():
 # ------------------------------- 告警规则 -------------------------------
 @app.get("/rules")
 def list_rules(
+    tenant: str = Query("default"),
     keyword: str = Query("", description="规则名称模糊匹配"),
     level: str = Query("", description="告警级别：严重/警告/提示"),
     enabled: str = Query("", description="启用状态：true/false/空=全部"),
     owner: str = Query("", description="更新人"),
+    identity: Dict[str, Any] = Depends(current_identity),
 ):
+    """规则为租户级资产。普通账号看「本租户 + 平台级通用」，管理员可用 tenant=all 巡检全平台。"""
+    tenant = resolve_tenant(identity, tenant)
     sql = "SELECT * FROM alarm_rules WHERE 1=1"
     params: List[Any] = []
+    if tenant == "all":
+        pass  # 管理员全平台巡检，不加租户条件
+    else:
+        # 本租户规则 + 平台级通用规则（tenant='all'）：与 build_events 的判定口径保持一致
+        sql += " AND tenant IN (%s,'all')"
+        params.append(tenant)
     if keyword:
         sql += " AND name ILIKE %s"
         params.append(f"%{keyword}%")
@@ -632,21 +671,29 @@ def list_rules(
         params.append(f"%{owner}%")
     sql += " ORDER BY id"
     rows = pg_query(sql, tuple(params))
-    return {"items": [row_to_rule(r) for r in rows], "total": len(rows)}
+    return {"items": [row_to_rule(r) for r in rows], "total": len(rows), "tenant": tenant}
 
 
 @app.post("/rules")
-def create_rule(payload: RuleIn):
+def create_rule(
+    payload: RuleIn,
+    tenant: str = Query("default"),
+    identity: Dict[str, Any] = Depends(current_identity),
+):
+    tenant = resolve_tenant(identity, tenant)
+    if tenant == "all" and not is_admin(identity):
+        raise HTTPException(status_code=403, detail="仅平台管理员可创建平台级通用规则")
     row = pg_query(
         """
         INSERT INTO alarm_rules
-            (name, match_source, match_level, match_status_gte, keyword,
+            (tenant, name, match_source, match_level, match_status_gte, keyword,
              window_minutes, threshold, level, notify, enabled, owner)
-        VALUES (%(name)s,%(match_source)s,%(match_level)s,%(match_status_gte)s,%(keyword)s,
+        VALUES (%(tenant)s,%(name)s,%(match_source)s,%(match_level)s,%(match_status_gte)s,%(keyword)s,
                 %(window_minutes)s,%(threshold)s,%(level)s,%(notify)s,%(enabled)s,%(owner)s)
         RETURNING id
         """,
         {
+            "tenant": tenant,
             "name": payload.name,
             "match_source": payload.match_source or None,
             "match_level": payload.match_level or None,
@@ -661,22 +708,35 @@ def create_rule(payload: RuleIn):
         },
     )
     _EVAL_CACHE.clear()
-    return {"id": row[0]["id"], "ok": True}
+    return {"id": row[0]["id"], "ok": True, "tenant": tenant}
 
 
 @app.get("/rules/{rule_id}")
-def get_rule(rule_id: int):
+def get_rule(
+    rule_id: int,
+    tenant: str = Query("default"),
+    identity: Dict[str, Any] = Depends(current_identity),
+):
+    tenant = resolve_tenant(identity, tenant)
     rows = pg_query("SELECT * FROM alarm_rules WHERE id=%s", (rule_id,))
-    if not rows:
+    if not rows or not _rule_visible(rows[0], tenant):
         raise HTTPException(status_code=404, detail="规则不存在")
     return row_to_rule(rows[0])
 
 
 @app.put("/rules/{rule_id}")
-def update_rule(rule_id: int, payload: RuleIn):
-    rows = pg_query("SELECT id FROM alarm_rules WHERE id=%s", (rule_id,))
-    if not rows:
+def update_rule(
+    rule_id: int,
+    payload: RuleIn,
+    tenant: str = Query("default"),
+    identity: Dict[str, Any] = Depends(current_identity),
+):
+    tenant = resolve_tenant(identity, tenant)
+    rows = pg_query("SELECT * FROM alarm_rules WHERE id=%s", (rule_id,))
+    if not rows or not _rule_visible(rows[0], tenant):
         raise HTTPException(status_code=404, detail="规则不存在")
+    if not _rule_writable(rows[0], tenant):
+        raise HTTPException(status_code=403, detail="平台级通用规则仅平台管理员可修改")
     pg_exec(
         """
         UPDATE alarm_rules SET
@@ -706,14 +766,35 @@ def update_rule(rule_id: int, payload: RuleIn):
 
 
 @app.delete("/rules/{rule_id}")
-def delete_rule(rule_id: int):
+def delete_rule(
+    rule_id: int,
+    tenant: str = Query("default"),
+    identity: Dict[str, Any] = Depends(current_identity),
+):
+    tenant = resolve_tenant(identity, tenant)
+    rows = pg_query("SELECT * FROM alarm_rules WHERE id=%s", (rule_id,))
+    if not rows or not _rule_visible(rows[0], tenant):
+        raise HTTPException(status_code=404, detail="规则不存在")
+    if not _rule_writable(rows[0], tenant):
+        raise HTTPException(status_code=403, detail="平台级通用规则仅平台管理员可删除")
     pg_exec("DELETE FROM alarm_rules WHERE id=%s", (rule_id,))
     _EVAL_CACHE.clear()
     return {"id": rule_id, "ok": True}
 
 
 @app.post("/rules/{rule_id}/toggle")
-def toggle_rule(rule_id: int, payload: Dict[str, bool] = {}):
+def toggle_rule(
+    rule_id: int,
+    payload: Dict[str, bool] = {},
+    tenant: str = Query("default"),
+    identity: Dict[str, Any] = Depends(current_identity),
+):
+    tenant = resolve_tenant(identity, tenant)
+    rows = pg_query("SELECT * FROM alarm_rules WHERE id=%s", (rule_id,))
+    if not rows or not _rule_visible(rows[0], tenant):
+        raise HTTPException(status_code=404, detail="规则不存在")
+    if not _rule_writable(rows[0], tenant):
+        raise HTTPException(status_code=403, detail="平台级通用规则仅平台管理员可启停")
     enabled = bool(payload.get("enabled", True))
     pg_exec("UPDATE alarm_rules SET enabled=%s, updated_at=now() WHERE id=%s", (enabled, rule_id))
     _EVAL_CACHE.clear()
@@ -731,7 +812,9 @@ def list_events(
     date: str = Query("", description="首次发生日期 YYYY-MM-DD"),
     page: int = Query(1, ge=1),
     pageSize: int = Query(20, ge=1, le=200),
+    identity: Dict[str, Any] = Depends(current_identity),
 ):
+    tenant = resolve_tenant(identity, tenant)
     events = build_events(tenant)
     # 事件级筛选（在真实判定结果之上）
     kw = keyword.strip().lower()
@@ -756,8 +839,10 @@ def list_events(
 
 
 @app.get("/events/{event_id}/related-query")
-def event_related_query(event_id: str, tenant: str = Query("default")):
+def event_related_query(event_id: str, tenant: str = Query("default"),
+                        identity: Dict[str, Any] = Depends(current_identity)):
     """分析「当前规则配置 + 索引真实字段」，生成可直接在日志检索页执行的 PPL。"""
+    tenant = resolve_tenant(identity, tenant)
     events = build_events(tenant)
     ev = next((e for e in events if e["id"] == event_id), None)
     if not ev:
@@ -777,7 +862,9 @@ def event_related_query(event_id: str, tenant: str = Query("default")):
 
 
 @app.get("/events/{event_id}")
-def event_detail(event_id: str, tenant: str = Query("default")):
+def event_detail(event_id: str, tenant: str = Query("default"),
+                 identity: Dict[str, Any] = Depends(current_identity)):
+    tenant = resolve_tenant(identity, tenant)
     events = build_events(tenant)
     for e in events:
         if e["id"] == event_id:
@@ -792,7 +879,9 @@ class CloseReq(BaseModel):
 
 
 @app.post("/events/close")
-def close_events(req: CloseReq, tenant: str = Query("default")):
+def close_events(req: CloseReq, tenant: str = Query("default"),
+                 identity: Dict[str, Any] = Depends(current_identity)):
+    tenant = resolve_tenant(identity, tenant)
     if not req.ids:
         raise HTTPException(status_code=400, detail="ids 不能为空")
     skipped = 0
@@ -812,12 +901,16 @@ def close_events(req: CloseReq, tenant: str = Query("default")):
 
 
 @app.post("/events/{event_id}/close")
-def close_one(event_id: str, req: Dict[str, Any] = {}, tenant: str = Query("default")):
+def close_one(event_id: str, req: Dict[str, Any] = {}, tenant: str = Query("default"),
+              identity: Dict[str, Any] = Depends(current_identity)):
+    tenant = resolve_tenant(identity, tenant)
     set_event_state(tenant, event_id, "已恢复", req.get("handler"), req.get("reason"))
     return {"ok": True, "eventId": event_id, "status": "已恢复"}
 
 
 @app.post("/events/{event_id}/maintain")
-def maintain_one(event_id: str, req: Dict[str, Any] = {}, tenant: str = Query("default")):
+def maintain_one(event_id: str, req: Dict[str, Any] = {}, tenant: str = Query("default"),
+                 identity: Dict[str, Any] = Depends(current_identity)):
+    tenant = resolve_tenant(identity, tenant)
     set_event_state(tenant, event_id, "维护中", req.get("handler"), req.get("reason"))
     return {"ok": True, "eventId": event_id, "status": "维护中"}

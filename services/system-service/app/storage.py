@@ -674,3 +674,56 @@ def put_quota(
     text = f"{req.quotaGB} GB" if req.quotaGB > 0 else "不设上限"
     return {"ok": True, "tenant": tenant, "quotaGB": req.quotaGB,
             "message": f"{tenant} 的日志配额已更新为 {text}"}
+
+# ---------------------------------------------------------------------------
+# 租户开通/注销时的索引生命周期（供 main.create_tenant / delete_tenant 调用）
+#
+# 商用口径：租户开通即建 logs-<code>（显式 mapping，避免首条日志把 @timestamp/status
+# 推断成错误类型）；注销时删除空索引。这与「按租户动态索引 + 索引模板」的方向一致，
+# 本地 OpenSearch 无 index template 管理页，先以显式 mapping 落地。
+# ---------------------------------------------------------------------------
+TENANT_INDEX_MAPPING: Dict[str, Any] = {
+    "settings": {"number_of_shards": 1, "number_of_replicas": 0},
+    "mappings": {
+        "dynamic": True,
+        "properties": {
+            "@timestamp": {"type": "date"},
+            "level": {"type": "keyword"},
+            "source": {"type": "keyword"},
+            "host": {"type": "keyword"},
+            "traceId": {"type": "keyword"},
+            "tenant_id": {"type": "keyword"},
+            "status": {"type": "integer"},
+            "message": {"type": "text", "fields": {"keyword": {"type": "keyword", "ignore_above": 256}}},
+            "raw": {"type": "text"},
+        },
+    },
+}
+
+
+def ensure_tenant_index(code: str) -> bool:
+    """开通租户时建索引；已存在则跳过。失败返回 False（不阻塞租户登记）。"""
+    try:
+        c = os_client()
+        name = f"logs-{code}"
+        if c.indices.exists(index=name):
+            return True
+        c.indices.create(index=name, body=TENANT_INDEX_MAPPING)
+        return True
+    except Exception as e:  # noqa: BLE001
+        print(f"[system-service] ensure_tenant_index({code}) failed: {e}", flush=True)
+        return False
+
+
+def drop_tenant_index(code: str) -> bool:
+    """删除租户的空索引（有数据的租户在业务层已被拦截）。"""
+    try:
+        c = os_client()
+        name = f"logs-{code}"
+        if c.indices.exists(index=name):
+            c.indices.delete(index=name)
+        return True
+    except Exception as e:  # noqa: BLE001
+        print(f"[system-service] drop_tenant_index({code}) failed: {e}", flush=True)
+        return False
+

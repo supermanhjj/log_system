@@ -17,10 +17,12 @@ from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional
 
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from opensearchpy import OpenSearch
+
+from .authz import current_identity, resolve_tenant, tenant_directory
 
 OPENSEARCH_HOST = os.getenv("OPENSEARCH_HOST", "opensearch")
 OPENSEARCH_PORT = int(os.getenv("OPENSEARCH_PORT", "9200"))
@@ -44,18 +46,15 @@ app.add_middleware(
 
 # ----------------------------------------------------------------------------
 # 租户 → 索引 路由
+#
+# 索引命名是**约定**（logs-<租户编码>），不再维护硬编码租户清单：
+# tenants 表是唯一真源，新增租户无需改这里。all → logs-*（仅管理员，由 authz 放行）。
+# 无法归属的日志统一落 logs-unknown（采集/接入端写入），便于治理而非污染 default。
 # ----------------------------------------------------------------------------
-INDEX_BY_TENANT = {
-    "default": "logs-default",
-    "acme": "logs-acme",
-    "gp": "logs-gp",
-}
-
-
 def index_for(tenant: Optional[str]) -> str:
     if tenant in ("all", "*", "", None):
         return "logs-*"
-    return INDEX_BY_TENANT.get(tenant, f"logs-{tenant}")
+    return f"logs-{tenant}"
 
 
 # 时区：统一以东八区(Asia/Shanghai)展示时间，与本地时间对齐。
@@ -123,6 +122,65 @@ def ppl_time_filter(time_range: Optional[Dict[str, Any]]) -> Optional[str]:
     if not conds:
         return None
     return "where " + " and ".join(conds)
+
+
+# ----------------------------------------------------------------------------
+# 租户维度：虚拟字段 tenant ↔ 物理字段 tenant_id
+#
+# 检索层对外的稳定契约是「一个租户维度 tenant」，物理字段名与索引命名不外泄：
+# - 请求侧：`tenant` / `tenant_code` / `tenant_name` 一律落到 `tenant_id`（接入端写入的
+#   keyword，值即租户编码）；比较右侧写的是租户中文名时换成机器码（'总部生产' → 'default'），
+#   否则中文名匹配机器码恒 0 条、甚至把 PPL 打成 500。
+# - 结果侧：`tenant_id` 列改名 `tenant` 并换回中文名，表格里直接可读。
+# 单租户范围同样适用——索引已物理隔离，这里的翻译只保证「写法能对齐」，不改变可见范围。
+# ----------------------------------------------------------------------------
+_TENANT_ALIAS = re.compile(
+    r"(?<![A-Za-z0-9_.@])(?:tenant_id|tenant_code|tenant_name|tenant)(?![A-Za-z0-9_.@])", re.I)
+_TENANT_CMP = re.compile(
+    r"(?<![A-Za-z0-9_.@])tenant_id(?![A-Za-z0-9_.@])\s*"
+    r"(?:=|!=|<>|\bin\b|\bnot\s+in\b|\blike\b)\s*('(?:[^'\\]|\\.)*'|\([^()]*\))", re.I)
+_LITERAL_SPLIT = re.compile(r"('(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\")")
+_QUOTED = re.compile(r"'((?:[^'\\]|\\.)*)'")
+
+
+def _map_outside_literals(text: str, fn) -> str:
+    """只改代码段、跳过字符串字面量，避免误改 message like '%tenant%' 这类正文条件。"""
+    segs = _LITERAL_SPLIT.split(text or "")
+    return "".join(fn(s) if i % 2 == 0 else s for i, s in enumerate(segs))
+
+
+def rewrite_tenant_dimension(stmt: str, directory: List[Dict[str, str]]) -> str:
+    name2code = {str(t.get("name")): str(t.get("code")) for t in directory if t.get("name")}
+    # 1) 字段名归一：tenant / tenant_code / tenant_name → tenant_id
+    stmt = _map_outside_literals(stmt, lambda s: _TENANT_ALIAS.sub("tenant_id", s))
+    if not name2code:
+        return stmt
+
+    # 2) 值归一：只改 tenant_id 比较右侧的字面量，其余位置的字符串一律不动
+    def fix(m: "re.Match") -> str:
+        whole, value = m.group(0), m.group(1)
+        new_value = _QUOTED.sub(
+            lambda q: f"'{name2code[q.group(1)]}'" if q.group(1) in name2code else q.group(0),
+            value)
+        return whole[: len(whole) - len(value)] + new_value
+
+    return _TENANT_CMP.sub(fix, stmt)
+
+
+def localize_tenant_columns(data: Dict[str, Any],
+                            directory: List[Dict[str, str]]) -> Dict[str, Any]:
+    """结果中的 tenant_id 列 → tenant，并把租户编码换回中文名（找不到就原样返回）。"""
+    schema = data.get("schema") or []
+    idx = next((i for i, s in enumerate(schema) if str(s.get("name")) == "tenant_id"), None)
+    if idx is None:
+        return data
+    code2name = {str(t.get("code")): str(t.get("name")) for t in directory if t.get("name")}
+    schema[idx] = {**schema[idx], "name": "tenant"}
+    for row in data.get("datarows") or []:
+        if idx < len(row) and isinstance(row[idx], str) and row[idx] in code2name:
+            row[idx] = code2name[row[idx]]
+    data["schema"] = schema
+    return data
 
 
 def build_must(time_range, filters, tenant) -> List[Dict[str, Any]]:
@@ -199,8 +257,9 @@ class ContextReq(BaseModel):
 # ----------------------------------------------------------------------------
 # 工具
 # ----------------------------------------------------------------------------
-def normalize_hit(hit: Dict[str, Any]) -> Dict[str, Any]:
+def normalize_hit(hit: Dict[str, Any], code2name: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     s = hit.get("_source", {})
+    code = s.get("tenant_id")
     return {
         "id": hit.get("_id"),
         "ts": s.get("@timestamp"),  # 原始 UTC 时间戳，供上下文检索锚定
@@ -211,7 +270,8 @@ def normalize_hit(hit: Dict[str, Any]) -> Dict[str, Any]:
         "traceId": s.get("traceId"),
         "message": s.get("message"),
         "status": s.get("status"),
-        "tenant_id": s.get("tenant_id"),
+        "tenant_id": code,  # 编码，稳定标识（导出/对账用）
+        "tenant": (code2name or {}).get(code, code),  # 中文名，展示用（虚拟维度）
         "raw": s.get("raw"),  # 原始整行日志（采集端 app_log 解析器整体捕获）
     }
 
@@ -234,10 +294,14 @@ def root():
 
 
 @app.post("/query")
-def query(req: QueryReq):
-    """文档列表检索：DSL 提供 _id / 分页 / 排序，支撑表格 + 详情抽屉。"""
-    idx = index_for(req.tenant)
-    must = build_must(req.timeRange, req.filters, req.tenant)
+def query(req: QueryReq, identity: Dict[str, Any] = Depends(current_identity)):
+    """文档列表检索：DSL 提供 _id / 分页 / 排序，支撑表格 + 详情抽屉。
+
+    租户由登录态强制解析（请求体里的 tenant 只作为管理员巡检意图，越权 403）。
+    """
+    tenant = resolve_tenant(identity, req.tenant)
+    idx = index_for(tenant)
+    must = build_must(req.timeRange, req.filters, tenant)
     body = {
         "from": (req.page - 1) * req.pageSize,
         "size": req.pageSize,
@@ -260,33 +324,45 @@ def query(req: QueryReq):
         total = resp["hits"]["total"]
         if isinstance(total, dict):
             total = total.get("value")
+        code2name = {str(t.get("code")): str(t.get("name")) for t in tenant_directory()}
         return {
             "total": total,
             "took_ms": resp.get("took"),
             "page": req.page,
             "pageSize": req.pageSize,
-            "hits": [normalize_hit(h) for h in resp["hits"]["hits"]],
+            "tenant": tenant,
+            "index": idx,
+            "hits": [normalize_hit(h, code2name) for h in resp["hits"]["hits"]],
         }
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"opensearch error: {e}")
 
 
 @app.post("/pql")
-def pql(req: PqlReq):
+def pql(req: PqlReq, identity: Dict[str, Any] = Depends(current_identity)):
     """原生 PPL 分析查询，走 /_plugins/_ppl（已验证可用）。
 
-    安全约束：仅允许查询 logs-*，拒绝 drop/delete/update/insert/create/alter 等写操作关键字。
-    时间范围：请求带 timeRange 时，作为独立的一段 where 注入到 source 之后
-    （不与原语句的条件合并，避免改变用户 where 的 and/or 优先级）。
+    安全约束：
+    1. 仅允许查询 logs-*，拒绝 drop/delete/update/insert/create/alter 等写操作关键字。
+    2. **source 由服务端强制指定**：用户语句里若自带 `source=...` 会被丢弃（保留其后的
+       管道命令），杜绝 `source=logs-*` 绕过租户隔离。
+    3. 时间范围作为独立一段 where 注入到 source 之后，不改变用户 where 的 and/or 优先级。
     """
+    tenant = resolve_tenant(identity, req.tenant)
     stmt = (req.pql or "").strip()
     if not stmt:
         raise HTTPException(status_code=400, detail="pql 不能为空")
     if re.search(r"\b(drop|delete|update|insert|create|alter|grant)\b", stmt, re.I):
         raise HTTPException(status_code=400, detail="PPL 含不允许的写操作关键字")
-    if not stmt.lower().startswith("source="):
-        # PPL 的 source= 与后续命令之间必须用管道符；用空格会被解析器吞掉条件（实测返回空结果）
-        stmt = f"source={index_for(req.tenant)} | {stmt}"
+
+    directory = tenant_directory()
+    # 租户虚拟维度 → 物理字段：手写 PPL 与智能检索生成结果走同一条翻译，语义一致
+    stmt = rewrite_tenant_dimension(stmt, directory)
+
+    # 丢弃用户自带 source 子句，只保留命令段；source 永远由服务端按租户写入
+    m = re.match(r"source\s*=\s*\S+\s*(.*)", stmt, re.I | re.S)
+    rest = (m.group(1).strip() if m else stmt).lstrip("|").strip()
+    stmt = f"source={index_for(tenant)}" + (f" | {rest}" if rest else "")
 
     time_filter = ppl_time_filter(req.timeRange)
     if time_filter:
@@ -302,20 +378,23 @@ def pql(req: PqlReq):
         )
         resp.raise_for_status()
         data = resp.json()
-        return {
+        return localize_tenant_columns({
             "schema": data.get("schema"),
             "datarows": data.get("datarows"),
             "total": data.get("total"),
-        }
+            "tenant": tenant,
+            "index": index_for(tenant),
+        }, directory)
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"ppl error: {e}")
 
 
 @app.post("/histogram")
-def histogram(req: HistReq):
+def histogram(req: HistReq, identity: Dict[str, Any] = Depends(current_identity)):
     """日志分布直方图（date_histogram）+ 级别分布（terms）。"""
-    idx = index_for(req.tenant)
-    must = build_must(req.timeRange, req.filters, req.tenant)
+    tenant = resolve_tenant(identity, req.tenant)
+    idx = index_for(tenant)
+    must = build_must(req.timeRange, req.filters, tenant)
     interval = req.interval or "1h"
     # 用 extended_bounds 把轴铺满所选时间范围：否则 date_histogram 即使 min_doc_count=0
     # 也只会返回数据实际覆盖的区间，导致"近一月"被压缩成有数据的那几天。
@@ -360,14 +439,16 @@ def histogram(req: HistReq):
 
 
 @app.post("/context")
-def context(req: ContextReq):
+def context(req: ContextReq, identity: Dict[str, Any] = Depends(current_identity)):
     """锚点日志的上下文：返回其前 before 条、后 after 条相邻日志（同租户、可选同来源）。
 
     用于详情抽屉「原始日志」上/下展示上下文日志；before 按时间倒序取后逆序为时间正序，
     after 按时间正序，二者均按时间升序呈现，符合阅读时序。
     """
-    idx = index_for(req.tenant)
+    tenant = resolve_tenant(identity, req.tenant)
+    idx = index_for(tenant)
     src = ["@timestamp", "level", "source", "host", "traceId", "message", "status", "tenant_id", "raw"]
+    code2name = {str(t.get("code")): str(t.get("name")) for t in tenant_directory()}
     base_must = []
     if req.source:
         base_must.append({"term": {"source": req.source}})
@@ -381,7 +462,7 @@ def context(req: ContextReq):
             "_source": src,
         }
         resp = client.search(index=idx, body=body)
-        hits = [normalize_hit(h) for h in resp["hits"]["hits"]]
+        hits = [normalize_hit(h, code2name) for h in resp["hits"]["hits"]]
         if direction == "before":
             hits = list(reversed(hits))  # 逆序为时间正序（早→晚）
         return hits
@@ -393,11 +474,15 @@ def context(req: ContextReq):
 
 
 # saved-views：本切片为 stub（PG 落地留待统一数据模型阶段）
+# 落地时必须按 (租户, 用户) 维度存储——视图含查询条件，跨租户可见等同配置泄露。
 @app.get("/saved-views")
-def list_saved_views():
+def list_saved_views(identity: Dict[str, Any] = Depends(current_identity)):
     return {"items": [], "note": "stub: PG 持久化待阶段4统一实现"}
 
 
 @app.post("/saved-views")
-def save_view(payload: Dict[str, Any]):
+def save_view(
+    payload: Dict[str, Any],
+    identity: Dict[str, Any] = Depends(current_identity),
+):
     return {"status": "received", "note": "stub: 未落库", "payload": payload}

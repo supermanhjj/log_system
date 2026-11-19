@@ -861,32 +861,40 @@ def install_config(hostname: str = Query("new-host"), tenant: str = Query("defau
     Format       json
     Header       Content-Type application/json
 
-# ---- 业务日志采集（按实际日志路径修改 Path / Parser） ----
+# ---- 业务/系统日志采集（按实际日志路径修改 Path / Parser） ----
+# Path_Key 把来源文件名写进记录，作为"来源元数据"；DB 记录采集断点，重启不重读。
 [INPUT]
     Name         tail
-    Tag          log.*
+    Tag          src.*
     Path         /var/log/app/*.log
     Parser       app_log
+    Path_Key     src_file
     Read_from_head On
+    DB           /fluent-bit/db/tail.db
     Buffer_Chunk_Size 1M
     Buffer_Max_Size 20M
     Mem_Buf_Limit 50M
 
-# ---- 租户路由：tenant_id 注入 tag，避免 Index 使用运行时 accessor ----
+# ---- 租户注入：本机属于哪个租户，在采集端确定 ----
+# 一台主机/一个采集器归属一个租户是系统日志的唯一答案（日志正文通常没有租户字段）。
+# 容器环境改为按 Pod 的 namespace/label 逐条注入，一个采集器即可跨多租户。
 [FILTER]
-    Name         rewrite_tag
-    Match        log.*
-    Rule         $tenant_id ^(default|acme|gp)$ tenant.$1 false
-    Rule         $tenant_id .* tenant.default false
+    Name    record_modifier
+    Match   src.*
+    Record  tenant_id {tenant}
 
+# ---- 统一写入：交给接入网关，不在采集端直连 OpenSearch ----
+# 好处：租户合法性校验、无法归属→logs-unknown、脱敏/采样/限流都在网关一处扩展；
+# 采集端也无需因新增租户而改配置或多个 output。
 [OUTPUT]
-    Name         opensearch
-    Match        tenant.{tenant if tenant in ('default', 'acme', 'gp') else 'default'}
-    Host         opensearch
-    Port         9200
-    Index        logs-{tenant if tenant in ('default', 'acme', 'gp') else 'default'}
-    Suppress_Type_Name On
-    buffer_size 20M
+    Name    http
+    Match   src.*
+    Host    ingest-service
+    Port    8000
+    URI     /ingest/collector
+    Format  json
+    Header  Content-Type application/json
+    Header  X-Collector-Key <由平台下发的采集器凭证>
 
 # ============================================================================
 # 管控脚本接入要点（上线后启用，开发期采集端尚未回传 ack）：

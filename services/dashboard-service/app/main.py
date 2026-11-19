@@ -29,9 +29,11 @@ from typing import Any, Dict, List, Optional
 
 import psycopg2
 from psycopg2.extras import RealDictCursor
-from fastapi import FastAPI, HTTPException, Query, Body
+from fastapi import Depends, FastAPI, HTTPException, Query, Body
 from fastapi.middleware.cors import CORSMiddleware
 from opensearchpy import OpenSearch
+
+from .authz import current_identity, resolve_tenant
 
 OPENSEARCH_HOST = os.getenv("OPENSEARCH_HOST", "opensearch")
 OPENSEARCH_PORT = int(os.getenv("OPENSEARCH_PORT", "9200"))
@@ -77,13 +79,11 @@ def pg_conn():
 # ---------------------------------------------------------------------------
 # 租户 → 索引 路由（与 search-service 保持一致）
 # ---------------------------------------------------------------------------
-INDEX_BY_TENANT = {"default": "logs-default", "acme": "logs-acme", "gp": "logs-gp"}
-
-
 def index_for(tenant: Optional[str]) -> str:
+    """索引命名是约定（logs-<租户编码>）：租户清单以 tenants 表为唯一真源，不在此硬编码。"""
     if tenant in ("all", "*", "", None):
         return "logs-*"
-    return INDEX_BY_TENANT.get(tenant, f"logs-{tenant}")
+    return f"logs-{tenant}"
 
 
 # 时区：统一以东八区(Asia/Shanghai)展示时间，与本地时间对齐。
@@ -404,7 +404,9 @@ def overview(
     range_in: str = Query("今日", description="时间范围：今日/近 1 小时/近 24 小时/近 7 天/近 30 天 或 today/1h/1d/7d/30d。今日=东八区自然日 00:00→当前"),
     tenant: str = Query("default"),
     force: bool = Query(False, description="强制刷新：绕过缓存重新聚合"),
+    identity: Dict[str, Any] = Depends(current_identity),
 ):
+    tenant = resolve_tenant(identity, tenant)
     key = range_key_of(range_in)
     cache_key = f"{tenant}|{key}"
     target = p95_target()  # 系统设置 → 系统参数 search_p95_target，取不到回落 800
@@ -689,6 +691,7 @@ def init_dashboard_table() -> None:
                 """
                 CREATE TABLE IF NOT EXISTS dashboards (
                     id SERIAL PRIMARY KEY,
+                    tenant TEXT NOT NULL DEFAULT 'default',
                     name TEXT NOT NULL,
                     owner TEXT NOT NULL DEFAULT '系统',
                     description TEXT NOT NULL DEFAULT '',
@@ -700,6 +703,9 @@ def init_dashboard_table() -> None:
                 )
                 """
             )
+            # 迁移：租户隔离列。存量看板归 default，避免升级后越权可见。
+            cur.execute("ALTER TABLE dashboards ADD COLUMN IF NOT EXISTS tenant TEXT NOT NULL DEFAULT 'default'")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_dashboards_tenant ON dashboards (tenant)")
             # 迁移：早期版本含 folder（所属目录）列，现按需求移除；IF EXISTS 保证幂等。
             cur.execute("ALTER TABLE dashboards DROP COLUMN IF EXISTS folder")
             cur.execute("SELECT COUNT(*) FROM dashboards")
@@ -707,9 +713,9 @@ def init_dashboard_table() -> None:
                 seed = _seed_dashboards()
                 for d in seed:
                     cur.execute(
-                        """INSERT INTO dashboards (name, owner, description, status, default_range, widgets)
-                           VALUES (%s,%s,%s,%s,%s,%s::jsonb)""",
-                        (d["name"], d["owner"], d["description"],
+                        """INSERT INTO dashboards (tenant, name, owner, description, status, default_range, widgets)
+                           VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb)""",
+                        (d.get("tenant") or "default", d["name"], d["owner"], d["description"],
                          d["status"], d["default_range"], json.dumps(d["widgets"], ensure_ascii=False)),
                     )
     except Exception as e:  # noqa: BLE001
@@ -760,6 +766,7 @@ def _seed_dashboards() -> List[Dict[str, Any]]:
 def _row_to_dashboard(row) -> Dict[str, Any]:
     d = {
         "id": row["id"], "name": row["name"], "owner": row["owner"],
+        "tenant": row.get("tenant") or "default",
         "description": row["description"], "status": row["status"],
         "defaultRange": row["default_range"],
         "widgets": row["widgets"] if isinstance(row["widgets"], list) else json.loads(row["widgets"] or "[]"),
@@ -770,25 +777,48 @@ def _row_to_dashboard(row) -> Dict[str, Any]:
     return d
 
 
+def _load_dashboard(dash_id: int, tenant: str):
+    """按 id 取看板并校验租户归属。跨租户统一按 404 处理，不泄露他租户资产是否存在。"""
+    with pg_conn().cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute("SELECT * FROM dashboards WHERE id = %s", (dash_id,))
+        row = cur.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="仪表盘不存在")
+    if tenant != "all" and (row.get("tenant") or "default") != tenant:
+        raise HTTPException(status_code=404, detail="仪表盘不存在")
+    return row
+
+
 @app.on_event("startup")
 def _startup_dashboards():
     init_dashboard_table()
 
 
 @app.get("/dashboards")
-def list_dashboards():
+def list_dashboards(
+    tenant: str = Query("default"),
+    identity: Dict[str, Any] = Depends(current_identity),
+):
+    """看板为租户级资产：普通账号只看本租户，管理员可用 tenant=all 巡检全平台。"""
+    tenant = resolve_tenant(identity, tenant)
     try:
         with pg_conn().cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT * FROM dashboards ORDER BY updated_at DESC")
+            if tenant == "all":
+                cur.execute("SELECT * FROM dashboards ORDER BY updated_at DESC")
+            else:
+                cur.execute(
+                    "SELECT * FROM dashboards WHERE tenant = %s ORDER BY updated_at DESC",
+                    (tenant,),
+                )
             rows = cur.fetchall()
-        return {"items": [_row_to_dashboard(r) for r in rows]}
+        return {"items": [_row_to_dashboard(r) for r in rows], "tenant": tenant}
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"list dashboards error: {e}")
 
 
 @app.get("/dashboards/meta")
-def dashboard_meta():
-    """编辑面板可用字典：图表类型、可配置维度以及时间范围。"""
+def dashboard_meta(identity: Dict[str, Any] = Depends(current_identity)):
+    """编辑面板可用字典：图表类型、可配置维度以及时间范围。需登录。"""
     return {
         "chartTypes": [{"value": k, **v} for k, v in CHART_TYPES.items()],
         "dimensions": [{"value": k, **v} for k, v in DIMENSIONS.items()],
@@ -798,14 +828,14 @@ def dashboard_meta():
 
 
 @app.get("/dashboards/{dash_id}")
-def get_dashboard(dash_id: int):
+def get_dashboard(
+    dash_id: int,
+    tenant: str = Query("default"),
+    identity: Dict[str, Any] = Depends(current_identity),
+):
+    tenant = resolve_tenant(identity, tenant)
     try:
-        with pg_conn().cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT * FROM dashboards WHERE id = %s", (dash_id,))
-            row = cur.fetchone()
-        if not row:
-            raise HTTPException(status_code=404, detail="仪表盘不存在")
-        return _row_to_dashboard(row)
+        return _row_to_dashboard(_load_dashboard(dash_id, tenant))
     except HTTPException:
         raise
     except Exception as e:  # noqa: BLE001
@@ -813,7 +843,14 @@ def get_dashboard(dash_id: int):
 
 
 @app.post("/dashboards")
-def create_dashboard(payload: Dict[str, Any] = Body(...)):
+def create_dashboard(
+    payload: Dict[str, Any] = Body(...),
+    tenant: str = Query("default"),
+    identity: Dict[str, Any] = Depends(current_identity),
+):
+    tenant = resolve_tenant(identity, tenant)
+    if tenant == "all":
+        raise HTTPException(status_code=400, detail="新建看板需指定具体租户，不能是 all")
     name = str(payload.get("name") or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="名称不能为空")
@@ -823,26 +860,32 @@ def create_dashboard(payload: Dict[str, Any] = Body(...)):
     try:
         with pg_conn().cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
-                """INSERT INTO dashboards (name, owner, description, status, default_range, widgets)
-                   VALUES (%s,%s,%s,%s,%s,%s::jsonb) RETURNING *""",
-                (name, payload.get("owner") or "系统",
+                """INSERT INTO dashboards (tenant, name, owner, description, status, default_range, widgets)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb) RETURNING *""",
+                (tenant, name, payload.get("owner") or "系统",
                  payload.get("description") or "", payload.get("status") or "running",
                  payload.get("defaultRange") or "近 24 小时",
                  json.dumps(widgets, ensure_ascii=False)),
             )
             row = cur.fetchone()
         return _row_to_dashboard(row)
+    except HTTPException:
+        raise
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"create dashboard error: {e}")
 
 
 @app.put("/dashboards/{dash_id}")
-def update_dashboard(dash_id: int, payload: Dict[str, Any] = Body(...)):
+def update_dashboard(
+    dash_id: int,
+    payload: Dict[str, Any] = Body(...),
+    tenant: str = Query("default"),
+    identity: Dict[str, Any] = Depends(current_identity),
+):
+    tenant = resolve_tenant(identity, tenant)
     try:
+        _load_dashboard(dash_id, tenant)
         with pg_conn().cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT id FROM dashboards WHERE id = %s", (dash_id,))
-            if not cur.fetchone():
-                raise HTTPException(status_code=404, detail="仪表盘不存在")
             fields, values = [], []
             mapping = {
                 "name": "name", "owner": "owner",
@@ -867,8 +910,14 @@ def update_dashboard(dash_id: int, payload: Dict[str, Any] = Body(...)):
 
 
 @app.delete("/dashboards/{dash_id}")
-def delete_dashboard(dash_id: int):
+def delete_dashboard(
+    dash_id: int,
+    tenant: str = Query("default"),
+    identity: Dict[str, Any] = Depends(current_identity),
+):
+    tenant = resolve_tenant(identity, tenant)
     try:
+        _load_dashboard(dash_id, tenant)
         with pg_conn().cursor() as cur:
             cur.execute("DELETE FROM dashboards WHERE id = %s", (dash_id,))
             if cur.rowcount == 0:
@@ -1027,12 +1076,16 @@ def aggregate_widget(w: Dict[str, Any], idx: str, frm: int, to: int, interval: s
 
 
 @app.post("/query")
-def query_widgets(payload: Dict[str, Any] = Body(...)):
-    """按 widget 配置聚合。body: {range_in, tenant, widgets:[...], force?}"""
+def query_widgets(payload: Dict[str, Any] = Body(...),
+                  identity: Dict[str, Any] = Depends(current_identity)):
+    """按 widget 配置聚合。body: {range_in, tenant, widgets:[...], force?}
+
+    租户由登录态强制解析，payload.tenant 仅作管理员巡检意图。
+    """
     widgets = payload.get("widgets") or []
     if not isinstance(widgets, list):
         raise HTTPException(status_code=400, detail="widgets 必须为数组")
-    tenant = payload.get("tenant") or "default"
+    tenant = resolve_tenant(identity, payload.get("tenant"))
     key, frm, to, interval, fmt = _window_of(payload.get("range_in") or "今日")
     idx = index_for(tenant)
     force = bool(payload.get("force"))
