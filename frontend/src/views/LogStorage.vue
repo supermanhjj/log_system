@@ -8,6 +8,7 @@ import {
   getCapacity,
   getStorageConfig,
   putStorageConfig,
+  getRetentionImpact,
   listIndexes,
   cleanIndex,
   listTenantQuotas,
@@ -103,7 +104,9 @@ const cfgLoading = ref(false)
 const cfgSaving = ref(false)
 const cfgError = ref('')
 const cfgUpdatedAt = ref('')
-const cfgForm = reactive({ retainDays: 30, rollThreshold: 80, hotColdStrategy: 'hot7d', totalGB: 0 })
+const cfgForm = reactive({ retainDays: 30, aggregateRetainDays: 90, rollThreshold: 80, hotColdStrategy: 'hot7d', totalGB: 0 })
+const cfgOriginal = ref({ retainDays: 30, aggregateRetainDays: 90 })
+const cfgRetentionOptions = ref([])
 const cfgStrategies = ref([])
 
 async function loadConfig() {
@@ -112,11 +115,17 @@ async function loadConfig() {
   try {
     const res = await getStorageConfig()
     cfgForm.retainDays = res.retainDays
+    cfgForm.aggregateRetainDays = res.aggregateRetainDays ?? res.retainDays
     cfgForm.rollThreshold = res.rollThreshold
     cfgForm.hotColdStrategy = res.hotColdStrategy
     cfgForm.totalGB = res.totalGB ?? res.quotaGB ?? 0
+    cfgOriginal.value = {
+      retainDays: res.retainDays,
+      aggregateRetainDays: res.aggregateRetainDays ?? res.retainDays,
+    }
     cfgUpdatedAt.value = res.updatedAt || ''
     cfgStrategies.value = res.strategies || []
+    cfgRetentionOptions.value = res.retentionOptions || [1, 2, 3, 4, 5, 7, 14, 30, 60, 90, 180]
   } catch (e) {
     cfgError.value = errText(e, '存储配置加载失败')
   } finally {
@@ -125,11 +134,55 @@ async function loadConfig() {
 }
 
 async function saveConfig() {
+  // 缩短保留期 = 永久删数据。先把真实影响量查出来给人看，再要求二次确认。
+  const old = cfgOriginal.value
+  const shrinkDetail = cfgForm.retainDays < old.retainDays
+  const shrinkAgg = cfgForm.aggregateRetainDays < old.aggregateRetainDays
+  if (shrinkDetail || shrinkAgg) {
+    try {
+      const target = Math.min(
+        shrinkDetail ? cfgForm.retainDays : old.retainDays,
+        shrinkAgg ? cfgForm.aggregateRetainDays : old.aggregateRetainDays,
+      )
+      const impact = await getRetentionImpact(target)
+      const os = impact.opensearch || {}
+      const ch = impact.clickhouse || {}
+      const num = (v) => (v == null ? '不可得' : Number(v).toLocaleString('zh-CN'))
+      const size = (v) => (v == null ? '不可得' : (v / 1024 ** 3).toFixed(1) + ' GB')
+      const msg = [
+        `明细保留：${old.retainDays} 天 → ${cfgForm.retainDays} 天`,
+        `聚合保留：${old.aggregateRetainDays} 天 → ${cfgForm.aggregateRetainDays} 天`,
+        '',
+        `OpenSearch 将删除 ${os.indexCount ?? 0} 个日期索引、约 ${num(os.docs)} 条 / ${size(os.bytes)} 日志。`,
+        `ClickHouse 将标记删除约 ${num(ch.docs)} 条聚合记录${ch.error ? '（统计不可得：' + ch.error + '）' : ''}。`,
+        '',
+        impact.warning || '',
+        '此操作不可恢复。确认继续？',
+      ].join('\n')
+      await ElMessageBox.confirm(msg, '高危操作确认', {
+        type: 'warning',
+        confirmButtonText: '确认删除',
+        cancelButtonText: '取消',
+        customStyle: { whiteSpace: 'pre-line', maxWidth: '560px' },
+      })
+    } catch (e) {
+      if (e === 'cancel' || e === 'close') return
+      ElMessage.error('影响预估失败，未执行保存：' + errText(e, '未知错误'))
+      return
+    }
+  }
+
   cfgSaving.value = true
   try {
     const res = await putStorageConfig({ ...cfgForm })
     ElMessage.success(res.message || '存储配置已保存')
-    if (res.config) cfgUpdatedAt.value = res.config.updatedAt || ''
+    if (res.config) {
+      cfgUpdatedAt.value = res.config.updatedAt || ''
+      cfgOriginal.value = {
+        retainDays: res.config.retainDays,
+        aggregateRetainDays: res.config.aggregateRetainDays ?? res.config.retainDays,
+      }
+    }
     loadCapacity()
   } catch (e) {
     ElMessage.error(errText(e, '保存失败'))
@@ -464,10 +517,21 @@ watch(rangeLabel, () => loadCapacity())
         <el-alert v-if="cfgError" type="error" :closable="false" show-icon :title="cfgError" class="block-alert" />
         <div v-loading="cfgLoading" class="param-body">
           <div class="param-row">
-            <label class="param-label">保留天数</label>
+            <label class="param-label">明细保留期</label>
             <div class="param-control">
-              <el-input-number v-model="cfgForm.retainDays" :min="1" :max="3650" :disabled="!canUpdate" />
-              <span class="param-note">早于该天数的日志可被清理，日志生命周期的唯一设置项</span>
+              <el-select v-model="cfgForm.retainDays" :disabled="!canUpdate" style="width:180px">
+                <el-option v-for="d in cfgRetentionOptions" :key="d" :label="`${d} 天`" :value="d" />
+              </el-select>
+              <span class="param-note">OpenSearch 明细；缩短会永久删除历史索引，保存前需二次确认</span>
+            </div>
+          </div>
+          <div class="param-row">
+            <label class="param-label">聚合保留期</label>
+            <div class="param-control">
+              <el-select v-model="cfgForm.aggregateRetainDays" :disabled="!canUpdate" style="width:180px">
+                <el-option v-for="d in cfgRetentionOptions" :key="d" :label="`${d} 天`" :value="d" />
+              </el-select>
+              <span class="param-note">ClickHouse 聚合数据（列存压缩 8~10 倍，可比明细留更久）</span>
             </div>
           </div>
           <div class="param-row">

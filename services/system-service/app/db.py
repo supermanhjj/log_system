@@ -265,6 +265,14 @@ def init_db() -> None:
             )
             """
         )
+        # 幂等迁移（2026-11-19）：双引擎保留期分开。
+        # retain_days 管 OpenSearch 明细（占空间大），aggregate_retain_days 管
+        # ClickHouse 聚合（列存压缩 8~10 倍，可留更久）。合用一个值会牺牲
+        # 「明细 7 天 + 趋势 90 天」这类最有价值的组合。
+        pg_exec(
+            "ALTER TABLE storage_config "
+            "ADD COLUMN IF NOT EXISTS aggregate_retain_days INTEGER NOT NULL DEFAULT 90"
+        )
         # quota_gb = 0 表示「不限制（跟随物理卷容量）」，不给假配额
         pg_exec(
             """

@@ -5,6 +5,8 @@
 -- 设计对标云智慧 DOLA：列式存储 + 主排序键贴近查询模式 + 预聚合。
 -- 幂等：ReplacingMergeTree(ver)，Flink 重放/CK 恢复按 (tenant,event_id) 去重，
 --       查询端统一 FINAL（见查询层），保证 exactly-once 语义落地。
+-- 分区按天：保留期最小粒度是 1 天，分区粒度必须 ≤ 保留期，否则删 1 天数据
+--       要重写整月 part，磁盘 IO 和 CPU 双重爆炸。按天分区后过期直接 drop part。
 -- =============================================================================
 
 CREATE DATABASE IF NOT EXISTS ruilog;
@@ -42,10 +44,10 @@ CREATE TABLE IF NOT EXISTS ruilog.logs
     INDEX idx_trace trace_id TYPE bloom_filter(0.01)      GRANULARITY 4
 )
 ENGINE = ReplacingMergeTree(ver)
-PARTITION BY toYYYYMM(ts)
+PARTITION BY toYYYYMMDD(ts)
 ORDER BY (tenant_id, ts, event_id)
 -- TTL 表达式要求 Date/DateTime，DateTime64 需显式 toDateTime() 转换（CH 24.x 严格校验）
-TTL toDateTime(ts) + INTERVAL 180 DAY DELETE
+TTL toDateTime(ts) + INTERVAL 90 DAY DELETE
 SETTINGS index_granularity = 8192;
 
 -- -----------------------------------------------------------------------------
@@ -68,9 +70,9 @@ CREATE TABLE IF NOT EXISTS ruilog.logs_minute_agg
     latency_max UInt64
 )
 ENGINE = SummingMergeTree()
-PARTITION BY toYYYYMM(minute)
+PARTITION BY toYYYYMMDD(minute)
 ORDER BY (tenant_id, minute, log_class, level, source)
-TTL minute + INTERVAL 180 DAY DELETE;
+TTL minute + INTERVAL 90 DAY DELETE;
 
 CREATE MATERIALIZED VIEW IF NOT EXISTS ruilog.mv_logs_minute
 TO ruilog.logs_minute_agg AS
@@ -100,6 +102,6 @@ CREATE TABLE IF NOT EXISTS ruilog.logs_dlq
     reason    String
 )
 ENGINE = MergeTree
-PARTITION BY toYYYYMM(ts)
+PARTITION BY toYYYYMMDD(ts)
 ORDER BY (ts, tenant_id)
 TTL toDateTime(ts) + INTERVAL 30 DAY DELETE;

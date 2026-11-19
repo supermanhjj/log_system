@@ -48,6 +48,12 @@ RANGES = {"近 7 天": 7, "近 30 天": 30, "近 90 天": 90}
 # 否则日志空间管理页的「清理」按钮对所有新索引都报 400。
 INDEX_NAME_RE = r"^logs-[A-Za-z0-9_-]+(-\d{4}\.\d{2}\.\d{2})?$"
 
+# 保留期只允许这些档位：既能覆盖用户要的 1/2/3/4/5/7/14/30 天颗粒度，
+# 又避免运维填 0 或 1e9 这类会瞬间清空 / 永久占盘的值。配置项存数据库，
+# 不在代码里写死 UI 选项。
+RETENTION_DAYS = (1, 2, 3, 4, 5, 7, 14, 30, 60, 90, 180)
+ISM_POLICY_ID = "ruilog-detail-retention"
+
 _os_client = None
 
 
@@ -194,6 +200,7 @@ def read_config() -> Dict[str, Any]:
     total_gb = int(r["quota_gb"])
     return {
         "retainDays": int(r["retain_days"]),
+        "aggregateRetainDays": int(r.get("aggregate_retain_days") or r["retain_days"]),
         "rollThreshold": int(r["roll_threshold"]),
         "hotColdStrategy": r["hot_cold_strategy"],
         # 平台总容量：DB 沿用旧列名 quota_gb，语义已明确为「分配给日志平台的总空间」。
@@ -201,6 +208,7 @@ def read_config() -> Dict[str, Any]:
         "totalGB": total_gb,
         "quotaGB": total_gb,
         "strategies": [{"value": s["value"], "label": s["label"]} for s in STRATEGIES],
+        "retentionOptions": list(RETENTION_DAYS),
         "updatedAt": to_cst_str(r["updated_at"]),
     }
 
@@ -406,10 +414,78 @@ def capacity(
 
 
 # ---------------------------------------------------------------------------
+# 保留期联动（OpenSearch ISM + ClickHouse TTL）
+# ---------------------------------------------------------------------------
+def _ism_policy_body(detail_days: int) -> Dict[str, Any]:
+    """构造 ISM 策略，与 opensearch/ism/ruilog-detail-retention.json 同源。
+
+    镜像只 COPY services/，运行容器里没有那份 JSON 文件，所以这里构造。
+    修改 warm/delete 阈值时两处必须同步；delete 阶段由保留期动态覆盖。
+    """
+    warm_at = min(2, max(1, detail_days // 2))
+    return {"policy": {
+        "description": "RuiLog 明细索引生命周期；删除阈值由平台存储配置联动",
+        "default_state": "hot",
+        "states": [
+            {"name": "hot", "actions": [],
+             "transitions": [{"state_name": "warm",
+                              "conditions": {"min_index_age": f"{warm_at}d"}}]},
+            {"name": "warm", "actions": [{"force_merge": {"max_num_segments": 1}}],
+             "transitions": [{"state_name": "delete",
+                              "conditions": {"min_index_age": f"{detail_days}d"}}]},
+            {"name": "delete", "actions": [{"delete": {}}]},
+        ],
+        "ism_template": [{"index_patterns": ["logs-*-*"], "priority": 100}],
+    }}
+
+
+def apply_detail_retention(detail_days: int) -> Dict[str, Any]:
+    """把明细保留期写进 ISM 策略，最长半小时自动生效。失败如实抛错。"""
+    c = os_client()
+    path = f"/_plugins/_ism/policies/{ISM_POLICY_ID}"
+    params: Dict[str, Any] = {}
+    try:
+        cur = c.transport.perform_request("GET", path)
+        params = {"if_seq_no": cur.get("_seq_no"),
+                  "if_primary_term": cur.get("_primary_term")}
+    except Exception:  # noqa: BLE001
+        pass  # 策略尚未创建，直接 PUT 新建
+    c.transport.perform_request("PUT", path,
+                                body=_ism_policy_body(detail_days), params=params)
+    return {"policy": ISM_POLICY_ID, "deleteAfterDays": detail_days}
+
+
+def _ch_query(sql: str, timeout: int = 30) -> str:
+    """通过 HTTP 接口执行 ClickHouse SQL，返回原始文本。"""
+    import httpx
+
+    host = os.getenv("CLICKHOUSE_HOST", "clickhouse")
+    port = int(os.getenv("CLICKHOUSE_HTTP_PORT", "8123"))
+    r = httpx.post(f"http://{host}:{port}/", content=sql.encode("utf-8"),
+                   headers={"Content-Type": "text/plain"}, timeout=timeout)
+    r.raise_for_status()
+    return r.text.strip()
+
+
+def apply_aggregate_retention(days: int) -> Dict[str, Any]:
+    """改 CH 两张表的 TTL。纯元数据操作立即返回，实际删除发生在后续 merge。"""
+    _ch_query(
+        f"ALTER TABLE ruilog.logs MODIFY TTL "
+        f"toDateTime(ts) + INTERVAL {days} DAY DELETE"
+    )
+    _ch_query(
+        f"ALTER TABLE ruilog.logs_minute_agg MODIFY TTL "
+        f"minute + INTERVAL {days} DAY DELETE"
+    )
+    return {"tables": ["ruilog.logs", "ruilog.logs_minute_agg"], "days": days}
+
+
+# ---------------------------------------------------------------------------
 # 存储配置
 # ---------------------------------------------------------------------------
 class ConfigIn(BaseModel):
     retainDays: Optional[int] = None
+    aggregateRetainDays: Optional[int] = None   # ClickHouse 聚合保留期
     rollThreshold: Optional[int] = None
     hotColdStrategy: Optional[str] = None
     totalGB: Optional[int] = None
@@ -434,10 +510,21 @@ def put_config(
     sets: List[str] = []
     params: List[Any] = []
     if req.retainDays is not None:
-        if not 1 <= req.retainDays <= 3650:
-            raise HTTPException(status_code=400, detail="保留天数需在 1-3650 之间")
+        if req.retainDays not in RETENTION_DAYS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"明细保留天数只能选 {'/'.join(map(str, RETENTION_DAYS))} 天",
+            )
         sets.append("retain_days=%s")
         params.append(req.retainDays)
+    if req.aggregateRetainDays is not None:
+        if req.aggregateRetainDays not in RETENTION_DAYS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"聚合保留天数只能选 {'/'.join(map(str, RETENTION_DAYS))} 天",
+            )
+        sets.append("aggregate_retain_days=%s")
+        params.append(req.aggregateRetainDays)
     if req.rollThreshold is not None:
         if not 50 <= req.rollThreshold <= 95:
             raise HTTPException(status_code=400, detail="滚动阈值需在 50-95 之间")
@@ -470,6 +557,24 @@ def put_config(
     if not sets:
         raise HTTPException(status_code=400, detail="没有需要更新的配置项")
 
+    # 先让存储引擎真正生效，再落库：反过来会出现"界面显示已改、实际没生效"，
+    # 在保留期这种不可逆操作上尤其危险。任一联动失败都整体拒绝，前端不会误报成功。
+    applied: Dict[str, Any] = {}
+    errors: List[str] = []
+    if req.retainDays is not None:
+        try:
+            applied["opensearch"] = apply_detail_retention(req.retainDays)
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"OpenSearch ISM: {type(e).__name__}: {str(e)[:160]}")
+    if req.aggregateRetainDays is not None:
+        try:
+            applied["clickhouse"] = apply_aggregate_retention(req.aggregateRetainDays)
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"ClickHouse TTL: {type(e).__name__}: {str(e)[:160]}")
+    if errors:
+        raise HTTPException(status_code=502,
+                            detail="保留期未能同步到存储引擎：" + "；".join(errors))
+
     sets.append("updated_at=now()")
     pg_exec(f"UPDATE storage_config SET {', '.join(sets)} WHERE id=1", tuple(params))
 
@@ -479,7 +584,54 @@ def put_config(
                 {"fields": req.model_dump(exclude_none=True)},
                 client_ip(request.headers.get("x-forwarded-for"),
                           request.client.host if request.client else ""))
-    return {"ok": True, "config": read_config(), "message": "存储配置已保存并生效"}
+    return {"ok": True, "config": read_config(), "applied": applied,
+            "message": "存储配置已保存并生效"}
+
+
+@router.get("/retention-impact")
+def retention_impact(
+    days: int = Query(..., description="拟设置的明细保留天数"),
+    user: Dict[str, Any] = Depends(require("storage", "view")),
+):
+    """预估把保留期缩短到 days 天会波及多少数据（高危操作前的只读核查）。
+
+    OpenSearch 按索引创建时间估算（ISM 也是按 index age 删），ClickHouse 按
+    ts 精确 count。数字取不到就如实标 null，绝不填 0 让运维误以为没有影响。
+    """
+    if days not in RETENTION_DAYS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"保留天数只能选 {'/'.join(map(str, RETENTION_DAYS))} 天",
+        )
+
+    hit = [i for i in fetch_indices("") if i["ageDays"] > days]
+    os_info: Dict[str, Any] = {
+        "indexCount": len(hit),
+        "docs": sum(i["docs"] for i in hit),
+        "bytes": sum(i["bytes"] for i in hit),
+        "indices": [i["name"] for i in hit][:200],
+    }
+
+    ch_info: Dict[str, Any] = {"docs": None, "error": None}
+    try:
+        # ts 是 DateTime64(3,'UTC')，服务器时区 Asia/Shanghai：
+        # 必须用 toUnixTimestamp 换 epoch 再转 UTC，直接 now() 比较会偏 8 小时。
+        sql = (f"SELECT count() FROM ruilog.logs WHERE ts < "
+               f"toDateTime64(toUnixTimestamp(now()) - {days} * 86400, 3, 'UTC')")
+        txt = _ch_query(sql, timeout=60)
+        ch_info["docs"] = int(txt.splitlines()[0].strip()) if txt else 0
+    except Exception as e:  # noqa: BLE001
+        ch_info["error"] = f"{type(e).__name__}: {str(e)[:160]}"
+
+    return {
+        "days": days,
+        "opensearch": os_info,
+        "clickhouse": ch_info,
+        "warning": (
+            f"将删除早于 {days} 天的全部明细索引与聚合数据，不可恢复。"
+            "ClickHouse 的实际删除在后续 merge 时发生，可能延后数十分钟。"
+        ),
+    }
 
 
 # ---------------------------------------------------------------------------

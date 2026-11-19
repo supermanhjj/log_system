@@ -32,6 +32,15 @@ export async function putStorageConfig(payload) {
   return data
 }
 
+/** 保留期变更前的只读影响预估：查真实将要删除的索引/文档数 */
+export async function getRetentionImpact(days) {
+  const { data } = await client.get('/retention-impact', {
+    params: { days },
+    timeout: 90000, // ClickHouse 精确 count 可能扫数千万行
+  })
+  return data
+}
+
 export async function listIndexes(tenant = '') {
   const { data } = await client.get('/indexes', { params: { tenant } })
   return data
