@@ -3,8 +3,12 @@
 // 数据源列表 = OpenSearch 真实日志来源自动发现 + PostgreSQL 登记配置合并，
 // 全部指标由后端实时聚合；前端不含任何静态样例数据。
 import axios from 'axios'
+import { attachAuth, currentTenant } from './http'
 
 const client = axios.create({ baseURL: '/api/data', timeout: 30000 })
+
+// Token + 当前租户：租户由服务端从登录态强制解析，越权由后端 403（前端只传意图）
+client.interceptors.request.use(attachAuth)
 
 export const INGEST_TYPES = ['Agent', 'Syslog', 'HTTP', 'Kafka', '自定义']
 export const STATUS_OPTIONS = ['运行中', '告警中', '异常', '离线', '维护中', '待接入']
@@ -17,7 +21,7 @@ export const ROLE_LABELS = {
   message: '正文字段',
 }
 
-export async function getMeta(tenant = 'default') {
+export async function getMeta(tenant = currentTenant()) {
   const { data } = await client.get('/meta', { params: { tenant } })
   return data
 }
@@ -27,7 +31,7 @@ export async function listSources(params = {}) {
   return data
 }
 
-export async function getSource(key, tenant = 'default') {
+export async function getSource(key, tenant = currentTenant()) {
   const { data } = await client.get(`/sources/${encodeURIComponent(key)}`, { params: { tenant } })
   return data
 }
@@ -42,12 +46,12 @@ export async function updateSource(key, payload) {
   return data
 }
 
-export async function deleteSource(key, tenant = 'default') {
+export async function deleteSource(key, tenant = currentTenant()) {
   const { data } = await client.delete(`/sources/${encodeURIComponent(key)}`, { params: { tenant } })
   return data
 }
 
-export async function batchStatus(keys, status, tenant = 'default') {
+export async function batchStatus(keys, status, tenant = currentTenant()) {
   const { data } = await client.post('/sources/batch-status', { keys, status, tenant })
   return data
 }
@@ -57,7 +61,7 @@ export async function testConnectivity(payload) {
   return data
 }
 
-export async function exportConfig(tenant = 'default') {
+export async function exportConfig(tenant = currentTenant()) {
   const resp = await client.get('/export', { params: { tenant }, responseType: 'blob' })
   const disposition = resp.headers['content-disposition'] || ''
   const m = /filename="?([^"]+)"?/.exec(disposition)

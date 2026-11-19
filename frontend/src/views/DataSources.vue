@@ -11,6 +11,10 @@ import {
 
 const app = useAppStore()
 
+// 接入表单的「目标租户」候选：来自服务端租户表（app.loadTenants）。
+// 'all' 只在平台管理员登录时由 loadTenants({includeAll:true}) 注入，普通账号不会出现。
+const tenantOptions = computed(() => app.tenants)
+
 const loading = ref(false)
 const error = ref(false)
 const filters = reactive({ keyword: '', type: '', status: '', region: '', registered: '' })
@@ -578,8 +582,14 @@ onUnmounted(() => clearInterval(timer))
           <div class="form-hint">Syslog / HTTP / Kafka 会做真实 TCP / HTTP / broker 探测；Agent 类型按来源标识校验真实日志</div>
         </el-form-item>
         <el-form-item label="目标租户">
-          <el-select v-model="form.tenant" style="width:100%">
-            <el-option v-for="t in ['default', 'acme', 'gp', 'all']" :key="t" :label="t" :value="t" />
+          <!-- 租户清单以服务端 tenants 表为准，不再前端硬编码（新增租户即时可选） -->
+          <el-select v-model="form.tenant" style="width:100%" placeholder="请选择目标租户">
+            <el-option
+              v-for="t in tenantOptions"
+              :key="t.value"
+              :label="t.value === 'all' ? '全部租户' : `${t.label}（${t.value}）`"
+              :value="t.value"
+            />
           </el-select>
         </el-form-item>
         <el-form-item label="目标索引"><el-input v-model="form.targetIndex" placeholder="留空按租户推导 logs-&lt;tenant&gt;" /></el-form-item>

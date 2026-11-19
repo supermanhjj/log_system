@@ -1,15 +1,12 @@
 // system-service（nginx 路由 /api/system/ → system-service:8000/）
 // 平台管理：用户 / 角色权限 / 系统参数 / 审计日志。所有请求需带登录 Token。
 import axios from 'axios'
-import { TOKEN_KEY } from './auth'
+import { attachAuth, currentTenant } from './http'
 
 const client = axios.create({ baseURL: '/api/system', timeout: 30000 })
 
-client.interceptors.request.use((cfg) => {
-  const token = localStorage.getItem(TOKEN_KEY)
-  if (token) cfg.headers.Authorization = `Bearer ${token}`
-  return cfg
-})
+// Token + 当前租户：租户由服务端从登录态强制解析，越权由后端 403（前端只传意图）
+client.interceptors.request.use(attachAuth)
 
 function toQuery(params) {
   const q = {}
@@ -21,6 +18,32 @@ function toQuery(params) {
 
 export async function getMeta() {
   const { data } = await client.get('/meta')
+  return data
+}
+
+// ---- 租户管理（tenants 是全系统租户唯一真源）----
+export async function listTenants(params) {
+  const { data } = await client.get('/tenants', { params: toQuery(params) })
+  return data
+}
+
+export async function createTenant(payload) {
+  const { data } = await client.post('/tenants', payload)
+  return data
+}
+
+export async function updateTenant(code, payload) {
+  const { data } = await client.put(`/tenants/${encodeURIComponent(code)}`, payload)
+  return data
+}
+
+export async function toggleTenant(code, enabled) {
+  const { data } = await client.put(`/tenants/${encodeURIComponent(code)}/enabled`, { enabled })
+  return data
+}
+
+export async function deleteTenant(code) {
+  const { data } = await client.delete(`/tenants/${encodeURIComponent(code)}`)
   return data
 }
 

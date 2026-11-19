@@ -3,8 +3,12 @@
 // Agent 主机来自真实心跳自动注册，状态由 Redis 心跳 + 超时判定，采集速率由
 // OpenSearch 真实日志反推；重启/升级为真实指令队列，不含任何模拟进度。
 import axios from 'axios'
+import { attachAuth, currentTenant } from './http'
 
 const client = axios.create({ baseURL: '/api/agents', timeout: 30000 })
+
+// Token + 当前租户：租户由服务端从登录态强制解析，越权由后端 403（前端只传意图）
+client.interceptors.request.use(attachAuth)
 
 export const AGENT_STATUS_OPTIONS = ['运行中', '告警中', '离线', '维护中', '异常']
 
@@ -49,7 +53,7 @@ export async function cancelUpgradeTask(id) {
   return data
 }
 
-export async function installConfig(hostname, tenant = 'default') {
+export async function installConfig(hostname, tenant = currentTenant()) {
   const resp = await client.get('/install-config', {
     params: { hostname, tenant }, responseType: 'blob',
   })

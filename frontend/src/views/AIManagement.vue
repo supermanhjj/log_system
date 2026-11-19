@@ -160,6 +160,16 @@ const nlLoading = ref(false)
 const nlResult = ref(null)
 const fileInput = ref(null)
 
+// 本次生成采用的租户范围：生成规则跟着范围走（单租户不开放租户维度，全部租户才开放），
+// 预览面板必须把范围显式标出来，否则看到「没有按租户分组」会误判成规则失效。
+const nlTenantLabel = computed(() => {
+  const code = nlResult.value?.tenant
+  if (!code) return ''
+  if (code === 'all' || code === '*') return '全部租户'
+  const hit = (app.tenants || []).find((t) => t.value === code)
+  return hit ? hit.label : code
+})
+
 function categoryLabel(key) {
   return GRAMMAR_CATEGORIES.find((c) => c.key === key)?.label || key
 }
@@ -479,12 +489,15 @@ onMounted(loadAll)
               <template v-if="nlResult.ok">
                 <div class="nl-head">
                   <el-tag type="success" size="small" effect="plain">生成成功</el-tag>
-                  <span class="muted">{{ nlResult.model?.name }} · {{ nlResult.model?.modelName }} · {{ nlResult.elapsedMs }} ms · 注入 {{ nlResult.injectedRuleCount }} 条规则</span>
+                  <span class="muted">{{ nlResult.model?.name }} · {{ nlResult.model?.modelName }} · {{ nlResult.elapsedMs }} ms · 注入 {{ nlResult.injectedRuleCount }} 条规则 · 租户范围 {{ nlTenantLabel }}</span>
                   <el-button link type="primary" size="small" @click="copyPpl">复制 PPL</el-button>
                   <el-button link type="primary" size="small" @click="gotoSearch">去检索页执行</el-button>
                 </div>
                 <pre class="ppl-block">{{ nlResult.ppl }}</pre>
                 <div v-if="nlResult.explanation" class="nl-meta">说明：{{ nlResult.explanation }}</div>
+                <div v-if="nlResult.tenantDimension" class="nl-meta">
+                  全部租户范围：租户维度可用，按租户统计写 stats count() by tenant, level；指定租户写 where tenant = '总部生产'
+                </div>
                 <div v-if="nlResult.timeRange" class="nl-meta">
                   时间范围：{{ nlResult.timeRange.label }} → {{ fmtTime(nlResult.timeRange.from) }} ~ {{ fmtTime(nlResult.timeRange.to) }}（后端换算，不写入 PPL）
                 </div>

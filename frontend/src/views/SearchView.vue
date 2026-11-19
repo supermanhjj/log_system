@@ -91,7 +91,7 @@ const FIELDS = [
   { key: 'host', label: '主机' },
   { key: 'traceId', label: 'traceId' },
   { key: 'status', label: '状态' },
-  { key: 'tenant_id', label: '租户' },
+  { key: 'tenant', label: '租户' },
   { key: 'message', label: '内容', fixed: true },
 ]
 const visibleFields = ref(['time', 'level', 'source', 'host', 'message'])
@@ -130,6 +130,14 @@ function ctxLine(c) {
 const pqlResult = ref(null)
 const pqlCols = ref([])
 const pqlRows = ref([])
+// PPL 结果列名 → 中文：脚本侧返回的是字段名（tenant / level / count()），表格里按业务语义展示。
+// tenant 是平台虚拟维度（租户），值已由检索网关换回租户中文名，所以这里只需改列头。
+const PPL_COL_LABELS = {
+  tenant: '租户', tenant_id: '租户', level: '级别', source: '来源', host: '主机',
+  status: '状态', traceId: 'traceId', message: '内容', raw: '原始日志',
+  '@timestamp': '时间', 'count()': '条数',
+}
+const pplColLabel = (c) => PPL_COL_LABELS[c] || c
 const pqlLoading = ref(false)
 
 // 是否为 PPL 模式：输入含管道符 | 即走 OpenSearch /_plugins/_pql
@@ -275,6 +283,15 @@ const AI_EXAMPLES = ['查询最近 10 分钟的错误日志', '按级别统计�
 const aiPplParts = computed(() => (nlPpl.value ? nlPpl.value.split(/\s+\|\s+/) : []))
 const aiPplDisplay = computed(() => aiPplParts.value.join('\n| '))
 const aiPipeCount = computed(() => aiPplParts.value.length)
+
+// 本次生成实际采用的租户：租户由请求上下文决定，不写进 PPL，所以必须显式告诉用户
+const nlTenantLabel = computed(() => {
+  const code = nlResult.value?.tenant
+  if (!code) return ''
+  if (code === 'all' || code === '*') return '全部租户'
+  const hit = (app.tenants || []).find((t) => t.value === code)
+  return hit ? hit.label : code
+})
 
 function openAiDialog() {
   aiDialogVisible.value = true
@@ -770,7 +787,7 @@ watch(
             <span><el-tag size="small" type="warning" effect="plain">PQL 分析模式</el-tag> 管道语法结果</span>
           </div>
           <el-table v-if="pqlResult" :data="pqlRows" size="small" stripe max-height="480" v-loading="pqlLoading">
-            <el-table-column v-for="c in pqlCols" :key="c" :prop="c" :label="c" show-overflow-tooltip />
+            <el-table-column v-for="c in pqlCols" :key="c" :prop="c" :label="pplColLabel(c)" show-overflow-tooltip />
           </el-table>
           <el-empty v-else description="输入含 | 的 PPL 语句后执行，例如 source=logs-default | stats count() by level" />
         </template>
@@ -805,7 +822,7 @@ watch(
             <el-table-column v-if="isVisible('host')" prop="host" label="主机" width="140" />
             <el-table-column v-if="isVisible('traceId')" prop="traceId" label="traceId" width="170" />
             <el-table-column v-if="isVisible('status')" prop="status" label="状态" width="80" />
-            <el-table-column v-if="isVisible('tenant_id')" prop="tenant_id" label="租户" width="100" />
+            <el-table-column v-if="isVisible('tenant')" prop="tenant" label="租户" width="100" />
             <el-table-column v-if="isVisible('message')" prop="message" label="内容" show-overflow-tooltip />
           </el-table>
 
@@ -843,7 +860,7 @@ watch(
         <el-descriptions-item label="主机">{{ currentRow.host }}</el-descriptions-item>
         <el-descriptions-item label="traceId">{{ currentRow.traceId }}</el-descriptions-item>
         <el-descriptions-item label="状态">{{ currentRow.status }}</el-descriptions-item>
-        <el-descriptions-item label="租户">{{ currentRow.tenant_id }}</el-descriptions-item>
+        <el-descriptions-item label="租户">{{ currentRow.tenant }}</el-descriptions-item>
         <el-descriptions-item label="日志内容">{{ currentRow.message }}</el-descriptions-item>
       </el-descriptions>
 
@@ -964,7 +981,10 @@ watch(
           </div>
           <div v-if="nlResult?.ok" class="ai-meta">
             {{ nlResult.model?.name }} · {{ nlResult.model?.modelName }} ·
-            {{ (nlResult.elapsedMs / 1000).toFixed(2) }} s · 注入 {{ nlResult.injectedRuleCount }} 条规则
+            {{ (nlResult.elapsedMs / 1000).toFixed(2) }} s · 注入 {{ nlResult.injectedRuleCount }} 条规则 · 租户范围 {{ nlTenantLabel }}
+          </div>
+          <div v-if="nlResult?.tenantDimension" class="ai-meta">
+            全部租户范围：租户维度可用，按租户统计写 <code>stats count() by tenant, level</code>，指定租户写 <code>where tenant = '总部生产'</code>
           </div>
         </div>
       </div>

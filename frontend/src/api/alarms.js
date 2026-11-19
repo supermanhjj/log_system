@@ -4,8 +4,12 @@
 //  - 告警规则：PostgreSQL 持久化（CRUD + 启用开关）
 //  - 告警事件：由后端对 OpenSearch 日志索引（logs-*）按规则实时判定得出，无前端硬编码
 import axios from 'axios'
+import { attachAuth, currentTenant } from './http'
 
 const client = axios.create({ baseURL: '/api/alarms', timeout: 30000 })
+
+// Token + 当前租户：告警规则/事件均为租户级资产，租户由后端从登录态强制解析
+client.interceptors.request.use(attachAuth)
 
 // 真实业务数据源（与日志采集端 SOURCES 对齐），供「关联数据源」下拉
 export const REAL_SOURCES = [
@@ -51,7 +55,7 @@ export async function closeEvents(ids = [], reason = '', handler = '') {
 }
 
 // 由后端「分析当前规则配置 + 索引真实字段」后生成的关联日志 PPL（自适应，前端不拼模板）
-export async function getRelatedQuery(eventId, tenant = 'default') {
+export async function getRelatedQuery(eventId, tenant = currentTenant()) {
   const { data } = await client.get(`/events/${encodeURIComponent(eventId)}/related-query`, {
     params: { tenant },
   })

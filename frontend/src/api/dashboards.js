@@ -3,8 +3,12 @@
 // 配置存 PG，图表数据按 widget 维度配置实时聚合 OpenSearch(logs-*)：
 // 列表/详情/新建/保存/删除走 /dashboards*；取数走 POST /query；字典走 /dashboards/meta。
 import axios from 'axios'
+import { attachAuth } from './http'
 
 const client = axios.create({ baseURL: '/api/dashboards', timeout: 30000 })
+
+// Token + 当前租户：看板是租户级资产，租户由后端从登录态强制解析
+client.interceptors.request.use(attachAuth)
 
 // —— 配置 CRUD ——
 export function listDashboards() {

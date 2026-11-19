@@ -16,6 +16,9 @@ export const useAuthStore = defineStore('auth', {
     isLoggedIn: (s) => !!s.token && !!s.user,
     displayName: (s) => s.user?.name || '',
     roleName: (s) => s.user?.roleName || '',
+    // 平台管理员：可跨租户巡检（传 tenant=all）、管理租户与平台级通用配置。
+    // 后端仍会独立校验，这里只用于前端按钮显隐。
+    isPlatformAdmin: (s) => s.user?.roleKey === 'platform_admin',
     tenant: (s) => s.user?.tenant || '',
     tenantName: (s) => s.user?.tenantName || '',
   },

@@ -1,5 +1,5 @@
 <script setup>
-import { computed, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import {
@@ -12,6 +12,7 @@ import {
   SetUp,
   Setting,
   User,
+  OfficeBuilding,
   DataBoard,
   Warning,
 } from '@element-plus/icons-vue'
@@ -61,6 +62,12 @@ const groups = [
     title: '平台管理',
     items: [
       {
+        path: '/settings/tenants',
+        title: '租户管理',
+        icon: OfficeBuilding,
+        resources: ['tenant'],
+      },
+      {
         path: '/settings/users',
         title: '用户角色',
         icon: User,
@@ -89,6 +96,7 @@ const visibleGroups = computed(() => groups
 
 const settingsLandingPath = computed(() => {
   if (auth.has('user', 'view') || auth.has('role', 'view') || auth.has('settings', 'view')) return '/settings/users'
+  if (auth.has('tenant', 'view')) return '/settings/tenants'
   if (auth.has('param', 'view') || auth.has('audit', 'view')) return '/settings/system'
   return '/settings/storage'
 })
@@ -100,7 +108,7 @@ const topTabs = computed(() => ([
   { key: 'ai', label: '智能管理', path: '/ai/management', resources: ['ai'] },
   {
     key: 'settings', label: '平台管理', path: settingsLandingPath.value,
-    resources: ['settings', 'user', 'role', 'param', 'audit', 'storage'],
+    resources: ['settings', 'user', 'role', 'tenant', 'param', 'audit', 'storage'],
   },
 ]))
 const visibleTopTabs = computed(() => topTabs.value.filter((t) => t.resources.some((r) => auth.has(r, 'view'))))
@@ -122,6 +130,16 @@ function go(path) {
 
 // ---- 顶栏用户区 ----
 const isAdmin = computed(() => auth.user?.roleKey === 'platform_admin')
+
+// 租户清单以服务端 tenants 表为唯一真源：登录后/身份变化时拉取，不再写死前端数组。
+// 非管理员锁定在登录租户（后端同样强制），管理员额外可选「全部租户」巡检。
+async function syncTenants() {
+  if (!auth.user) return
+  app.setTenant(auth.user.tenant || 'default')
+  await app.loadTenants({ includeAll: isAdmin.value })
+}
+onMounted(syncTenants)
+watch(() => auth.user?.id, syncTenants)
 const initial = computed(() => (auth.displayName || '?').slice(0, 1))
 
 const pwdVisible = ref(false)
@@ -189,7 +207,7 @@ async function onUserCommand(cmd) {
     <header class="topbar">
       <div class="brand">
         <img src="/logo.jpg" class="brand-logo" alt="国家电网标识" />
-        <span class="brand-name">统一日志分析平台</span>
+        <span class="brand-name"><b class="brand-product">RuiLog</b><span class="brand-cn">日志分析平台</span></span>
       </div>
 
       <nav class="topbar-nav" aria-label="产品导航">
@@ -289,28 +307,39 @@ async function onUserCommand(cmd) {
   color: #fff;
   display: flex;
   align-items: center;
-  padding: 0 20px;
+  padding: 0 16px;
   flex-shrink: 0;
 }
+/* 品牌区：logo + 上下两行产品名（RuiLog 上、日志分析平台下，参考「瑞链 / RUI SEEKING」堆叠式） */
 .brand {
   display: flex;
   align-items: center;
-  gap: 10px;
-  font-size: 18px;
-  font-weight: 600;
-  letter-spacing: 1px;
+  gap: 9px;
+  /* 顶栏左侧内边距 16px + 本宽度 = 210px，与左侧菜单栏等宽对齐，
+     导航起点正好落在菜单栏右边界之外，"概览"不会压在菜单栏上方 */
+  width: calc(210px - 16px);
   flex-shrink: 0;
 }
 /* 原型 logo 无边框：去掉白底/圆角/内边距，直接置于深绿背景上 */
-.brand-logo { height: 30px; width: 30px; object-fit: contain; }
-.brand-name { color: #fff; }
+.brand-logo { height: 30px; width: 30px; object-fit: contain; flex-shrink: 0; }
+.brand-name {
+  color: #8FE6D8;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  line-height: 1.15;
+  white-space: nowrap;
+}
+/* 主名 RuiLog 放大；副名「日志分析平台」小字 + 大字距，同色形成品牌层级 */
+.brand-product { font-size: 18px; font-weight: 700; letter-spacing: 0.5px; }
+.brand-cn { font-size: 11px; font-weight: 500; letter-spacing: 2.5px; opacity: 0.92; }
 
 /* 标题栏页签：容器与顶栏同色（深墨绿融为一体），仅选中项浮出浅青实底；选中态为小圆角矩形（非药丸） */
 .topbar-nav {
   display: flex;
   align-items: center;
   gap: 6px;
-  margin-left: 28px;
+  margin-left: 0;   /* 品牌区已与菜单栏同宽，导航紧接其后，无需额外间距 */
 }
 .topbar-nav__item {
   border: none;

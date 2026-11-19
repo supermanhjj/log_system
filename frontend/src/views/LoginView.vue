@@ -98,7 +98,7 @@ onMounted(loadTenants)
       <header class="login__brand">
         <img src="/logo.jpg" class="login__logo" alt="国家电网标识" />
         <div class="login__brand-text">
-          <h1>统一日志分析平台</h1>
+          <h1><span class="login__brand-en">RuiLog</span> 日志分析平台</h1>
           <p>日志检索 · 告警处置 · 智能分析</p>
         </div>
       </header>
@@ -213,7 +213,8 @@ onMounted(loadTenants)
 }
 .login__brand { display: flex; align-items: center; gap: 14px; margin-bottom: 22px; }
 .login__logo { width: 44px; height: 44px; object-fit: contain; flex-shrink: 0; }
-.login__brand-text h1 { margin: 0; font-size: 20px; font-weight: 600; color: var(--color-text-1); letter-spacing: 0.5px; }
+.login__brand-text h1 { margin: 0; font-size: 20px; font-weight: 600; color: var(--color-primary); letter-spacing: 0.5px; }
+.login__brand-en { font-weight: 700; letter-spacing: 0.5px; }
 .login__brand-text p { margin: 4px 0 0; font-size: 12px; color: var(--color-text-3); letter-spacing: 0.5px; }
 
 .login__alert { margin-bottom: 16px; }

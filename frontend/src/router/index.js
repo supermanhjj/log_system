@@ -10,6 +10,7 @@ import AIManagement from '../views/AIManagement.vue'
 import UserRoles from '../views/UserRoles.vue'
 import SystemSettings from '../views/SystemSettings.vue'
 import LogStorage from '../views/LogStorage.vue'
+import TenantManagement from '../views/TenantManagement.vue'
 import LoginView from '../views/LoginView.vue'
 import DashboardsView from '../views/DashboardsView.vue'
 import DashboardDetailView from '../views/DashboardDetailView.vue'
@@ -21,7 +22,7 @@ import { useAppStore } from '../stores/app'
 // 平台管理页是四个 Tab 的容器，入口按「任一 Tab 有权限」放行（如审计员只有 audit:view）。
 const SETTINGS_ENTRY = [
   ['settings', 'view'], ['user', 'view'], ['role', 'view'],
-  ['param', 'view'], ['audit', 'view'],
+  ['tenant', 'view'], ['param', 'view'], ['audit', 'view'],
 ]
 const routes = [
   { path: '/login', name: 'login', component: LoginView, meta: { title: '登录', public: true } },
@@ -36,6 +37,7 @@ const routes = [
   { path: '/agents', name: 'agents', component: AgentManagement, meta: { title: 'Agent 管理', perm: ['agents', 'view'] } },
   { path: '/ai/management', name: 'ai-management', component: AIManagement, meta: { title: '智能管理', perm: ['ai', 'view'] } },
   { path: '/settings/users', name: 'settings-users', component: UserRoles, meta: { title: '用户与角色', permAny: SETTINGS_ENTRY } },
+  { path: '/settings/tenants', name: 'settings-tenants', component: TenantManagement, meta: { title: '租户管理', perm: ['tenant', 'view'] } },
   { path: '/settings/system', name: 'settings-system', component: SystemSettings, meta: { title: '系统设置', permAny: [['param','view'],['audit','view']] } },
   { path: '/settings/storage', name: 'settings-storage', component: LogStorage, meta: { title: '日志空间管理', permAny: [['storage', 'view']] } },
 ]
@@ -81,7 +83,7 @@ router.beforeEach(async (to) => {
 })
 
 router.afterEach((to) => {
-  document.title = to.meta?.title ? `${to.meta.title} · 统一日志分析平台` : '统一日志分析平台'
+  document.title = to.meta?.title ? `${to.meta.title} · RuiLog 日志分析平台` : 'RuiLog 日志分析平台'
 })
 
 export default router

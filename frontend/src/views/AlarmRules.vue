@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh, Plus, Document, Delete } from '@element-plus/icons-vue'
 import { useAppStore } from '../stores/app'
+import { useAuthStore } from '../stores/auth'
 import {
   listRules,
   createRule,
@@ -18,6 +19,7 @@ import {
 } from '../api/alarms'
 
 const app = useAppStore()
+const auth = useAuthStore()
 const router = useRouter()
 
 const loading = ref(false)
@@ -286,7 +288,13 @@ onMounted(() => loadRules(false))
     <!-- 列表 -->
     <el-card shadow="never" class="table-card">
       <el-table :data="tableData" stripe>
-        <el-table-column prop="name" label="规则名称" min-width="180" show-overflow-tooltip align="left" header-align="left" />
+        <el-table-column label="规则名称" min-width="180" show-overflow-tooltip align="left" header-align="left">
+          <template #default="{ row }">
+            <span>{{ row.name }}</span>
+            <!-- 平台级通用规则（tenant=all）对所有租户生效，普通账号只读 -->
+            <el-tag v-if="row.tenant === 'all'" size="small" type="warning" effect="plain" class="plat-tag">平台级</el-tag>
+          </template>
+        </el-table-column>
         <el-table-column prop="matchSource" label="关联数据源" width="160" align="left" header-align="left">
           <template #default="{ row }">{{ row.matchSource || '全部数据源' }}</template>
         </el-table-column>
@@ -316,7 +324,11 @@ onMounted(() => loadRules(false))
         </el-table-column>
         <el-table-column label="操作" width="140" fixed="right" align="center" header-align="center">
           <template #default="{ row }">
-            <div class="op-actions">
+            <!-- 平台级规则仅平台管理员可改，避免单租户改坏全平台告警口径 -->
+            <div v-if="row.tenant === 'all' && !auth.isPlatformAdmin" class="op-actions op-disabled" title="平台级规则仅平台管理员可维护">
+              <span class="op-hint">只读</span>
+            </div>
+            <div v-else class="op-actions">
               <el-button text size="small" @click="openEdit(row)">编辑</el-button>
               <el-button text size="small" type="danger" :icon="Delete" @click="onDelete(row)">删除</el-button>
             </div>
@@ -413,6 +425,10 @@ onMounted(() => loadRules(false))
 .table-card :deep(.el-card__body) { padding: 12px 14px 14px; }
 .op-actions { display: flex; align-items: center; justify-content: center; gap: 2px; flex-wrap: nowrap; }
 .op-actions .el-button { margin: 0 !important; }
+/* 平台级规则对普通账号只读：不隐藏行，只把操作位换成只读提示，避免误以为数据缺失 */
+.op-disabled { color: #8a94a6; }
+.op-hint { font-size: 12px; }
+.plat-tag { margin-left: 6px; }
 .cond { color: var(--color-text-2); font-size: 13px; }
 .notify { color: var(--color-text-2); font-size: 13px; }
 .hint { font-size: 12px; color: var(--color-text-3); margin-left: 10px; }

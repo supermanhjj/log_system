@@ -1,7 +1,11 @@
 // ai-service（nginx 路由 /api/ai/ → ai-service:8000/）
 import axios from 'axios'
+import { attachAuth, currentTenant } from './http'
 
 const client = axios.create({ baseURL: '/api/ai', timeout: 30000 })
+
+// Token + 当前租户：租户由服务端从登录态强制解析，越权由后端 403（前端只传意图）
+client.interceptors.request.use(attachAuth)
 
 export const AI_KINDS = [
   { key: 'commercial', label: '商用 API' },
@@ -88,7 +92,7 @@ export async function exportGrammar() {
   URL.revokeObjectURL(url)
 }
 
-export async function syncFields(tenant = 'default') {
+export async function syncFields(tenant = currentTenant()) {
   const { data } = await client.post('/grammar/sync-fields', null, { params: { tenant } })
   return data
 }
