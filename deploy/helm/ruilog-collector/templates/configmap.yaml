@@ -1,0 +1,107 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "ruilog-collector.fullname" . }}-config
+  labels:
+    app: {{ include "ruilog-collector.fullname" . }}
+data:
+  fluent-bit.conf: |
+    [SERVICE]
+        Flush            1
+        Daemon           off
+        Log_Level        info
+        Parsers_File     /fluent-bit/etc/parsers.conf
+        HTTP_Server      On
+        HTTP_Listen      0.0.0.0
+        HTTP_Port        2020
+        storage.path     /var/lib/ruilog/buffer/
+        storage.sync     normal
+        storage.max_chunks_up 128
+
+    # =========================================================================
+    # 每个 namespace 一条 INPUT：按文件名中的 namespace 片段采集。
+    # K8s 的 pod / namespace / container 名不允许含下划线，按 "_" 切分安全。
+    # Parser cri 必须先拆出 log 字段；只做分帧，不在这里抽业务字段。
+    # =========================================================================
+    {{- range .Values.inputs }}
+    [INPUT]
+        Name              tail
+        Path              /var/log/containers/*_{{ .namespace }}_*.log
+        {{- if $.Values.excludeNamespaces }}
+        Exclude_Path      {{ range $i, $ns := $.Values.excludeNamespaces }}{{ if $i }},{{ end }}/var/log/containers/*_{{ $ns }}_*.log{{ end }}
+        {{- end }}
+        Parser            cri
+        Tag               kube.{{ .namespace }}
+        Path_Key          src_file
+        DB                {{ $.Values.dbPath }}/ruilog-{{ .name }}.db
+        Mem_Buf_Limit     {{ $.Values.collector.memBufLimit }}
+        Skip_Long_Lines   On
+        storage.type      filesystem
+    {{- end }}
+
+    # =========================================================================
+    # 多行分帧（FILTER 而非 INPUT）：必须先由 Parser cri 拆出 log 字段，
+    # 再对 log 做分帧。放在 INPUT 的 multiline.parser 会在 CRI 前缀上匹配，
+    # 异常栈续行永远认不出来。这是服务端解析唯一的硬边界。
+    # =========================================================================
+    {{- range .Values.inputs }}
+    {{- if and .multiline (ne .multiline "none") }}
+    [FILTER]
+        Name              multiline
+        Match             kube.{{ .namespace }}
+        Multiline_Parser  {{ .multiline }}
+    {{- end }}
+    {{- end }}
+
+    [FILTER]
+        Name              record_modifier
+        Match             kube.*
+        Record            cluster_id {{ .Values.collector.clusterId }}
+
+    # 只上报网关，不直连 OS/CH。网关做归属判定、脱敏、按租户落索引。
+    {{- $u := urlParse .Values.collector.ingestUrl }}
+    [OUTPUT]
+        Name              http
+        Match             kube.*
+        Host              {{ $u.hostname }}
+        Port              {{ $u.port }}
+        URI               {{ $u.path }}
+        Format            json
+        Header            Content-Type application/json
+        Header            X-Collector-Key ${COLLECTOR_KEY}
+        Retry_Limit       False
+
+  parsers.conf: |
+    # CRI 格式：time stream logtag log。不配这个 parser，整行会进 message，
+    # 服务端所有 grok 规则全部失效。
+    [PARSER]
+        Name        cri
+        Format      regex
+        Regex       ^(?<time>[^ ]+) (?<stream>stdout|stderr) (?<logtag>[^ ]*) (?<log>.*)$
+        Time_Key    time
+        Time_Format %Y-%m-%dT%H:%M:%S.%L%z
+
+    # 以下只做「分帧」，不抽字段。Key_Content 指向 cri parser 拆出的 log。
+    [MULTILINE_PARSER]
+        Name          java
+        Type          regex
+        Key_Content   log
+        Flush_State   On
+        Rules         "start_state   /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}/" \
+                      "cont          /.*/"
+
+    [MULTILINE_PARSER]
+        Name          python
+        Type          regex
+        Key_Content   log
+        Flush_State   On
+        Rules         "start_state   /^Traceback \(most recent call last\):/" \
+                      "cont          /.*/"
+
+    [MULTILINE_PARSER]
+        Name          go
+        Type          regex
+        Key_Content   log
+        Flush_State   On
+        Rules         "start_state   /^panic:/" \
+                      "cont          /.*/"

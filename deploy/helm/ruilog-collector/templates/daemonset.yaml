@@ -1,0 +1,63 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "ruilog-collector.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: {{ include "ruilog-collector.fullname" . }}
+spec:
+  selector:
+    matchLabels:
+      app: {{ include "ruilog-collector.fullname" . }}
+  template:
+    metadata:
+      labels:
+        app: {{ include "ruilog-collector.fullname" . }}
+      annotations:
+        # 配置变更触发滚动更新，不然 ConfigMap 改了 Pod 不会自动重载
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+    spec:
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      tolerations:
+        {{- toYaml .Values.tolerations | nindent 8 }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      # 给足时间把 filesystem buffer 刷完，SIGTERM 后直接杀会丢最后一批
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: fluent-bit
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: COLLECTOR_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ruilog-collector.secretName" . }}
+                  key: {{ .Values.collector.secretKey }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: varlog
+              mountPath: /var/log
+              readOnly: true
+            - name: db
+              mountPath: {{ .Values.dbPath }}
+            - name: config
+              mountPath: /fluent-bit/etc
+      volumes:
+        - name: varlog
+          hostPath:
+            path: {{ .Values.hostLogPath }}
+            type: Directory
+        - name: db
+          hostPath:
+            path: {{ .Values.dbPath }}
+            type: DirectoryOrCreate
+        - name: config
+          configMap:
+            name: {{ include "ruilog-collector.fullname" . }}-config

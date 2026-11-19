@@ -1,0 +1,57 @@
+# =============================================================================
+# RuiLog 采集器 Helm 配置
+#
+# 职责边界：采集器只做「分帧 + 搬运原文 + 附加来源元数据」。
+#   字段抽取、级别归一、分类、脱敏全部在服务端解析管线完成，
+#   所以这里的 inputs 只声明「采哪些 namespace」和「用哪种多行分帧」。
+#
+# 新增一个业务系统 = 在 inputs 里加三行 + helm upgrade，不碰服务端规则。
+# =============================================================================
+
+image:
+  repository: fluent/fluent-bit
+  tag: "2.2.0"
+  pullPolicy: IfNotPresent
+
+collector:
+  clusterId: sgcc-test           # 多集群区分，写入 attrs.cluster_id
+  ingestUrl: http://ruilog-ingest.ruilog-system.svc:8000/ingest/collector
+  # 二选一：existingSecret（推荐）或下面的 collectorKey（调试用，会明文进 Secret）
+  existingSecret: ""
+  secretKey: collector-key
+  collectorKey: ""
+  memBufLimit: 64MB
+
+# 一个 namespace 一条 INPUT，生成独立的 DB 位点与多行规则。
+# multiline 可选：java / go / python / none。异常栈必须分帧，否则一个
+# SQL 异常会变成 20 条级别为 UNKNOWN 的裸行，比不采还干扰判断。
+inputs:
+  - name: i6000-order
+    namespace: prod-i6000-order
+    multiline: java
+  - name: i6000-pay
+    namespace: prod-i6000-pay
+    multiline: java
+  - name: platform-biz
+    namespace: prod-biz
+    multiline: go
+
+# 不排除自身，采集器会采自己的日志，形成自我放大
+excludeNamespaces:
+  - kube-system
+  - ruilog-system
+  - monitoring
+
+resources:
+  requests: { cpu: 100m, memory: 128Mi }
+  limits: { cpu: 1000m, memory: 512Mi }
+
+# 挂宿主机整个 /var/log：/var/log/containers 是软链，只挂它会看到断链
+hostLogPath: /var/log
+# DB 与 buffer 直接放挂载根，避免子目录不存在导致位点写入失败
+dbPath: /var/lib/ruilog
+
+nodeSelector: {}
+tolerations:
+  - operator: Exists          # 不写这条 master 节点采不到
+affinity: {}
