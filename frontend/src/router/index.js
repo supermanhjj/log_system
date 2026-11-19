@@ -10,6 +10,7 @@ import AIManagement from '../views/AIManagement.vue'
 import UserRoles from '../views/UserRoles.vue'
 import SystemSettings from '../views/SystemSettings.vue'
 import LogStorage from '../views/LogStorage.vue'
+import PipelineManagement from '../views/PipelineManagement.vue'
 import TenantManagement from '../views/TenantManagement.vue'
 import LoginView from '../views/LoginView.vue'
 import DashboardsView from '../views/DashboardsView.vue'
@@ -40,6 +41,7 @@ const routes = [
   { path: '/settings/tenants', name: 'settings-tenants', component: TenantManagement, meta: { title: '租户管理', perm: ['tenant', 'view'] } },
   { path: '/settings/system', name: 'settings-system', component: SystemSettings, meta: { title: '系统设置', permAny: [['param','view'],['audit','view']] } },
   { path: '/settings/storage', name: 'settings-storage', component: LogStorage, meta: { title: '日志空间管理', permAny: [['storage', 'view']] } },
+  { path: '/settings/pipelines', name: 'settings-pipelines', component: PipelineManagement, meta: { title: '解析规则', perm: ['data', 'view'] } },
 ]
 
 const router = createRouter({

@@ -39,9 +39,12 @@ from opensearchpy import OpenSearch, helpers
 from pydantic import BaseModel, Field
 
 from .authz import current_identity, is_admin, resolve_ingest_tenant, resolve_tenant
+from . import api_pipelines
 from . import index_manager
 from . import kafka_writer
 from . import log_schema
+from . import pipeline
+from . import pipeline_store
 
 # ---------------------------------------------------------------------------
 # 连接（惰性；模块导入不触网）
@@ -76,6 +79,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.include_router(api_pipelines.router)
 
 
 def index_for(tenant: Optional[str], override: str = "") -> str:
@@ -266,6 +270,9 @@ def init_db() -> None:
                 """,
                 (host, tenant, env, role, note),
             )
+        # 服务端解析管线的规则表（解析器 / 管线 / 采集器凭证）
+        pipeline_store.init_tables()
+        pipeline_store.seed_defaults()
     except Exception as e:  # noqa: BLE001
         print(f"[ingest-service] init_db skipped: {e}", flush=True)
 
@@ -888,6 +895,7 @@ def ingest(
     docs = [normalize_record(r, tenant) for r in records if isinstance(r, dict)]
     if not docs:
         raise HTTPException(status_code=400, detail="records 中没有有效的日志对象")
+    pipeline.process(docs, tenant)
 
     written = {"opensearch": False, "kafka": False}
     errors = []
@@ -1400,6 +1408,11 @@ def ingest_collector(
         # 同一租户的不同日期索引不能拆成不同 Kafka key。
         buckets.setdefault(tenant, []).append(normalize_record(rec, tenant))
 
+    # 服务端解析管线：默认 shadow 模式，只把新解析结果写进 attrs.__shadow，
+    # 主字段仍走老链路。比对确认无误后再把 PIPELINE_MODE 切成 active。
+    for tenant, docs in buckets.items():
+        pipeline.process(docs, tenant)
+
     accepted = 0
     kafka_ok = 0
     os_ok = 0
@@ -1428,7 +1441,8 @@ def ingest_collector(
     if errors and os_ok == 0 and kafka_ok == 0:
         raise HTTPException(status_code=502, detail="; ".join(errors[:5]))
 
-    unassigned = len(buckets.get("logs-unknown", []))
+    # buckets 已改为按租户编码分桶，未归属的 key 是空串（写入时才映射 logs-unknown）
+    unassigned = len(buckets.get("", []))
     if unassigned:
         print(f"[ingest-service] 采集器上报中 {unassigned} 条无法归属，已写入 logs-unknown", flush=True)
     return {

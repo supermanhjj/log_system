@@ -51,6 +51,7 @@ const groups = [
     title: '数据接入',
     items: [
       { path: '/data-sources', title: '数据源', icon: Monitor, resources: ['data'] },
+      { path: '/settings/pipelines', title: '解析规则', icon: SetUp, resources: ['data'] },
       { path: '/agents', title: 'Agent 管理', icon: Monitor, resources: ['agents'] },
     ],
   },
