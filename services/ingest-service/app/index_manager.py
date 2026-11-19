@@ -64,13 +64,33 @@ def ensure_write_target(client: Any, tenant: Optional[str]) -> str:
     t = normalize_tenant(tenant)
     date = index_date()
     with _lock:
+        wa = write_alias(t)
+        # 缓存命中也要确认写别名仍是"别名"。若索引被外部删除/重建，
+        # 缓存还记着"已就绪"就直接返回 wa，而此时 wa 不存在，OpenSearch bulk
+        # 会自动创建同名真实索引 logs-<tenant>-write——数据写进去后查询侧查
+        # 读别名 logs-<tenant> 找不到，表现为"清空重建后新日志查不到"。
+        # exists_alias 是轻量元数据调用，本地量级可忽略；生产高频可改为 TTL 探测。
         if _ready.get(t) == date:
-            return write_alias(t)
+            try:
+                if client.indices.exists_alias(name=wa):
+                    return wa
+            except Exception:  # noqa: BLE001
+                pass  # 探测失败 → 缓存失效，走下方重建
+            _ready.pop(t, None)
 
         idx = daily_index(t, date)
-        wa = write_alias(t)
         ra = read_alias(t)
         try:
+            # 0) 自愈：写别名名若已被误建成真实索引（缓存陈旧 + 别名被外部删除时，
+            #    bulk 写 wa 会自动创建同名索引），必须先删掉才能建同名别名。
+            #    只在"是索引且不是别名"时删，且 ignore_unavailable 避免竞态报错。
+            try:
+                if client.indices.exists(index=wa) and not client.indices.exists_alias(name=wa):
+                    client.indices.delete(index=wa)
+                    print(f"[index_manager] removed stale real index {wa}", flush=True)
+            except Exception:  # noqa: BLE001
+                pass  # 删不掉就让它走到别名维护，失败则降级日期索引
+
             # 1) 建当天索引。mapping / shards / replicas 全部来自 index template，
             #    这里不再传 TENANT_INDEX_MAPPING——那是两套冲突 mapping 的根源。
             if not client.indices.exists(index=idx):
@@ -82,7 +102,12 @@ def ensure_write_target(client: Any, tenant: Optional[str]) -> str:
                         raise
 
             # 2) 取写别名当前指向（跨天前指向昨天），原子地切成今天。
-            old = client.indices.get_alias(name=wa, ignore=404) or {}
+            # opensearch-py 在别名不存在时，即便 ignore=404 也可能返回 {'error': ...}
+            # 而非空 dict。旧代码直接遍历其 key，会拿 "error" 当索引名去 remove，
+            # 导致整个别名维护失败、降级直写日期索引（读别名永远建不起来）。
+            # 只保留形如 logs-* 的真实索引名，过滤掉错误响应等非索引 key。
+            alias_res = client.indices.get_alias(name=wa, ignore=404) or {}
+            old = [k for k in alias_res if isinstance(k, str) and k.startswith("logs-")]
             actions = [
                 {"add": {"index": idx, "alias": wa}},
                 {"add": {"index": idx, "alias": ra}},
