@@ -520,7 +520,7 @@ CREATE TABLE IF NOT EXISTS cmdb_instances (
 | `services/ingest-service/app/api_pipelines.py` | 上述路由（拆文件，避免 main.py 膨胀） | ~300 行 |
 | `agent/config-sync/` | 配置同步器（shell 即可）+ 自更新逻辑 | ~200 行 |
 | `agent/install.sh`、`agent/ruilog-fluentbit.service` | 安装、systemd 托管、卸载 | ~250 行 |
-| `agent/fluentbit/*.conf.tpl` | 采集配置模板（tail / multiline / output） | ~150 行 |
+| `agent/deploy/docker/fluentbit/*.conf.tpl` | 采集配置模板（tail / multiline / output） | ~150 行 |
 | `agent/k8s/daemonset.yaml` | 国网云 K8s 采集形态（含权限申请说明） | ~120 行 |
 | `deploy/pack/build-agent-pkg.sh` | 打离线包（x86_64 + aarch64） | ~120 行 |
 | `docs/cloud-deployment.md` | 云上部署手册 | — |
@@ -533,9 +533,9 @@ CREATE TABLE IF NOT EXISTS cmdb_instances (
 | `services/ingest-service/app/log_schema.py` | 枚举改「代码默认 + DB 覆盖」 | 中：影响级别归一 |
 | `services/ingest-service/app/kafka_writer.py` | 加 `pipeline_code`/`parser_version`；event_id 改 sha256 | 中：影响 Flink 去重 |
 | `flink-jobs/.../LogRecord.java` | 新字段映射 | 中 |
-| `opensearch/index-templates/logs-template.json` | 加三个溯源 keyword | 低 |
-| `clickhouse/init/01-schema.sql` | 同步加列 | 中：需 migration |
-| `fluentbit/*` | 保留作本地开发环境，解析器砍到 multiline + 基础 | 低 |
+| `deploy/shared/opensearch/index-templates/logs-template.json` | 加三个溯源 keyword | 低 |
+| `deploy/shared/clickhouse/init/01-schema.sql` | 同步加列 | 中：需 migration |
+| `deploy/docker/fluentbit/*` | 保留作本地开发环境，解析器砍到 multiline + 基础 | 低 |
 | 前端数据源页 | 改为「采集器 → 规则 → 管线」三级 + 试解析 | 高：交互重构 |
 
 ### 保留不动

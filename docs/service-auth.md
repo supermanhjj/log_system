@@ -3,7 +3,7 @@
 > 快照日期：2026-11-19（GMT+8）｜基于当前工作区真实代码整理，行号随代码变动可能偏移
 > 模块范围：**登录**（原型 AUTH-0100）+ **鉴权**（JWT 签发、校验、权限点下发）
 > 关联文档：[平台管理模块](module-platform-admin.md) · [用户与角色模块（system-service）](service-system.md) · [服务清单](service-inventory.md) · [技术栈选型](tech-stack-selection.md)
-> 服务 / 端口：`log_system-auth-service-1`，宿主机 `8001` → 容器 `8000`；网关前缀 `/api/auth/`（`nginx/nginx.conf:21`）
+> 服务 / 端口：`log_system-auth-service-1`，宿主机 `8001` → 容器 `8000`；网关前缀 `/api/auth/`（`deploy/docker/nginx/nginx.conf:21`）
 
 ---
 

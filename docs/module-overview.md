@@ -74,7 +74,7 @@
 | 索引映射 | `INDEX_BY_TENANT = {default: logs-default, acme: logs-acme, gp: logs-gp}`，`all/*` → `logs-*`（`main.py:55-61`） |
 | 依赖索引 | `logs-*`（写入量、趋势、级别、告警、健康度）、`top_queries-*`（检索耗时，`main.py:34`） |
 | PG 表 | 不建表；**只读** `system_params` 一个值——`search_p95_target`（检索耗时目标，默认 800ms）。读不到 / 非整数 / 超出 50–60000 均回落 800，不会因此让首页失败 |
-| nginx 路由 | `location /api/dashboards/ { proxy_pass http://dashboard-service:8000/; }`（`nginx/nginx.conf:23`）；注意是复数 `dashboards`，无单数路由 |
+| nginx 路由 | `location /api/dashboards/ { proxy_pass http://dashboard-service:8000/; }`（`deploy/docker/nginx/nginx.conf:23`）；注意是复数 `dashboards`，无单数路由 |
 | 异常处理 | 聚合失败抛 `HTTPException(502)`（`main.py:141-153`）；耗时洞察异常单独吞掉并返回 `source:"unavailable"` 空柱（`:253-256`） |
 | 目标值生效 | 参数值按 10 秒 TTL 缓存，返回前用最新目标值重算 `stats.searchP95.sub/status/statusText` 与 `latency.target`——**30 秒结果缓存内的数据也会立刻按新目标重新判定** |
 | 存储容量概览取数 | 前端 `getStorageCapacity()` 调 `GET /api/system/storage/capacity`；后端按登录角色锁定 scope——管理员可看全部（平台总容量口径），非管理员强制本租户（配额口径），返回 `capBasis`/`capLabel` 供前端标注口径。已用来自 OpenSearch `store.size`，非本服务聚合 |
@@ -145,4 +145,4 @@
 | `services/dashboard-service/app/main.py` | 指标聚合、缓存、索引映射 |
 | `prototype/overview.html`、`prototype/specs/P-OVW-0101.json` | 高保真原型与规格 |
 | `docs/tech-stack-selection.md`（3.2 第 2 节） | 原始设计映射 |
-| `nginx/nginx.conf:23`、`docker-compose.yml` | 网关与服务编排 |
+| `deploy/docker/nginx/nginx.conf:23`、`docker-compose.yml` | 网关与服务编排 |

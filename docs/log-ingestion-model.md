@@ -81,7 +81,7 @@
 采集配置按类型拆分为多个 `conf.d/*.conf`，由主配置 `@INCLUDE` 汇总，新增一类日志只加一个文件：
 
 ```
-fluentbit/
+deploy/docker/fluentbit/
 ├── fluent-bit.conf            # SERVICE + @INCLUDE conf.d/*.conf
 ├── parsers.conf               # 全部解析器 + 多行解析器
 ├── conf.d/
@@ -215,14 +215,14 @@ CREATE TABLE IF NOT EXISTS hosts (
 | 层 | 文件 | 变更 |
 |----|------|------|
 | 契约 | `docs/log-ingestion-model.md` | 本文 |
-| 索引 | `opensearch/index-templates/logs-template.json` | 显式 mapping（新增字段 + `attrs` 用 `flat_object`，OpenSearch 无 `flattened`） |
-| 索引 | `scripts/opensearch/apply-logs-template.sh` | 应用模板并对既有索引补 mapping |
-| 采集 | `fluentbit/conf.d/*.conf`、`fluentbit/parsers.conf` | 多源 input + 分类打标 + 多行解析 |
+| 索引 | `deploy/shared/opensearch/index-templates/logs-template.json` | 显式 mapping（新增字段 + `attrs` 用 `flat_object`，OpenSearch 无 `flattened`） |
+| 索引 | `deploy/shared/scripts/opensearch/apply-logs-template.sh` | 应用模板并对既有索引补 mapping |
+| 采集 | `deploy/docker/fluentbit/conf.d/*.conf`、`deploy/docker/fluentbit/parsers.conf` | 多源 input + 分类打标 + 多行解析 |
 | 编排 | `docker-compose.yml`、`compose.override.yml` | 平台自身组件落日志（nginx.conf / redis `--logfile` / kafka log4j / pg `logging_collector`）+ `ruilog_logs`、`redisdata` 卷；仅保留 `sys-sim` 一个模拟容器 |
 | 编排 | `tools/kafka/log4j.properties` | 主日志 `RollingFileAppender` 落 `/bitnami/kafka/server.log`，专用 appender 留 stdout |
 | 网关 | `services/ingest-service/app/log_schema.py` | 枚举、级别映射、脱敏、分类推导 |
 | 网关 | `services/ingest-service/app/main.py` | hosts 表、derive_tenant 扩展、归一化接入 |
-| 存储 | `clickhouse/init/01-schema.sql`、`clickhouse/migrations/*.sql` | 新增列 + 物化视图加 `log_class` 维度 |
+| 存储 | `deploy/shared/clickhouse/init/01-schema.sql`、`deploy/shared/clickhouse/migrations/*.sql` | 新增列 + 物化视图加 `log_class` 维度 |
 | 流处理 | `flink-jobs/java/.../LogPipelineJob.java` | LogEvent 字段 + CH sink 映射 |
 | 查询 | `services/search-service/app/main.py` | `log_class` / `source_type` / `app` 过滤（支持单值、逗号串、数组）；`_source` 与 `normalize_hit` 输出新字段；`/histogram` 增 `by_log_class` / `by_source_type` |
 | 前端 | `frontend/src/views/SearchView.vue` | 「日志类型 / 来源类型 / 应用」列与字段开关；`log_class:` / `source_type:` / `app:` 语法；导出与详情抽屉补新字段 |

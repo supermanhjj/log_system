@@ -11,7 +11,7 @@
 | 层次 | 当前状态 |
 |---|---|
 | 前端 | 已从 `prototype/` 静态高保真 HTML 升级为 **Vue3 + Element Plus + ECharts + Pinia** 单页应用，构建产物 `frontend/dist` 由 nginx 托管；本次提交的是源码，`dist/` 按 `.gitignore` 不入库，clone 后需 `npm run build` |
-| 网关 | nginx 统一入口 `http://localhost:8080`，`/api/data/ → ingest-service:8000/`、`/api/agents/ → agent-service:8000/`（`nginx/nginx.conf:25-26`） |
+| 网关 | nginx 统一入口 `http://localhost:8080`，`/api/data/ → ingest-service:8000/`、`/api/agents/ → agent-service:8000/`（`deploy/docker/nginx/nginx.conf:25-26`） |
 | 后端 | 8 个微服务容器内统一 `:8000`，宿主机 `8001–8008` 暴露；PG 存数据源/Agent 主数据，Redis 存心跳，OpenSearch 存日志 |
 | 采集 | `log-generator` → 按租户分文件 `/var/log/app/<tenant>.log`（正文不含 tenant 字段）→ Fluent Bit（tail + `Path_Key` + `filename_tenant` 解析 + `DB` 断点）→ **HTTP 上报** ingest-service `POST /ingest/collector` → 服务端 `derive_tenant()` 判定后写入 `logs-<tenant>`；判定不出落 `logs-unknown` |
 | 租户归属 | **来源元数据注入型**（对齐上云形态）：租户来自"日志从哪来"，不再从正文探测；统一接入端点 `POST /ingest` 支持 `X-Api-Key`/JWT，写入时强制覆盖 `tenant_id` |
@@ -29,12 +29,12 @@
 
 | 思路 | 具体做法 | 代码落点 |
 |---|---|---|
-| **配置面与数据面分离** | `ingest-service` **不接收日志写入、不建索引模板**；日志由 Fluent Bit `opensearch` output 直连写入。服务只负责数据源登记（PG）、字段发现、连通性探测、接入配置导出 | `services/ingest-service/app/main.py`（全文件无 `indices.create / put_index_template / bulk`），`fluentbit/fluent-bit.conf:53-78` |
+| **配置面与数据面分离** | `ingest-service` **不接收日志写入、不建索引模板**；日志由 Fluent Bit `opensearch` output 直连写入。服务只负责数据源登记（PG）、字段发现、连通性探测、接入配置导出 | `services/ingest-service/app/main.py`（全文件无 `indices.create / put_index_template / bulk`），`deploy/docker/fluentbit/fluent-bit.conf:53-78` |
 | **动态字段字典靠读真实 mapping** | `GET /meta` 调 `indices.get_mapping`，按候选名 + date 类型探测字段角色（time/level/source/host/message/traceId…），人工覆盖优先；text 字段聚合自动转 `.keyword`。检索、告警关联 PPL、语法库都复用这份字典 | `ingest-service/app/main.py:149-157,284-347,667-685` |
 | **自动发现替代手工登记** | 数据源列表由 `discover()` 对 `logs-*` 做一次 `terms` 聚合自动发现，15s 缓存；PG 里只存人工补充信息与状态覆盖 | `main.py:354-437,608-641` |
 | **管控面用「指令队列 + 心跳」** | `agent-service` 用 Redis 接心跳、PG 存主机元数据与升级任务、指令队列下发重启/配置变更，`install-config` 实时生成 Fluent Bit conf；**与 AI 无关**（名称易与 `ai-service` 混淆） | `services/agent-service/app/main.py:1-19,552-615,825-903` |
 
-数据流：`log-generator →(app_logs 卷)→ fluentbit tail log.* → parser app_log → rewrite_tag 按 tenant_id → 3 个 opensearch output → logs-<tenant>`（`fluentbit/fluent-bit.conf:20-27,29-39,46-50,53-78`，`fluentbit/parsers.conf:7-17`）。端口/协议：心跳 HTTP `agent-service:8000/heartbeat`、OpenSearch `9200`、Fluent Bit HTTP_Server `2020`。
+数据流：`log-generator →(app_logs 卷)→ fluentbit tail log.* → parser app_log → rewrite_tag 按 tenant_id → 3 个 opensearch output → logs-<tenant>`（`deploy/docker/fluentbit/fluent-bit.conf:20-27,29-39,46-50,53-78`，`deploy/docker/fluentbit/parsers.conf:7-17`）。端口/协议：心跳 HTTP `agent-service:8000/heartbeat`、OpenSearch `9200`、Fluent Bit HTTP_Server `2020`。
 
 ### 1.3 与最初设计的偏差
 
@@ -152,7 +152,7 @@ docker compose exec -T log-generator python /app/backfill.py \
 
 1. `log-generator` 是**模拟被测业务系统**（`docker-compose.yml:215-218`），不是真实生产日志源。
 2. `fluent-bit.conf:17` 的 dummy 心跳时间戳是写死占位串（`agent-service/app/main.py:9-10,614`）；心跳无 IP/吞吐真实上报。
-3. `fluentbit/scripts/control.sh:3-5,18-19` 的 ②③ 仍为骨架占位；`ack` 端点已备但采集端未接入（`AgentManagement.vue:284-288`）。
+3. `deploy/docker/fluentbit/scripts/control.sh:3-5,18-19` 的 ②③ 仍为骨架占位；`ack` 端点已备但采集端未接入（`AgentManagement.vue:284-288`）。
 4. `docker-compose.prod.yml:1-3` 是生产编排骨架；Kafka 仅探测、无 topic 写入；Flink 无 Job。
 5. 索引模板 `logs-template` 无代码定义，需部署时手工 PUT。
 6. `owner` 硬编码「黄金金」（`DataSources.vue:200`）；采样率仅登记、不生效（`:604`）。
@@ -190,7 +190,7 @@ docker compose exec -T log-generator python /app/backfill.py \
 | `frontend/src/api/data.js`、`agents.js` | 接口封装 |
 | `services/ingest-service/app/main.py` | 数据源登记、字段元数据、连通性探测、配置导出 |
 | `services/agent-service/app/main.py` | 心跳、指令队列、升级任务、接入配置生成（**非 AI 服务**） |
-| `fluentbit/fluent-bit.conf`、`parsers.conf`、`scripts/control.sh` | 采集链路与主机侧管控脚本 |
+| `deploy/docker/fluentbit/fluent-bit.conf`、`parsers.conf`、`scripts/control.sh` | 采集链路与主机侧管控脚本 |
 | `tools/log-generator/generate.py`、`scripts/validate-chain.sh` | 模拟日志源与链路自检 |
 | `code-data.md` | 本模块早期实现分析 |
 | `prototype/data-sources.html`、`prototype/agents.html` | 高保真原型 |

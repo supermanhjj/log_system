@@ -11,7 +11,7 @@
 | 层次 | 当前状态 |
 |---|---|
 | 前端 | 已从 `prototype/` 静态高保真 HTML 升级为 **Vue3 + Element Plus + ECharts + Pinia** 单页应用，构建产物 `frontend/dist` 由 nginx 托管；本次提交的是源码，`dist/` 按 `.gitignore` 不入库，clone 后需 `npm run build` |
-| 网关 | nginx 统一入口 `http://localhost:8080`，`/api/alarms/ → alarm-service:8000/`（`nginx/nginx.conf:24`） |
+| 网关 | nginx 统一入口 `http://localhost:8080`，`/api/alarms/ → alarm-service:8000/`（`deploy/docker/nginx/nginx.conf:24`） |
 | 后端 | 8 个微服务容器内统一 `:8000`，宿主机 `8001–8008` 暴露；PG 存规则与人工状态、OpenSearch 存日志并用于判定 |
 | 采集 | `log-generator` → 共享卷 → Fluent Bit → 按租户写入 `logs-default / logs-acme / logs-gp` |
 | 运行环境 | **18 个容器 running，8001–8008 `/health` 全部 200**（`docs/service-inventory.md:5,110`） |
@@ -141,4 +141,4 @@
 | `services/alarm-service/app/main.py` | 规则、判定、事件、状态、关联 PPL（唯一后端文件） |
 | `prototype/alarms.html`、`prototype/alarm-rules.html` | 高保真原型 |
 | `flink-jobs/README.md`、`docs/tech-stack-selection.md`（3.2 第 5/6 节） | 实时判定设计稿（当前为占位） |
-| `nginx/nginx.conf:24` | 网关路由 |
+| `deploy/docker/nginx/nginx.conf:24` | 网关路由 |

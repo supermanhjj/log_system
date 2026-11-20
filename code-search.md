@@ -46,7 +46,7 @@ frontend/
 │   └── public/logo.jpg    # 顶栏 Logo（复制自 prototype/assets/logo.jpg）
 └── dist/                  # npm run build 产物，由 web 容器托管
 
-nginx/nginx.conf           # /api/search/ → search-service:8000/（去前缀）
+deploy/docker/nginx/nginx.conf           # /api/search/ → search-service:8000/（去前缀）
 compose.override.yml       # search-service 源码挂载 + 8002:8000 映射
 docker-compose.yml         # search-service 服务定义（image: log_system-backend）
 ```

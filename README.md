@@ -47,6 +47,27 @@
 
 根目录 `code-search.md` / `code-data.md` 为检索与接入模块的早期实现分析。
 
+## 目录结构（按部署方式归类）
+
+```
+.
+├── docker-compose.yml / compose.override.yml / docker-compose.prod.yml   # 容器部署入口（保留在根目录）
+├── deploy/
+│   ├── docker/     # 仅容器部署：nginx 反代与静态托管、fluentbit 采集器、OpenSearch Dashboards 配置
+│   ├── k8s/        # 仅 K8s 部署：platform（kustomize base + overlays/local）、collector（Helm DaemonSet）、i6000-demo（演示业务清单）
+│   ├── shared/     # 两种部署共用：clickhouse 建表/迁移、opensearch 索引模板与 ISM、kafka/opensearch 运维脚本
+│   └── release/    # 发布：dockerfiles（backend/web/flink-job）、build-images.sh、load-images.sh、package.sh
+├── services/ frontend/ flink-jobs/ tools/   # 业务源码（与部署方式无关）
+└── scripts/validate-chain.sh                # 全链路自检
+```
+
+| 场景 | 命令 |
+|---|---|
+| 容器部署（本地开发） | `docker compose up -d --build` |
+| K8s 部署（本地 Docker Desktop） | `docker build -f deploy/release/dockerfiles/backend.Dockerfile -t log_system-backend:k8s .`（web / flink-job 同理）→ `sh deploy/release/load-images.sh` → `kubectl apply -k deploy/k8s/platform/overlays/local` |
+| 发布（多架构镜像推送） | `REGISTRY=<registry>/ruilog TAG=1.0.0 sh deploy/release/build-images.sh` |
+| 发布（交付包归档） | `VERSION=1.0.0 sh deploy/release/package.sh` → `dist/ruilog-deploy-1.0.0.tar.gz` |
+
 ## 本地启动
 
 ```bash

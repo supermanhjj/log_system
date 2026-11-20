@@ -18,16 +18,16 @@
 | `docker-compose.yml` | 基础编排：数据层 + **8 个** FastAPI 微服务（含 `ai-service`，`:192-200`）+ Nginx + Fluent Bit（服务名 DNS：`log_net`） |
 | `compose.override.yml` | 开发覆盖：bind mount 源码、`uvicorn --reload`、端口 `8001–8008`；`web` 挂 `./frontend/dist`；`ai-service` 额外只读映射 CLI 入口（`:55-62`） |
 | `docker-compose.prod.yml` | 生产/演示占位：数据层改云托管（profile `local-data`）、应用层无挂载（`ai-service` 亦为 `volumes: []`，见 4.4/4.5） |
-| `Dockerfile` | FastAPI 多阶段镜像（builder 装依赖 → runtime slim，非 root） |
+| `deploy/release/dockerfiles/backend.Dockerfile` | FastAPI 多阶段镜像（builder 装依赖 → runtime slim，非 root） |
 | `.env.example` / `.env` | 配置与密钥分离（`.env` 已 gitignore） |
 | `.dockerignore` | 排除 `.git`/`.env`/依赖目录等，绝不把密钥打进镜像 |
-| `nginx/nginx.conf` | 托管 Vue3 SPA（`./frontend/dist`）+ `/api/*` 反代到 8 个微服务，含 `/api/ai/ → ai-service:8000/`（`:28`） |
+| `deploy/docker/nginx/nginx.conf` | 托管 Vue3 SPA（`./frontend/dist`）+ `/api/*` 反代到 8 个微服务，含 `/api/ai/ → ai-service:8000/`（`:28`） |
 | `frontend/` | Vue3 + Element Plus + ECharts 单页应用源码；构建产物 `frontend/dist/` 由 `web` 容器托管（产物不入库） |
 | `services/<name>/app/main.py` | **8 个**微服务（auth/search/dashboard/alarm/ingest/agent/system + **ai-service**），均含 `/health`；另有 `agent-service` `/heartbeat` |
 | `services/ai-service/` | AI 能力配置中心 + NL→PPL 运行时：`app/main.py`（20 个路由 + PG 三表）、`app/nl2ppl.py`（模型网关 / 规则注入 / 语句闸门） |
 | `services/requirements.txt` | 后端共用依赖（fastapi/uvicorn/psycopg2/redis/kafka-python/opensearch-py/jose…） |
-| `fluentbit/` | Fluent Bit **distroless 多阶段镜像**（debian:trixie-slim 注入 shell/curl，因官方 5.2.0-arm64 distroless 无 `/bin/sh`/curl 且库须 glibc 2.38+/OpenSSL 3.4+ 匹配基底）+ `fluent-bit.conf`（tail→OpenSearch；**心跳用 dummy 输入+http 输出上报 agent-service**，因 distroless 无 exec 插件）+ `scripts/control.sh`（保留作含 exec 版 Fluent Bit 的管控脚本备选） |
-| `fluentbit/sample/app.log` | 样例日志（参考用；实时采集源已改为 log-generator，见下） |
+| `deploy/docker/fluentbit/` | Fluent Bit **distroless 多阶段镜像**（debian:trixie-slim 注入 shell/curl，因官方 5.2.0-arm64 distroless 无 `/bin/sh`/curl 且库须 glibc 2.38+/OpenSSL 3.4+ 匹配基底）+ `fluent-bit.conf`（tail→OpenSearch；**心跳用 dummy 输入+http 输出上报 agent-service**，因 distroless 无 exec 插件）+ `scripts/control.sh`（保留作含 exec 版 Fluent Bit 的管控脚本备选） |
+| `deploy/docker/fluentbit/sample/app.log` | 样例日志（参考用；实时采集源已改为 log-generator，见下） |
 | `tools/log-generator/` | **测试业务系统模拟器**：持续输出 `[LEVEL] <msg> tenant=<id>` 多租户日志到共享卷 `app_logs`，由 Fluent Bit `tail` 采集，构成"业务系统→采集→多租户索引"完整测试链路（无真实业务时可反复测） |
 | `flink-jobs/README.md` | 实时告警 Job 占位说明（Java/Scala 或 PyFlink 待定） |
 
@@ -148,7 +148,7 @@
 | NL→PPL 运行时 | 模型网关（商用 / 本地 OpenAI 兼容）+ 规则库 prompt 注入 + 语句规范化闸门 | `services/ai-service/app/nl2ppl.py` |
 | 后端容器 | 独立 FastAPI 服务 `ai-service`（不叫 `agent-service`，该名已被采集端管控占用）；20 个路由（含 `POST /nl2ppl`） | `services/ai-service/app/main.py` |
 | 存储 | PG 三表：`ai_model_providers`（`:186`）、`ai_grammar_rules`（`:209`）、`ai_capabilities`（`:224`）；启动时 `init_db()` 建表，PG 不可用则降级启动（`:181-253`） | `services/ai-service/app/main.py` |
-| 网关 | `location /api/ai/ { proxy_pass http://ai-service:8000/; }`（去前缀） | `nginx/nginx.conf:28` |
+| 网关 | `location /api/ai/ { proxy_pass http://ai-service:8000/; }`（去前缀） | `deploy/docker/nginx/nginx.conf:28` |
 | 编排 | 基础服务定义、开发覆盖、生产编排、`web.depends_on` 同步加入 | 见 4.2 |
 | 配置 | `.env.example` 增加 `AI_PG_DSN`（可选覆盖）、`AI_INGEST_META_URL` | `.env.example`、`ai-service/app/main.py:34-42` |
 
@@ -162,7 +162,7 @@
 | `compose.override.yml:55-60` | `ai-service` 源码 bind mount，`--reload`、`ports: ["8008:8000"]` |
 | `compose.override.yml:61-63` | 追加 `extra_hosts: host.docker.internal:host-gateway`，供「本地自定义」接入访问宿主机 Ollama / oMLX |
 | `docker-compose.prod.yml:23-26,48-50` | `web` 同样挂 `frontend/dist`；`ai-service` 去掉 `--reload` 且 **`volumes: []`** |
-| `nginx/nginx.conf:28` | `/api/ai/` 反代 |
+| `deploy/docker/nginx/nginx.conf:28` | `/api/ai/` 反代 |
 | `Dockerfile:22-26` | `COPY services /app/services`、非 root `appuser`（`HOME=/home/appuser`） |
 | `services/requirements.txt` | 未新增依赖：`ai-service` 仅用已有的 `fastapi` / `psycopg2-binary` / `httpx` / `pydantic` |
 

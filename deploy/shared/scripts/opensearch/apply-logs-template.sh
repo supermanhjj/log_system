@@ -10,12 +10,12 @@
 #     现场字段一多就撞 total_fields.limit 导致整索引写入断流，已删除。
 #
 # 用法：
-#   sh scripts/opensearch/apply-logs-template.sh
+#   sh deploy/shared/scripts/opensearch/apply-logs-template.sh
 #   可覆盖：
 #     OPENSEARCH_URL=http://localhost:9200
 #     OPENSEARCH_SHARDS=1  OPENSEARCH_REPLICAS=0    # 生产多节点时调大
 #
-# 已有 logs-<tenant> 单索引的迁移见 scripts/opensearch/migrate-to-daily-index.sh
+# 已有 logs-<tenant> 单索引的迁移见同目录 migrate-to-daily-index.sh
 # =============================================================================
 set -euo pipefail
 
@@ -88,7 +88,7 @@ legacy = [i for i in indices if i not in daily]
 print(f"[apply] 索引总数 {len(indices)}：按天 {len(daily)}，待迁移旧索引 {len(legacy)}")
 if legacy:
     print(f"  旧索引：{legacy[:20]}")
-    print("  请执行 sh scripts/opensearch/migrate-to-daily-index.sh 完成迁移")
+    print("  请执行 sh deploy/shared/scripts/opensearch/migrate-to-daily-index.sh 完成迁移")
 
 print(f"[apply] 完成。分片={settings['number_of_shards']} "
       f"副本={settings['number_of_replicas']}")

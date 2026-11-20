@@ -16,7 +16,7 @@ services:
   opensearch-dashboards:
     ports: ["5601:5601"]
     volumes:
-      - ./opensearch-dashboards.yml:/usr/share/opensearch-dashboards/config/opensearch_dashboards.yml:ro
+      - ./deploy/docker/opensearch-dashboards.yml:/usr/share/opensearch-dashboards/config/opensearch_dashboards.yml:ro
   redis:
     ports: ["6379:6379"]
   kafka:
@@ -65,12 +65,12 @@ services:
 
   fluentbit:
     volumes:
-      - ./fluentbit/fluent-bit.conf:/fluent-bit/etc/fluent-bit.conf:ro
-      - ./fluentbit/parsers.conf:/fluent-bit/config/parsers.conf:ro
+      - ./deploy/docker/fluentbit/fluent-bit.conf:/fluent-bit/etc/fluent-bit.conf:ro
+      - ./deploy/docker/fluentbit/parsers.conf:/fluent-bit/config/parsers.conf:ro
       # 采集配置按日志类型拆分：系统/中间件/数据库各一个文件，dev 期热更
-      - ./fluentbit/conf.d:/fluent-bit/etc/conf.d:ro
-      - ./fluentbit/scripts:/fluent-bit/scripts:ro
-      # 注：不再挂载 ./fluentbit/sample 覆盖 /var/log/app，保留主 compose 的 app_logs 命名卷（与 log-generator 共享实时多租户日志）
+      - ./deploy/docker/fluentbit/conf.d:/fluent-bit/etc/conf.d:ro
+      - ./deploy/docker/fluentbit/scripts:/fluent-bit/scripts:ro
+      # 注：不再挂载 ./deploy/docker/fluentbit/sample 覆盖 /var/log/app，保留主 compose 的 app_logs 命名卷（与 log-generator 共享实时多租户日志）
 
   # dev 期挂本地 generate.py（与后端服务同模式），免去重建镜像即可热更日志格式
   log-generator:

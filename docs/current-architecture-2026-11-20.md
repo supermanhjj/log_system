@@ -71,7 +71,7 @@ flowchart LR
 
 两个 INPUT 都补 `Record host ${NODE_NAME}`（容器日志正文里没有主机概念，靠 `fieldRef spec.nodeName` 注入），并打 `cluster_id`。两个 Pod 均注入 `TZ=Asia/Shanghai`。
 
-部署方式：`deploy/helm/ruilog-collector`（DaemonSet + ConfigMap + Secret），测试系统清单在 `deploy/k8s/i6000-demo/`。
+部署方式：`deploy/k8s/collector`（DaemonSet + ConfigMap + Secret），测试系统清单在 `deploy/k8s/i6000-demo/`。
 
 ### 2.2 Docker 平面（平台自身组件）
 
@@ -84,7 +84,7 @@ flowchart LR
 | kafka | `/bitnami/kafka/server.log` | log4j 格式，启动期配置 dump 需多行合并 | 12305 |
 | postgres | `pg_log/*.log` | `log_min_duration_statement=200ms`，只记慢查询与错误 | 494 |
 
-`fluentbit/conf.d` 按类型拆分，`30-middleware.conf`、`40-database.conf` 生效；`10-business.conf`、`20-system.conf` **已停用**（业务/系统日志已迁到 K8s，Docker 侧再采会形成双来源、双租户分裂）。
+`deploy/docker/fluentbit/conf.d` 按类型拆分，`30-middleware.conf`、`40-database.conf` 生效；`10-business.conf`、`20-system.conf` **已停用**（业务/系统日志已迁到 K8s，Docker 侧再采会形成双来源、双租户分裂）。
 
 ---
 
@@ -126,16 +126,17 @@ flowchart LR
 
 ```
 采集端 → ingest（归一/解析/裁决）
-        ├─ INGEST_STORAGE_MODE=dual：直写 OS
         └─ confluent-kafka 幂等 producer（acks=all，key=tenant_id）→ ruilog.logs.raw
                 → Flink DataStream Job（checkpoint EXACTLY_ONCE / 10s）
                         ├─ ClickHouse ruilog.logs（ReplacingMergeTree(ver)，event_id 幂等）
-                        ├─ OpenSearch（FLINK_WRITE_OS=false，当前关闭）
+                        ├─ OpenSearch logs-<tenant>-write（_id=event_id，重放天然覆盖）
                         └─ 失败进 DLQ
 ```
 
 - 自研 sink 把**刷盘绑到 checkpoint**（`CheckpointedFunction.snapshotState()` 强制 flush + `FLINK_SINK_FLUSH_MS=5000` 时间兜底），避免低流量租户数据滞留内存。
-- 稳态目标是 `INGEST_STORAGE_MODE=kafka` + `FLINK_WRITE_OS=true`（Flink 统一写两引擎），当前 `dual` 是过渡态。
+- **当前为稳态**：`INGEST_STORAGE_MODE=kafka` + `FLINK_WRITE_OS=true`，OS 明细与 CH 聚合都由 Flink 统一写，ingest 不再直写 OS。
+- 回滚路径：`.env` 改 `INGEST_STORAGE_MODE=dual`（ingest 直写 OS 与 Flink 双写并存，用于灰度比对）或 `direct`（完全回到 ingest 直写 OS，Flink 只写 CH），改完 `docker compose up -d ingest-service`。
+- Flink 侧 OpenSearchSink 以 `LogEvent.payload`（Kafka 原始 JSON）整条回写，保证 `log` 多行堆栈、`attrs`、`parse_status` 等不会被字段白名单裁掉；`attrs` 字符串会转对象以匹配 `flat_object` 映射。
 
 ### 4.2 查询分工（铁律）
 
@@ -149,8 +150,8 @@ ClickHouse 失败自动回退 OpenSearch。`dashboard-service/app/ch_client.py` 
 
 ### 4.3 多租户与权限
 
-- 5 个业务服务（search / dashboard / alarm / ingest / system）各自 `authz.py`，按 JWT 强制解析租户，前端传值仅作意图。
-- 租户级资产：日志索引物理隔离、`dashboards.tenant`、`alarm_rules.tenant`（`'all'` 为平台级通用规则，普通账号只读）、数据源配置。
+- 6 个业务服务（search / dashboard / alarm / ingest / agent / ai）各自 `authz.py`，按 JWT 强制解析租户，前端传值仅作意图；system-service 沿用 `security.py` 的管理员口径。
+- 租户级资产：日志索引物理隔离、`dashboards.tenant`、`alarm_rules.tenant`（`'all'` 为平台级通用规则，普通账号只读）、数据源配置、`agents`/`agent_commands`/`agent_host_configs`、AI `providers`/`grammar_rules`/`ai_capabilities`、`saved_views`（按「租户 + 用户」存）。
 - PPL 租户维度按范围分别处理：单租户范围主动剥离 `tenant*` 谓词（索引已隔离，写进去只会恒 0 条）；跨租户范围（`all`，仅管理员）**允许**虚拟字段 `tenant` 分组与过滤，由网关翻译成物理 `tenant_id` 并回译中文名。
 
 ---
@@ -227,7 +228,7 @@ ClickHouse 失败自动回退 OpenSearch。`dashboard-service/app/ch_client.py` 
 | 解析规则页报错 | nginx 把 `/api/pipelines/status` 重写成 `/status`，而 ingest 路由挂在 `/pipelines` 前缀下 → 全 404 | rewrite 只剥 `/api` |
 | 租户配额文档数恒 0 | 直接切 `logs-` 前缀得到 `i6000-2026.11.20`，永不对上租户码 | 用 `storage.index_tenant()` 归一索引名 |
 | 解析规则"配了没生效" | `init_db` 里 `LIKE '%-sim'` 的裸 `%` 被 psycopg2 当占位符，抛 `tuple index out of range` 中断整个初始化，规则播种被静默跳过 | SQL 参数化；`except` 改为打印完整堆栈 |
-| 异常栈与 ERROR 头行拆成两条 | java 多行规则只有 `^\s+at ` 等续行，未覆盖"无缩进异常类名"首行 | 补规则后 7 行堆栈合并为 1 条（表头仍单独成条，见遗留） |
+| 异常栈与 ERROR 头行拆成两条 | **自定义多行 parser 与 Fluent Bit 内置 parser 重名**：`Name java` 被内置规则覆盖，自定义的「异常类名首行」规则从未生效，只有 `^\s+at ` 续行被合并 | 自定义 parser 改名 `ruilog-java` / `ruilog-python` / `ruilog-go` 后重启采集器，表头 + 异常 + 7 行堆栈合并为 1 条（`log` 共 8 行），UNKNOWN 归零 |
 
 ---
 
@@ -235,17 +236,14 @@ ClickHouse 失败自动回退 OpenSearch。`dashboard-service/app/ch_client.py` 
 
 ### 8.1 已知问题
 
-1. **Java 异常首行与 ERROR 表头仍分两条**。已在最小 Fluent Bit 5.2 环境复现：multiline **filter** 不会把 `start_state`（带时间戳的表头）与随后 `cont` 行合并；同样规则在 Docker 侧走 INPUT 级 `Multiline.parser` 可合并，但 K8s 走 INPUT 级会先匹配 CRI 原始前缀而不生效。彻底解二选一：应用侧输出 JSON 单行结构化，或服务端按 `时间 + src_file` 归并。
-2. **按类名片段搜不到**：`java.lang.NullPointerException` 被标准分词器当作单个 token，搜 `NullPointerException` 0 命中，搜 `cannot invoke method` 有 221 条。需给 `log/message` 配 `word_delimiter` 分析器并重建索引。
-3. **历史数据灰区**：管线切 active 之前的行 level 为 UNKNOWN，按治理原则不猜测回补；如需修正应作为单独的数据治理动作。
-4. **`docker compose up -d` 未在此轮执行**：compose 的结构性变更（删 `sys-sim`、`log-generator` 转 profile）需下次 `up` 才落到容器层；`sys-sim` 早已退出、`log-generator` 已手动停掉，不影响当前链路。
+1. **历史数据灰区**：管线切 active 之前的行 level 为 UNKNOWN，按治理原则不猜测回补；如需修正应作为单独的数据治理动作。
+2. **`docker compose up -d` 未在此轮执行**：compose 的结构性变更（删 `sys-sim`、`log-generator` 转 profile）需下次 `up` 才落到容器层；`sys-sim` 早已退出、`log-generator` 已手动停掉，不影响当前链路。
+3. **分区数与租户数绑定**：producer 以 `tenant_id` 作 key（保证单租户有序），因此 2 个租户只占用 2 个分区，其余 4 个为空是预期行为；租户数增长后自然展开，单租户吞吐上限是该分区所在 broker 的写入能力。
 
 ### 8.2 演进方向
 
 - 告警判定从"请求时对 OS/CH 聚合"迁到 Flink 窗口算子（真流上判定）。
-- `INGEST_STORAGE_MODE` 切 `kafka` + `FLINK_WRITE_OS=true`，收敛为 Flink 统一写双引擎。
-- 容器日志多行结构化前移到应用侧（推荐 logback JSON encoder），从根上消除分帧问题。
-- 未租户化残留：agent 主机配置、AI 模型配置、saved-views（仍 stub，落地需按"租户 + 用户"存）。
+- 容器日志多行结构化前移到应用侧（推荐 logback JSON encoder，从根上消除分帧问题）；当前 `ruilog-java` 已能合并表头+异常+堆栈，但仍依赖正则匹配。
 
 ---
 
@@ -261,6 +259,8 @@ ClickHouse 失败自动回退 OpenSearch。`dashboard-service/app/ch_client.py` 
 8. **`attrs` 用 `flat_object`**（OpenSearch 无 `flattened`，用它会 400）。
 9. **nginx `/api/pipelines/` 只剥 `/api`**，与 `api_pipelines.router` 的 `prefix="/pipelines"` 对齐。
 10. **多行规则里块首只能放 `start_state`**，`cont` 只认块内其余行，放错会多块粘连。
+11. **自定义多行 parser 不能与内置同名**（`java` / `python` / `go` 等），否则内置规则覆盖自定义，表现为「配了却没生效」。当前统一用 `ruilog-*` 前缀。
+12. **`message` / `log` / `raw` 用 `ruilog_text` 分析器**（`standard` + `word_delimiter_graph`），保证 `NullPointerException` 这类驼峰类名能被 `Pointer` / `Exception` 命中。改模板后必须用 `_reindex` 重建存量索引，旧索引不会自动换分析器。
 
 ---
 

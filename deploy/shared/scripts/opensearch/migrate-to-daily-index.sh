@@ -14,8 +14,8 @@
 #   3) 最后执行 apply-logs-template.sh 挂 ISM 策略
 #
 # 用法：
-#   sh scripts/opensearch/migrate-to-daily-index.sh               # 预演，只读
-#   sh scripts/opensearch/migrate-to-daily-index.sh --execute     # 真正执行
+#   sh deploy/shared/scripts/opensearch/migrate-to-daily-index.sh           # 预演，只读
+#   sh deploy/shared/scripts/opensearch/migrate-to-daily-index.sh --execute # 真正执行
 #   OPENSEARCH_URL=http://host:9200 sh ... --execute
 # =============================================================================
 set -euo pipefail

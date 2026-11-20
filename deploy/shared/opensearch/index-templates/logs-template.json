@@ -9,7 +9,28 @@
       "number_of_replicas": 0,
       "refresh_interval": "1s",
       "index.mapping.total_fields.limit": 2000,
-      "index.plugins.index_state_management.policy_id": "ruilog-detail-retention"
+      "index.plugins.index_state_management.policy_id": "ruilog-detail-retention",
+      "analysis": {
+        "filter": {
+          "ruilog_word_delimiter": {
+            "type": "word_delimiter_graph",
+            "preserve_original": true,
+            "split_on_case_change": true,
+            "split_on_numerics": true,
+            "stem_english_possessive": false
+          }
+        },
+        "analyzer": {
+          "ruilog_text": {
+            "type": "custom",
+            "tokenizer": "standard",
+            "filter": [
+              "ruilog_word_delimiter",
+              "lowercase"
+            ]
+          }
+        }
+      }
     },
     "mappings": {
       "dynamic": false,
@@ -57,13 +78,16 @@
           "type": "integer"
         },
         "message": {
-          "type": "text"
+          "type": "text",
+          "analyzer": "ruilog_text"
         },
         "raw": {
-          "type": "text"
+          "type": "text",
+          "analyzer": "ruilog_text"
         },
         "log": {
-          "type": "text"
+          "type": "text",
+          "analyzer": "ruilog_text"
         },
         "stream": {
           "type": "keyword"

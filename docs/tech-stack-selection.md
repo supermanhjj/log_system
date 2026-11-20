@@ -388,7 +388,7 @@ Flink 1.18 Java DataStream Job（checkpoint EXACTLY_ONCE / 10s）
 
 查询开关 `AGG_ENGINE=ch|os`：**CH 失败自动回退 OS**，保证可用性；明细/PPL/上下文永远走 OS，不受开关影响。
 
-### 10.3 ClickHouse 表设计（`clickhouse/init/01-schema.sql`）
+### 10.3 ClickHouse 表设计（`deploy/shared/clickhouse/init/01-schema.sql`）
 
 | 表 | 引擎 | 用途 |
 |----|------|------|
@@ -420,8 +420,8 @@ Flink 1.18 Java DataStream Job（checkpoint EXACTLY_ONCE / 10s）
 
 | 文件 | 作用 |
 |------|------|
-| `clickhouse/init/01-schema.sql` | CH 库/表/物化视图初始化（entrypoint 自动执行） |
-| `scripts/kafka/init-topics.sh` | topic 幂等初始化（raw 6 分区 / dlq 3 分区） |
+| `deploy/shared/clickhouse/init/01-schema.sql` | CH 库/表/物化视图初始化（entrypoint 自动执行） |
+| `deploy/shared/scripts/kafka/init-topics.sh` | topic 幂等初始化（raw 6 分区 / dlq 3 分区） |
 | `services/ingest-service/app/kafka_writer.py` | 幂等 Kafka producer + 模式开关 |
 | `services/dashboard-service/app/ch_client.py` | CH HTTP 聚合客户端（count/terms/histogram + 回退） |
 | `flink-jobs/java/` | Flink DataStream Job（pom + LogPipelineJob.java + Dockerfile + 提交脚本） |
@@ -471,8 +471,8 @@ Flink 1.18 Java DataStream Job（checkpoint EXACTLY_ONCE / 10s）
 | `services/ingest-service/app/main.py` | ingest-service | **改造**：`/ingest`、`/ingest/collector` 按 `INGEST_STORAGE_MODE` 走 direct/dual/kafka；新增 `tenant_from_index()`；health 暴露 storageMode / kafkaWriter |
 | `services/dashboard-service/app/ch_client.py` | dashboard-service | **新增**：ClickHouse HTTP 聚合客户端（count / terms / histogram + 失败回退 OS） |
 | `services/dashboard-service/app/main.py` | dashboard-service | **改造**：`count_docs()` / `terms_on()` 支持 `AGG_ENGINE=ch\|os` 分支；总览写入趋势/量、告警级别分布走 CH |
-| `clickhouse/init/01-schema.sql` | ClickHouse | **新增**：`ruilog.logs`(ReplacingMergeTree) + `ruilog.logs_minute_agg`/`mv_logs_minute`(SummingMergeTree+物化视图) + `ruilog.logs_dlq`，entrypoint 首次启动自动执行 |
-| `scripts/kafka/init-topics.sh` | kafka-init | **新增**：幂等建 topic（raw 6 分区 / dlq 3 分区） |
+| `deploy/shared/clickhouse/init/01-schema.sql` | ClickHouse | **新增**：`ruilog.logs`(ReplacingMergeTree) + `ruilog.logs_minute_agg`/`mv_logs_minute`(SummingMergeTree+物化视图) + `ruilog.logs_dlq`，entrypoint 首次启动自动执行 |
+| `deploy/shared/scripts/kafka/init-topics.sh` | kafka-init | **新增**：幂等建 topic（raw 6 分区 / dlq 3 分区） |
 | `flink-jobs/java/pom.xml`、`src/.../LogPipelineJob.java` | Flink Job | **新增**：Java DataStream 主程序（解析富化 → CH/OS/DLQ 三 sink + snake_case 显式字段映射 + ISO 时间归一化） |
 | `flink-jobs/Dockerfile`、`submit-job.sh`、`lib/*.jar`、`settings.xml` | Flink Job | **新增**：自建镜像、`flink run -D` 提交脚本、Kafka connector jar、Maven 阿里云 mirror 配置 |
 | `tools/backfill-to-clickhouse.py` | 运维工具 | **新增**：OS → CH 历史回填（scroll + 幂等写入 + dry-run） |

@@ -28,14 +28,16 @@ collector:
   memBufLimit: 64MB
 
 # 每条 INPUT 可精确到 container（同一 namespace 内不同服务分帧规则不同时必填）。
-# multiline 可选：java / go / python / none。异常栈必须分帧，否则一个
-# SQL 异常会变成 20 条级别为 UNKNOWN 的裸行，比不采还干扰判断。
+# multiline 可选：ruilog-java / ruilog-go / ruilog-python / none。
+# 名字必须带 ruilog- 前缀：java / go / python 是 Fluent Bit 内置多行 parser 名，
+# 重名时内置规则生效，异常栈会与 ERROR 表头拆成两条（实测踩坑）。
+# 异常栈必须分帧，否则一个 SQL 异常会变成 20 条级别为 UNKNOWN 的裸行，比不采还干扰判断。
 # 租户归属由服务端从 src_file 的 namespace 段判定，不在这里注入 tenant_id。
 inputs:
   - name: i6000-order
     namespace: i6000
     container: order
-    multiline: java
+    multiline: ruilog-java
     labels:
       log_class: business
       source_type: app

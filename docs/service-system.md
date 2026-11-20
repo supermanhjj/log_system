@@ -3,7 +3,7 @@
 > 快照日期：2026-11-19（GMT+8）｜基于当前工作区真实代码整理，行号随代码变动可能偏移
 > 模块范围：**用户**（增删改查 / 启停 / 重置密码 / 批量 / 导出）、**角色**（权限矩阵）、**日志空间**（容量 / 配置 / 索引 / 配额），以及依附其上的**系统参数**与**审计日志**
 > 关联文档：[平台管理模块](module-platform-admin.md) · [登录与鉴权模块（auth-service）](service-auth.md) · [日志空间管理](module-log-storage.md) · [服务清单](service-inventory.md) · [技术栈选型](tech-stack-selection.md)
-> 服务 / 端口：`log_system-system-service-1`，宿主机 `8007` → 容器 `8000`；网关前缀 `/api/system/`（`nginx/nginx.conf:27`）
+> 服务 / 端口：`log_system-system-service-1`，宿主机 `8007` → 容器 `8000`；网关前缀 `/api/system/`（`deploy/docker/nginx/nginx.conf:27`）
 
 ---
 

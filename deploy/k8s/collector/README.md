@@ -10,14 +10,14 @@
 #    数据库只存 sha256；旧版 INGEST_COLLECTOR_KEYS 环境变量仍可用但不限制租户。
 
 # 2) 装到 K8s
-helm install ruilog-collector ./deploy/helm/ruilog-collector \
+helm install ruilog-collector ./deploy/k8s/collector \
   -n ruilog-system --create-namespace \
   --set collector.clusterId=sgcc-test \
   --set collector.ingestUrl=http://ruilog-ingest.ruilog-system.svc:8000/ingest/collector \
   --set collector.collectorKey='<第 1 步的 key>'
 
 # 3) 新增业务系统：values 里加三行，然后升级
-helm upgrade ruilog-collector ./deploy/helm/ruilog-collector \
+helm upgrade ruilog-collector ./deploy/k8s/collector \
   -n ruilog-system --reuse-values \
   --set 'inputs[3].name=order-new' \
   --set 'inputs[3].namespace=prod-order-new' \
@@ -66,6 +66,6 @@ namespace 从文件路径解析，不用 `kubernetes` filter。只需要：
 
 ## 与本地 Docker 环境的关系
 
-`fluentbit/conf.d/*.conf` 那套是主机文件采集，本地开发链路继续用它。
+`deploy/docker/fluentbit/conf.d/*.conf` 那套是主机文件采集，本地开发链路继续用它。
 K8s 场景用本 chart，两套配置互不覆盖；服务端解析规则完全相同——
 这正是「解析放服务端」换来的收益：换采集方式不用重写解析。

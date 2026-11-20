@@ -45,7 +45,7 @@ frontend/src/router/index.js            # /data-sources、/agents 由 Placeholde
 frontend/dist/                          # npm run build 产物（index-BBzTwryV.js）
 ```
 
-未改动：`nginx/nginx.conf`（反代路由早已就位）、`compose.override.yml`（两服务源码已 bind mount + `--reload`）、`fluentbit/*`（心跳链路未动，保持跑通状态）。
+未改动：`deploy/docker/nginx/nginx.conf`（反代路由早已就位）、`compose.override.yml`（两服务源码已 bind mount + `--reload`）、`deploy/docker/fluentbit/*`（心跳链路未动，保持跑通状态）。
 
 ---
 
@@ -180,7 +180,7 @@ frontend/dist/                          # npm run build 产物（index-BBzTwryV.
 
 ## 9. 已知限制与后续
 
-1. **升级确认进度停在 0%**：采集端为原生 dummy 心跳（单向 HTTP），不消费响应体、不回传 ack。需换成含 `exec` 插件的 Fluent Bit 构建并启用 `fluentbit/scripts/control.sh` 管控脚本，`/commands/{id}/ack` 已备好。
+1. **升级确认进度停在 0%**：采集端为原生 dummy 心跳（单向 HTTP），不消费响应体、不回传 ack。需换成含 `exec` 插件的 Fluent Bit 构建并启用 `deploy/docker/fluentbit/scripts/control.sh` 管控脚本，`/commands/{id}/ack` 已备好。
 2. **平台侧状态 ≠ 实际采集开关**：批量停用/维护只写平台登记状态，不会停止 Fluent Bit 采集（页面已明示）；真正的采集控制需要配置热重载（`SIGHUP` / `POST /api/v2/reload`）与指令队列打通。
 3. **区域/接入类型/解析规则是人工元数据**：真实日志里没有这些字段，只能登记补充；未登记显示「自动发现」「—」。
 4. **Kafka topic 当前为空**：`KafkaConsumer.topics()` 如实返回空列表；采集过 Kafka 的链路仍是 `docs/tech-stack-selection.md` 的 P2 待办。

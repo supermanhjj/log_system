@@ -118,8 +118,13 @@ data:
     # 导致整个 parsers.conf 加载失败、cri parser 未注册。
     # cont 只认「块内续行特征」，绝不能写 /.*/ —— 那会把下一条带时间戳的
     # 新日志也吞成续行，永远不触发 flush，堆栈拆不开（已实测踩坑）。
+    #
+    # 命名必须是 ruilog-* 前缀：java / python / go 都是 Fluent Bit 内置
+    # MULTILINE_PARSER 名。自定义定义与内置重名时，内置规则生效，表现为
+    # 「ERROR 表头单独成条、异常栈另起一条」——看起来像 5.2 的分帧 bug，
+    # 实为命名冲突（已用最小环境复现验证）。
     [MULTILINE_PARSER]
-        Name          java
+        Name          ruilog-java
         Type          regex
         Key_Content   log
         Flush_Timeout 2000
@@ -135,7 +140,7 @@ data:
         Rule          "cont"         "/^[A-Za-z_$].*/"    "cont"
 
     [MULTILINE_PARSER]
-        Name          python
+        Name          ruilog-python
         Type          regex
         Key_Content   log
         Flush_Timeout 2000
@@ -144,7 +149,7 @@ data:
         Rule          "cont"         "/^\w+Error:.*/"      "cont"
 
     [MULTILINE_PARSER]
-        Name          go
+        Name          ruilog-go
         Type          regex
         Key_Content   log
         Flush_Timeout 2000
