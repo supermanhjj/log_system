@@ -77,6 +77,32 @@ def pg_conn():
         _pg_conn.autocommit = True
     return _pg_conn
 
+
+def source_aliases(tenant: Optional[str]) -> Dict[str, str]:
+    """数据源中文别名：source_key → display_name（与「数据接入 → 数据源」同一张表）。
+
+    总览里的来源标识取自日志正文（Java logger 名 / syslog program 名），
+    用户在数据源页改名后必须按这张表翻译，否则页面仍显示 c.s.i.order.service.OrderService
+    这类原始标识。取不到就原样返回，不影响取数。
+    """
+    try:
+        with pg_conn().cursor(cursor_factory=RealDictCursor) as cur:
+            if tenant in ("all", "*", "", None):
+                cur.execute(
+                    "SELECT source_key, display_name FROM data_sources "
+                    "WHERE display_name IS NOT NULL AND display_name <> ''"
+                )
+            else:
+                cur.execute(
+                    "SELECT source_key, display_name FROM data_sources "
+                    "WHERE tenant IN (%s, 'all') AND display_name IS NOT NULL AND display_name <> ''",
+                    (tenant,),
+                )
+            return {r["source_key"]: r["display_name"] for r in cur.fetchall()}
+    except Exception as e:  # noqa: BLE001
+        print(f"[dashboard] source_aliases skipped: {e}", flush=True)
+        return {}
+
 # ---------------------------------------------------------------------------
 # 租户 → 索引 路由（与 search-service 保持一致）
 # ---------------------------------------------------------------------------
@@ -444,6 +470,7 @@ def overview(
     identity: Dict[str, Any] = Depends(current_identity),
 ):
     tenant = resolve_tenant(identity, tenant)
+    aliases = source_aliases(tenant)
     key = range_key_of(range_in)
     cache_key = f"{tenant}|{key}"
     target = p95_target()  # 系统设置 → 系统参数 search_p95_target，取不到回落 800
@@ -583,6 +610,7 @@ def overview(
                 "name": msg or s.get("source", "—"),
                 "level": classify_level(s.get("level")),
                 "source": s.get("source", "—"),
+                "sourceName": aliases.get(s.get("source"), s.get("source", "—")),
                 "occurTime": to_local(s.get("@timestamp")),
                 "status": "告警中",
                 "handler": "—",
@@ -607,7 +635,9 @@ def overview(
     d7_from = h1_now - 7 * 86400 * 1000
     recent_src = terms_on(idx, "source", h1_from, h1_now, size=100)
     base_src = terms_on(idx, "source", d7_from, h1_now, size=100)
-    all_src = list(dict.fromkeys(list(recent_src.keys()) + list(base_src.keys())))
+    # 空来源不是「一个数据源」：它表示记录缺 source 字段（采集/解析异常的痕迹）。
+    # 若把它当数据源展示，概览里会凭空多出一个「未识别来源」条目，且计数、健康度失真。
+    all_src = [s for s in dict.fromkeys(list(recent_src.keys()) + list(base_src.keys())) if s]
     sources = []
     abnormal = 0
     offline = 0
@@ -630,16 +660,20 @@ def overview(
         else:
             status, tag = ("normal", "正常")
         rate_per_day = round(total7 / 7)
+        label = aliases.get(name) or name or "未识别来源"
         sources.append(
             {
-                "name": name,
+                "name": label,
+                "sourceKey": name,
                 "rate": f"{rate_per_day:,} 条/日" if rate_per_day > 0 else "",
                 "health": health,
                 "status": status,
                 "tag": tag,
             }
         )
-    sources.sort(key=lambda x: x["health"])  # 健康度低（异常）优先展示
+    # 异常优先：故障 → 告警 → 正常，同级里健康度低的排前面
+    severity = {"fault": 0, "warning": 1, "normal": 2}
+    sources.sort(key=lambda x: (severity.get(x["status"], 3), x["health"]))
 
     data = {
         "updatedAt": datetime.fromtimestamp(to / 1000, tz=CST).isoformat(),
@@ -901,12 +935,26 @@ def list_dashboards(
 
 
 @app.get("/dashboards/meta")
-def dashboard_meta(identity: Dict[str, Any] = Depends(current_identity)):
-    """编辑面板可用字典：图表类型、可配置维度以及时间范围。需登录。"""
+def dashboard_meta(tenant: Optional[str] = Query(None),
+                   identity: Dict[str, Any] = Depends(current_identity)):
+    """编辑面板可用字典：图表类型、可配置维度以及时间范围。需登录。
+
+    sourceTypes 从当前租户最近 7 天的真实日志里聚合，避免把「syslog / nginx-access」
+    之类写死：不同业务场景接入的 parser 不同，下拉必须跟着实际数据走。
+    """
+    tenant = resolve_tenant(identity, tenant)
+    now = now_ms()
+    try:
+        seen = terms_on(index_for(tenant), "source_type", now - 7 * 86400 * 1000, now, size=50)
+    except Exception as e:  # noqa: BLE001
+        print(f"[dashboard] source_type meta skipped: {e}", flush=True)
+        seen = {}
+    source_types = sorted(k for k in seen if k)
     return {
         "chartTypes": [{"value": k, **v} for k, v in CHART_TYPES.items()],
         "dimensions": [{"value": k, **v} for k, v in DIMENSIONS.items()],
         "ranges": list(RANGE_LABEL_TO_KEY.keys()),
+        "sourceTypes": source_types,
         "defaultLayout": {"span1": 1, "span2": 2, "cols": 4},
     }
 
@@ -1070,7 +1118,8 @@ def _bucket_value(bucket: Dict[str, Any], metric: str) -> float:
     return int(bucket.get("doc_count", 0))
 
 
-def aggregate_widget(w: Dict[str, Any], idx: str, frm: int, to: int, interval: str, fmt: str) -> Dict[str, Any]:
+def aggregate_widget(w: Dict[str, Any], idx: str, frm: int, to: int, interval: str, fmt: str,
+                     aliases: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     dim = w.get("dimension") or "none"
     metric = w.get("metric") or "count"
     limit = int(w.get("limit") or 10)
@@ -1098,6 +1147,7 @@ def aggregate_widget(w: Dict[str, Any], idx: str, frm: int, to: int, interval: s
                 "sourceType": s.get("source_type", ""),
                 "level": s.get("level", "—"),
                 "source": s.get("source", "—"),
+                "sourceName": (aliases or {}).get(s.get("source"), s.get("source", "—")),
                 "host": s.get("host", "—"),
                 "message": s.get("message", ""),
                 "status": s.get("status", ""),
@@ -1166,6 +1216,9 @@ def aggregate_widget(w: Dict[str, Any], idx: str, frm: int, to: int, interval: s
         name = str(b["key"])
         if dim == "level":
             name = level_label.get(name.upper(), name)
+        elif dim == "source":
+            # 来源维度：配了中文显示名就用显示名，没配回落到原始标识
+            name = (aliases or {}).get(name, name)
         elif dim == "logClass":
             # 机器码（system/middleware）翻中文，图例直接可读；空值=改造前历史数据
             name = LOG_CLASS_LABELS.get(name, name or "未分类（改造前）")
@@ -1187,6 +1240,7 @@ def query_widgets(payload: Dict[str, Any] = Body(...),
     if not isinstance(widgets, list):
         raise HTTPException(status_code=400, detail="widgets 必须为数组")
     tenant = resolve_tenant(identity, payload.get("tenant"))
+    aliases = source_aliases(tenant)
     key, frm, to, interval, fmt = _window_of(payload.get("range_in") or "今日")
     idx = index_for(tenant)
     force = bool(payload.get("force"))
@@ -1197,7 +1251,7 @@ def query_widgets(payload: Dict[str, Any] = Body(...),
         if not isinstance(w, dict):
             continue
         try:
-            results.append(aggregate_widget(w, idx, frm, to, interval, fmt))
+            results.append(aggregate_widget(w, idx, frm, to, interval, fmt, aliases))
         except HTTPException:
             raise
         except Exception as e:  # noqa: BLE001  单个图表失败不影响整板

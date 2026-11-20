@@ -456,14 +456,26 @@ def apply_detail_retention(detail_days: int) -> Dict[str, Any]:
 
 
 def _ch_query(sql: str, timeout: int = 30) -> str:
-    """通过 HTTP 接口执行 ClickHouse SQL，返回原始文本。"""
+    """通过 HTTP 接口执行 ClickHouse SQL，返回原始文本。
+
+    ClickHouse 开了访问控制（CLICKHOUSE_USER/PASSWORD，见 compose 与 K8s 清单），
+    不带认证直接 POST 会返回 403 Forbidden——不是权限策略，而是没登录。
+    这里与 dashboard-service 的 ch_client 使用同一组环境变量与默认值。
+    """
     import httpx
 
     host = os.getenv("CLICKHOUSE_HOST", "clickhouse")
     port = int(os.getenv("CLICKHOUSE_HTTP_PORT", "8123"))
+    headers = {"Content-Type": "text/plain"}
+    user = os.getenv("CLICKHOUSE_USER", "ruilog")
+    password = os.getenv("CLICKHOUSE_PASSWORD", "ruilogpass")
+    if user:
+        headers["X-ClickHouse-User"] = user
+        headers["X-ClickHouse-Key"] = password
     r = httpx.post(f"http://{host}:{port}/", content=sql.encode("utf-8"),
-                   headers={"Content-Type": "text/plain"}, timeout=timeout)
-    r.raise_for_status()
+                   headers=headers, timeout=timeout)
+    if r.status_code >= 400:
+        raise RuntimeError(f"ClickHouse HTTP {r.status_code}: {r.text[:300]}")
     return r.text.strip()
 
 
@@ -781,7 +793,11 @@ def list_quotas(user: Dict[str, Any] = Depends(require("storage", "view"))):
     used: Dict[str, int] = {}
     docs: Dict[str, int] = {}
     for ix in fetch_indices(""):
-        code = ix["name"][len("logs-"):]
+        # 索引名带日期后缀（logs-i6000-2026.11.20），必须归一出租户编码，
+        # 直接切前缀会得到 "i6000-2026.11.20"，与 tenant_code 永不相等 → 恒为 0。
+        code = index_tenant(ix["name"])
+        if not code:
+            continue
         used[code] = used.get(code, 0) + ix["bytes"]
         docs[code] = docs.get(code, 0) + ix["docs"]
 

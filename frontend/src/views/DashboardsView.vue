@@ -6,8 +6,18 @@ import { Refresh, Plus, Download, Search } from '@element-plus/icons-vue'
 import {
   listDashboards, createDashboard, deleteDashboard, getDashboardMeta,
 } from '../api/dashboards'
+import { useAppStore } from '../stores/app'
 
 const router = useRouter()
+const app = useAppStore()
+
+// 看板是租户级资产：管理员切到「全部租户」时，列表里必须能看出每个看板属于谁
+function tenantLabel(code) {
+  if (!code) return '—'
+  if (code === 'all') return '全部租户'
+  const t = app.tenants.find((x) => x.value === code)
+  return t ? `${t.label}（${code}）` : code
+}
 
 const loading = ref(false)
 const allItems = ref([])
@@ -152,6 +162,11 @@ onMounted(async () => {
         <el-table-column label="仪表盘名称" min-width="180">
           <template #default="{ row }">
             <a class="link-name" @click="openDashboard(row)">{{ row.name }}</a>
+          </template>
+        </el-table-column>
+        <el-table-column label="所属租户" min-width="160">
+          <template #default="{ row }">
+            <el-tag size="small" effect="plain" :title="row.tenant || ''">{{ tenantLabel(row.tenant) }}</el-tag>
           </template>
         </el-table-column>
         <el-table-column prop="owner" label="负责人" min-width="120" />

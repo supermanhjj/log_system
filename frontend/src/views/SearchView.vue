@@ -96,6 +96,7 @@ const FIELDS = [
   { key: 'status', label: '状态' },
   { key: 'tenant', label: '租户' },
   { key: 'message', label: '内容', fixed: true },
+  { key: 'raw', label: '原始日志' },
 ]
 const visibleFields = ref(['time', 'log_class', 'level', 'source', 'host', 'message'])
 
@@ -136,12 +137,13 @@ const ctxLoading = ref(false)
 const rawLog = computed(() => {
   const r = currentRow.value
   if (!r) return ''
-  // 优先用采集端保留的原始整行；缺省（老数据无 raw）再回退合成
-  return r.raw || `${r.time} ${r.level} ${r.source} [${r.host}] ${r.message}`
+  // 原封不动展示采集到的原文：K8s 容器日志在 log（CRI 原文，含多行堆栈），
+  // 传统 syslog/app_log 在 raw。两者都没有才退化为合成行。
+  return r.log || r.raw || `${r.time} ${r.level} ${r.source} [${r.host}] ${r.message}`
 })
-// 上下文条目同样取原始整行
+// 上下文条目同样取采集原文
 function ctxLine(c) {
-  return c.raw || `${c.time} ${c.level} ${c.source} [${c.host}] ${c.message}`
+  return c.log || c.raw || `${c.time} ${c.level} ${c.source} [${c.host}] ${c.message}`
 }
 
 // PQL（管道语法）结果
@@ -469,7 +471,7 @@ const moreAfterEnd = ref(false)
 const moreSameSource = ref(false)
 
 function moreLine(c) {
-  return c.raw || `${c.time} ${c.level} ${c.source} [${c.host}] ${c.message}`
+  return c.log || c.raw || `${c.time} ${c.level} ${c.source} [${c.host}] ${c.message}`
 }
 
 async function fetchMoreLines() {
@@ -852,13 +854,22 @@ watch(
                 <el-tag :type="levelTagType(row.level)" size="small" effect="light">{{ row.level }}</el-tag>
               </template>
             </el-table-column>
-            <el-table-column v-if="isVisible('source')" prop="source" label="来源" width="150" />
+            <el-table-column v-if="isVisible('source')" label="来源" width="170">
+              <template #default="{ row }">
+                <span :title="row.source || ''">{{ row.sourceName || row.source || '—' }}</span>
+              </template>
+            </el-table-column>
             <el-table-column v-if="isVisible('host')" prop="host" label="主机" width="140" />
             <el-table-column v-if="isVisible('app')" prop="app" label="应用" width="120" />
             <el-table-column v-if="isVisible('traceId')" prop="traceId" label="traceId" width="170" />
             <el-table-column v-if="isVisible('status')" prop="status" label="状态" width="80" />
             <el-table-column v-if="isVisible('tenant')" prop="tenant" label="租户" width="100" />
             <el-table-column v-if="isVisible('message')" prop="message" label="内容" show-overflow-tooltip />
+            <el-table-column v-if="isVisible('raw')" label="原始日志" min-width="320">
+              <template #default="{ row }">
+                <span class="raw-cell">{{ row.log || row.raw || row.message }}</span>
+              </template>
+            </el-table-column>
           </el-table>
 
           <div class="pager">
@@ -900,7 +911,7 @@ watch(
             {{ currentRow.facility || '-' }}.{{ currentRow.severity ?? '-' }}
           </span>
         </el-descriptions-item>
-        <el-descriptions-item label="来源">{{ currentRow.source }}</el-descriptions-item>
+        <el-descriptions-item label="来源">{{ currentRow.sourceName || currentRow.source }}</el-descriptions-item>
         <el-descriptions-item label="主机">{{ currentRow.host }}</el-descriptions-item>
         <el-descriptions-item v-if="currentRow.app || currentRow.instance" label="应用 / 实例">
           {{ currentRow.app || '-' }}<span v-if="currentRow.instance"> / {{ currentRow.instance }}</span>
@@ -974,7 +985,7 @@ watch(
     >
       <div class="more-toolbar">
         <el-checkbox v-model="moreSameSource" @change="onSameSourceChange">
-          仅同来源（{{ currentRow && currentRow.source || '-' }}）
+          仅同来源（{{ currentRow && (currentRow.sourceName || currentRow.source) || '-' }}）
         </el-checkbox>
         <div class="more-toolbar-right">
           <span class="more-tip">高亮行为当前日志 · 向上/向下滚动加载更多</span>
@@ -1095,6 +1106,8 @@ watch(
 .ctx-loading, .ctx-empty { font-size: 12px; color: var(--color-text-3); padding: 6px 0; }
 .ctx-line { font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace; font-size: 12px; line-height: 1.6; color: var(--color-text-1); background: #f5f7fa; border: 1px solid var(--color-border-1); border-radius: 4px; padding: 8px 10px; margin-bottom: 6px; cursor: pointer; white-space: pre-wrap; word-break: break-all; transition: background .15s; }
 .ctx-line:hover { background: var(--el-color-primary-light-9); border-color: var(--el-color-primary-light-7); }
+/* 列表里的原始日志列：保留换行，最多展示 4 行，完整内容进详情抽屉看 */
+.raw-cell { display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; white-space: pre-wrap; font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace; font-size: 12px; line-height: 1.5; }
 .raw-section { margin-top: 16px; }
 .raw-title { font-size: 13px; font-weight: 600; color: var(--color-text-1); margin-bottom: 8px; }
 .raw-block { background: #E6FCF8; border: 1px solid #03857E; border-radius: 4px; box-shadow: inset 3px 0 0 #03857E; padding: 12px 12px 12px 15px; font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace; font-size: 12px; line-height: 1.6; color: #1f2d3d; white-space: pre-wrap; word-break: break-all; margin: 0; }

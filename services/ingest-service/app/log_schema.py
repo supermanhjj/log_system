@@ -239,6 +239,11 @@ def normalize(doc: Dict[str, Any]) -> Dict[str, Any]:
 
     out["log_class"] = log_class
     out["source_type"] = source_type
+    # source 是「日志来源」契约字段：syslog 取 program 名、Java 取 logger 名。
+    # 文件类来源（nginx / redis / kafka / postgres）采集端只打 app，缺 source 会让
+    # 来源分布、数据源健康度、检索来源列全部落空，这里用 app 补齐（已有值不覆盖）。
+    if not str(out.get("source") or "").strip() and str(out.get("app") or "").strip():
+        out["source"] = out["app"]
     out["level"] = level
     out["message"] = sanitize_text(build_message(out))
     if out.get("raw"):

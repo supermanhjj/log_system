@@ -26,6 +26,7 @@ import hashlib
 import time
 import socket
 import secrets
+import threading
 import traceback
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Tuple
@@ -941,6 +942,9 @@ def ingest(
 
     written = {"opensearch": False, "kafka": False}
     errors = []
+    # kafka 模式下不落 OS，但响应里仍需给出稳定的写入目标名（写别名），
+    # 否则返回体会因 idx 未定义直接 500——切换模式时最容易踩的坑。
+    idx = f"logs-{tenant}-write"
     # 双引擎写入链路（阶段2）：按 STORAGE_MODE 决定落点。
     #  - Kafka 失败不丢数据语义：dual 模式下 OS 仍写，Kafka 报错如实返回 502 让采集端重试；
     #  - kafka 模式下由 Flink 统一消费后写 OS+CH。
@@ -968,13 +972,42 @@ def ingest(
         "index": idx,
         "written": written,
         "storageMode": kafka_writer.mode(),
-        "message": "已写入 " + idx,
+        "message": ("已写入 " + idx) if written["opensearch"] else "已写入 Kafka（由 Flink 落 OS/CH）",
     }
+
+
+def ensure_tenant_targets() -> None:
+    """维护每个租户的当天索引与读/写别名。
+
+    kafka 稳态下 ingest 不再直写 OpenSearch，但别名仍必须由这里保证存在：
+    否则 Flink 首次写「logs-<tenant>-write」时，OpenSearch 会自动创建同名真实
+    索引，查询侧读别名「logs-<tenant>」查不到数据，跨天滚动也会失效。
+    启动时执行一次，之后每 10 分钟校正一次，成本是租户数量级的元数据调用。
+    """
+    try:
+        tenants = pg_query("SELECT code FROM tenants WHERE enabled ORDER BY id")
+    except Exception as e:  # noqa: BLE001
+        print(f"[index_manager] 租户列表读取失败，跳过别名校正: {e}", flush=True)
+        return
+    for row in tenants:
+        code = row["code"]
+        try:
+            index_manager.ensure_write_target(os_client, code)
+        except Exception as e:  # noqa: BLE001
+            print(f"[index_manager] 别名校正失败 tenant={code}: {e}", flush=True)
+
+
+def _alias_refresh_loop() -> None:
+    while True:
+        time.sleep(600)
+        ensure_tenant_targets()
 
 
 @app.on_event("startup")
 def _startup():
     init_db()
+    ensure_tenant_targets()
+    threading.Thread(target=_alias_refresh_loop, daemon=True).start()
 
 
 @app.get("/meta")

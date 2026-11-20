@@ -464,7 +464,7 @@ onBeforeUnmount(() => stopAutoRefresh())
 
         <div v-if="currentEvent.matchedSources && currentEvent.matchedSources.length" class="mini-block">
           <div class="mini-title">命中来源分布</div>
-          <el-tag v-for="s in currentEvent.matchedSources" :key="s" size="small" effect="plain" class="mini-tag">{{ s }}</el-tag>
+          <el-tag v-for="(s, i) in (currentEvent.matchedSourceNames || currentEvent.matchedSources)" :key="i" size="small" effect="plain" class="mini-tag">{{ s }}</el-tag>
         </div>
         <div v-if="currentEvent.matchedHosts && currentEvent.matchedHosts.length" class="mini-block">
           <div class="mini-title">命中主机分布</div>

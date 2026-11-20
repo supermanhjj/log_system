@@ -27,11 +27,13 @@ from typing import Any, Dict, List, Optional
 import psycopg2
 import psycopg2.extras
 import redis
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from opensearchpy import OpenSearch
 from pydantic import BaseModel, Field
+
+from .authz import current_identity, resolve_tenant
 
 # ---------------------------------------------------------------------------
 # 连接（惰性；模块导入不触网）
@@ -58,6 +60,7 @@ rds = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True,
                   socket_connect_timeout=2, socket_timeout=2)
 
 CST = timezone(timedelta(hours=8))
+DEFAULT_TENANT = "i6000"            # 心跳未自报租户时的历史默认值（现有采集端均未传）
 DEFAULT_TIMEOUT_SEC = 180           # 心跳超过 3 分钟标记离线（原型口径）
 STATUS_RANK = {"离线": 0, "异常": 1, "告警中": 2, "维护中": 3, "运行中": 4}
 ROLE_CANDIDATES = {
@@ -121,7 +124,8 @@ def init_db() -> None:
             """
             CREATE TABLE IF NOT EXISTS agents (
                 id SERIAL PRIMARY KEY,
-                hostname TEXT UNIQUE NOT NULL,
+                tenant_id TEXT NOT NULL DEFAULT 'i6000',
+                hostname TEXT NOT NULL,
                 ip TEXT,                       -- 人工登记值，优先展示
                 observed_ip TEXT,              -- 服务端观测到的心跳来源地址（自动，不覆盖人工值）
                 version TEXT,
@@ -148,6 +152,7 @@ def init_db() -> None:
             """
             CREATE TABLE IF NOT EXISTS agent_upgrade_tasks (
                 id SERIAL PRIMARY KEY,
+                tenant_id TEXT NOT NULL DEFAULT 'i6000',
                 target_version TEXT NOT NULL,
                 concurrency INTEGER NOT NULL DEFAULT 1,
                 created_by TEXT DEFAULT 'system',
@@ -162,6 +167,7 @@ def init_db() -> None:
             """
             CREATE TABLE IF NOT EXISTS agent_commands (
                 id SERIAL PRIMARY KEY,
+                tenant_id TEXT NOT NULL DEFAULT 'i6000',
                 hostname TEXT NOT NULL,
                 type TEXT NOT NULL,
                 payload JSONB NOT NULL DEFAULT '{}'::jsonb,
@@ -176,7 +182,28 @@ def init_db() -> None:
         )
         # 老库平滑升级：CREATE TABLE IF NOT EXISTS 不会给已存在的表补列
         pg_exec("ALTER TABLE agents ADD COLUMN IF NOT EXISTS observed_ip TEXT")
-        pg_exec("CREATE INDEX IF NOT EXISTS idx_agent_commands_status ON agent_commands(hostname, status)")
+        pg_exec("ALTER TABLE agents ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'i6000'")
+        pg_exec("ALTER TABLE agent_commands ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'i6000'")
+        pg_exec("ALTER TABLE agent_upgrade_tasks ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'i6000'")
+        # hostname 原来是全局唯一，多租户下必须放开；按约束定义匹配删除，避免硬编码约束名
+        pg_exec(
+            """
+            DO $$
+            DECLARE c record;
+            BEGIN
+                FOR c IN
+                    SELECT conname FROM pg_constraint
+                     WHERE conrelid = 'agents'::regclass AND contype = 'u'
+                       AND pg_get_constraintdef(oid) = 'UNIQUE (hostname)'
+                LOOP
+                    EXECUTE format('ALTER TABLE agents DROP CONSTRAINT %%I', c.conname);
+                END LOOP;
+            END $$;
+            """
+        )
+        pg_exec("CREATE UNIQUE INDEX IF NOT EXISTS uq_agents_tenant_hostname ON agents(tenant_id, hostname)")
+        pg_exec("CREATE INDEX IF NOT EXISTS idx_agent_commands_tenant_status ON agent_commands(tenant_id, hostname, status)")
+        pg_exec("CREATE INDEX IF NOT EXISTS idx_agent_upgrade_tasks_tenant ON agent_upgrade_tasks(tenant_id, id DESC)")
     except Exception as e:  # noqa: BLE001
         print(f"[agent-service] init_db skipped: {e}", flush=True)
 
@@ -184,6 +211,7 @@ def init_db() -> None:
 def row_to_agent(r: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "id": r["id"],
+        "tenant": r.get("tenant_id") or DEFAULT_TENANT,
         "hostname": r["hostname"],
         "ip": r.get("ip") or "—",
         "observedIp": r.get("observed_ip"),
@@ -210,11 +238,12 @@ def row_to_agent(r: Dict[str, Any]) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Redis 心跳（失败降级到 PG last_seen，绝不让心跳接口因缓存挂掉而失败）
 # ---------------------------------------------------------------------------
-def hb_key(h: str) -> str:
-    return f"logsys:agent:hb:{h}"
+def hb_key(tenant: str, hostname: str) -> str:
+    # 主机名可跨租户重复，缓存键必须带租户，否则同名主机互相覆盖
+    return f"logsys:agent:hb:{tenant}:{hostname}"
 
 
-def hb_write(hostname: str, body: Dict[str, Any], server_ts: int,
+def hb_write(tenant: str, hostname: str, body: Dict[str, Any], server_ts: int,
              peer_ip: Optional[str]) -> Dict[str, Any]:
     rec = {
         "ts": server_ts,
@@ -224,14 +253,16 @@ def hb_write(hostname: str, body: Dict[str, Any], server_ts: int,
         "clientTs": body.get("ts"),
         "clientStatus": body.get("status"),
     }
+    count_key = f"logsys:agent:count:{tenant}:{hostname}"
+    recent_key = f"logsys:agent:recent:{tenant}:{hostname}"
     try:
         pipe = rds.pipeline()
-        pipe.set(hb_key(hostname), json.dumps(rec))
-        pipe.incr(f"logsys:agent:count:{hostname}")
-        pipe.lpush(f"logsys:agent:recent:{hostname}", server_ts)
-        pipe.ltrim(f"logsys:agent:recent:{hostname}", 0, 19)
-        pipe.expire(hb_key(hostname), 7 * 86400)
-        pipe.expire(f"logsys:agent:recent:{hostname}", 7 * 86400)
+        pipe.set(hb_key(tenant, hostname), json.dumps(rec))
+        pipe.incr(count_key)
+        pipe.lpush(recent_key, server_ts)
+        pipe.ltrim(recent_key, 0, 19)
+        pipe.expire(hb_key(tenant, hostname), 7 * 86400)
+        pipe.expire(recent_key, 7 * 86400)
         pipe.execute()
         rec["redis"] = True
     except Exception as e:  # noqa: BLE001
@@ -240,15 +271,15 @@ def hb_write(hostname: str, body: Dict[str, Any], server_ts: int,
     return rec
 
 
-def hb_read(hostname: str) -> Dict[str, Any]:
+def hb_read(tenant: str, hostname: str) -> Dict[str, Any]:
     out: Dict[str, Any] = {"lastTs": None, "count": 0, "intervals": [], "redis": False}
     try:
-        raw = rds.get(hb_key(hostname))
+        raw = rds.get(hb_key(tenant, hostname))
         if raw:
             out.update(json.loads(raw))
             out["lastTs"] = out.get("ts")
-        out["count"] = int(rds.get(f"logsys:agent:count:{hostname}") or 0)
-        ts = [int(x) for x in rds.lrange(f"logsys:agent:recent:{hostname}", 0, 19)]
+        out["count"] = int(rds.get(f"logsys:agent:count:{tenant}:{hostname}") or 0)
+        ts = [int(x) for x in rds.lrange(f"logsys:agent:recent:{tenant}:{hostname}", 0, 19)]
         out["intervals"] = [
             round((ts[i] - ts[i + 1]) / 1000, 1) for i in range(min(len(ts) - 1, 9))
         ]
@@ -449,15 +480,18 @@ def derive_status(row: Dict[str, Any], hb: Dict[str, Any]) -> Dict[str, Any]:
             "heartbeatCount": hb.get("count") or a["heartbeatCount"]}
 
 
-def build_agents() -> Dict[str, Any]:
+def build_agents(tenant: str) -> Dict[str, Any]:
     try:
-        rows = pg_query("SELECT * FROM agents ORDER BY hostname")
+        if tenant == "all":
+            rows = pg_query("SELECT * FROM agents ORDER BY tenant_id, hostname")
+        else:
+            rows = pg_query("SELECT * FROM agents WHERE tenant_id=%s ORDER BY hostname", (tenant,))
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=503, detail=f"PostgreSQL 不可用：{e}")
     items: List[Dict[str, Any]] = []
     for r in rows:
         a = row_to_agent(r)
-        hb = hb_read(a["hostname"])
+        hb = hb_read(a["tenant"], a["hostname"])
         st = derive_status(r, hb)
         ls = log_stats(a["hostValues"], a["sourceKeys"], a["fieldMap"])
         items.append({
@@ -559,21 +593,33 @@ async def heartbeat(req: Request):
         body = {}
     hostname = str(body.get("hostname") or "unknown").strip()
     server_ts = now_ms()
+    degraded: List[str] = []
+    # 采集端无 JWT：租户取心跳 body；未传则用历史默认租户（现有采集端都没传，不能因此拒收）。
+    # 显式传了但租户不存在/停用则直接 400，避免静默归到 i6000 掩盖配置错误。
+    raw_tenant = str(body.get("tenant") or "").strip()
+    tenant = raw_tenant or DEFAULT_TENANT
+    if raw_tenant:
+        try:
+            if not pg_query("SELECT 1 FROM tenants WHERE code=%s AND enabled", (raw_tenant,)):
+                raise HTTPException(status_code=400, detail=f"租户「{raw_tenant}」不存在或已停用")
+        except HTTPException:
+            raise
+        except Exception as e:  # noqa: BLE001
+            degraded.append(f"tenant-check: {str(e)[:120]}")
     # 当前 dummy 心跳不带 IP：以服务端真实观测到的连接对端为准，不造数据、无需采集端配置。
     # 经反向代理部署时采信 X-Forwarded-For 首跳；直连时用 TCP peer。
     xff = req.headers.get("x-forwarded-for")
     peer_ip = (xff.split(",")[0].strip() if xff else None) or (req.client.host if req.client else None)
-    rec = hb_write(hostname, body, server_ts, peer_ip)
+    rec = hb_write(tenant, hostname, body, server_ts, peer_ip)
 
-    degraded: List[str] = []
     try:
         pg_exec(
             """
-            INSERT INTO agents (hostname, observed_ip, version, os, first_seen, last_seen, heartbeat_count)
-            VALUES (%s, %s, %s, %s, now(), now(), 1)
-            ON CONFLICT (hostname) DO NOTHING
+            INSERT INTO agents (tenant_id, hostname, observed_ip, version, os, first_seen, last_seen, heartbeat_count)
+            VALUES (%s, %s, %s, %s, %s, now(), now(), 1)
+            ON CONFLICT (tenant_id, hostname) DO NOTHING
             """,
-            (hostname, peer_ip, body.get("version"), body.get("os")),
+            (tenant, hostname, peer_ip, body.get("version"), body.get("os")),
         )
         pg_exec(
             """
@@ -581,9 +627,9 @@ async def heartbeat(req: Request):
                 observed_ip=COALESCE(%s, observed_ip),
                 version=COALESCE(%s, version), os=COALESCE(%s, os),
                 updated_at=now()
-            WHERE hostname=%s
+            WHERE tenant_id=%s AND hostname=%s
             """,
-            (peer_ip, body.get("version"), body.get("os"), hostname),
+            (peer_ip, body.get("version"), body.get("os"), tenant, hostname),
         )
     except Exception as e:  # noqa: BLE001
         degraded.append(f"pg: {str(e)[:120]}")
@@ -593,8 +639,8 @@ async def heartbeat(req: Request):
     commands: List[Dict[str, Any]] = []
     try:
         pend = pg_query(
-            "SELECT id, type, payload FROM agent_commands WHERE hostname=%s AND status IN ('pending','delivered') ORDER BY id LIMIT 5",
-            (hostname,),
+            "SELECT id, type, payload FROM agent_commands WHERE tenant_id=%s AND hostname=%s AND status IN ('pending','delivered') ORDER BY id LIMIT 5",
+            (tenant, hostname),
         )
         commands = [{"id": c["id"], "type": c["type"], "payload": c["payload"] or {}} for c in pend]
         if pend:
@@ -604,7 +650,7 @@ async def heartbeat(req: Request):
         degraded.append(f"commands: {str(e)[:120]}")
 
     return {
-        "ok": True, "hostname": hostname,
+        "ok": True, "hostname": hostname, "tenant": tenant,
         "serverTime": to_local(server_ts), "serverTs": server_ts,
         "clientTs": body.get("ts"),
         "observedIp": peer_ip,
@@ -623,8 +669,11 @@ def list_agents(
     region: str = Query(""),
     page: int = Query(1, ge=1),
     pageSize: int = Query(20, ge=1, le=200),
+    tenant: Optional[str] = Query(None),
+    identity: Dict[str, Any] = Depends(current_identity),
 ):
-    data = build_agents()
+    effective = resolve_tenant(identity, tenant)
+    data = build_agents(effective)
     items = data["items"]
     kw = keyword.strip().lower()
     if kw:
@@ -638,7 +687,7 @@ def list_agents(
     total = len(items)
     start = (page - 1) * pageSize
     return {"total": total, "page": page, "pageSize": pageSize,
-            "items": items[start:start + pageSize],
+            "items": items[start:start + pageSize], "tenant": effective,
             "stats": data["stats"], "redis": data["redis"],
             "updatedAt": data["updatedAt"], "timeoutDefault": data["timeoutDefault"],
             "fields": index_fields(), "fieldRoles": roles_for({}),
@@ -647,16 +696,24 @@ def list_agents(
 
 
 @app.get("/agents/{hostname}")
-def agent_detail(hostname: str):
-    rows = pg_query("SELECT * FROM agents WHERE hostname=%s", (hostname,))
+def agent_detail(
+    hostname: str,
+    tenant: Optional[str] = Query(None),
+    identity: Dict[str, Any] = Depends(current_identity),
+):
+    effective = resolve_tenant(identity, tenant)
+    if effective == "all":
+        raise HTTPException(status_code=400, detail="查看 Agent 详情需指定具体租户")
+    rows = pg_query("SELECT * FROM agents WHERE tenant_id=%s AND hostname=%s", (effective, hostname))
     if not rows:
         raise HTTPException(status_code=404, detail="Agent 未注册")
     a = row_to_agent(rows[0])
-    hb = hb_read(hostname)
+    hb = hb_read(effective, hostname)
     st = derive_status(rows[0], hb)
     ls = log_stats(a["hostValues"], a["sourceKeys"], a["fieldMap"])
     cmds = pg_query(
-        "SELECT * FROM agent_commands WHERE hostname=%s ORDER BY id DESC LIMIT 20", (hostname,)
+        "SELECT * FROM agent_commands WHERE tenant_id=%s AND hostname=%s ORDER BY id DESC LIMIT 20",
+        (effective, hostname),
     )
     return {
         "agent": {**a, **st, **resolve_ip(a, hb),
@@ -681,8 +738,16 @@ def agent_detail(hostname: str):
 
 
 @app.put("/agents/{hostname}")
-def update_agent(hostname: str, payload: AgentUpdate):
-    rows = pg_query("SELECT id FROM agents WHERE hostname=%s", (hostname,))
+def update_agent(
+    hostname: str,
+    payload: AgentUpdate,
+    tenant: Optional[str] = Query(None),
+    identity: Dict[str, Any] = Depends(current_identity),
+):
+    effective = resolve_tenant(identity, tenant)
+    if effective == "all":
+        raise HTTPException(status_code=400, detail="更新 Agent 需指定具体租户")
+    rows = pg_query("SELECT id FROM agents WHERE tenant_id=%s AND hostname=%s", (effective, hostname))
     if not rows:
         raise HTTPException(status_code=404, detail="Agent 未注册")
     pg_exec(
@@ -690,39 +755,58 @@ def update_agent(hostname: str, payload: AgentUpdate):
         UPDATE agents SET ip=%s, version=%s, region=%s, os=%s, status_override=%s,
             heartbeat_timeout_sec=%s, host_values=%s, source_keys=%s, field_map=%s,
             config=%s, tags=%s, extra=%s, note=%s, updated_at=now()
-        WHERE hostname=%s
+        WHERE tenant_id=%s AND hostname=%s
         """,
         (payload.ip, payload.version, payload.region, payload.os, payload.status_override,
          payload.heartbeat_timeout_sec, psycopg2.extras.Json(payload.host_values),
          psycopg2.extras.Json(payload.source_keys), psycopg2.extras.Json(payload.field_map),
          psycopg2.extras.Json(payload.config), psycopg2.extras.Json(payload.tags),
-         psycopg2.extras.Json(payload.extra), payload.note, hostname),
+         psycopg2.extras.Json(payload.extra), payload.note, effective, hostname),
     )
     _rate_cache.clear()
     return {"ok": True, "hostname": hostname}
 
 
 @app.post("/agents/{hostname}/command")
-def send_command(hostname: str, req: CommandIn):
+def send_command(
+    hostname: str,
+    req: CommandIn,
+    tenant: Optional[str] = Query(None),
+    identity: Dict[str, Any] = Depends(current_identity),
+):
     """下发真实指令（进入指令队列，由下次心跳响应带出）。"""
-    rows = pg_query("SELECT id FROM agents WHERE hostname=%s", (hostname,))
+    effective = resolve_tenant(identity, tenant)
+    if effective == "all":
+        raise HTTPException(status_code=400, detail="下发指令需指定具体租户")
+    rows = pg_query("SELECT id FROM agents WHERE tenant_id=%s AND hostname=%s", (effective, hostname))
     if not rows:
         raise HTTPException(status_code=404, detail="Agent 未注册")
     row = pg_query(
         """
-        INSERT INTO agent_commands (hostname, type, payload, detail)
-        VALUES (%s, %s, %s, %s) RETURNING id
+        INSERT INTO agent_commands (tenant_id, hostname, type, payload, detail)
+        VALUES (%s, %s, %s, %s, %s) RETURNING id
         """,
-        (hostname, req.type, psycopg2.extras.Json(req.payload), req.note),
+        (effective, hostname, req.type, psycopg2.extras.Json(req.payload), req.note),
     )
     return {"ok": True, "commandId": row[0]["id"], "status": "pending",
             "note": "指令已进入队列，将在该 Agent 下一次心跳的响应中下发；确认状态以 Agent 回传 ack 为准"}
 
 
 @app.post("/agents/{hostname}/status")
-def set_status(hostname: str, payload: Dict[str, Any]):
+def set_status(
+    hostname: str,
+    payload: Dict[str, Any],
+    tenant: Optional[str] = Query(None),
+    identity: Dict[str, Any] = Depends(current_identity),
+):
+    effective = resolve_tenant(identity, tenant)
+    if effective == "all":
+        raise HTTPException(status_code=400, detail="变更 Agent 状态需指定具体租户")
+    if not pg_query("SELECT id FROM agents WHERE tenant_id=%s AND hostname=%s", (effective, hostname)):
+        raise HTTPException(status_code=404, detail="Agent 未注册")
     val = payload.get("status") or None      # 维护中 / None(恢复正常)
-    pg_exec("UPDATE agents SET status_override=%s, updated_at=now() WHERE hostname=%s", (val, hostname))
+    pg_exec("UPDATE agents SET status_override=%s, updated_at=now() WHERE tenant_id=%s AND hostname=%s",
+            (val, effective, hostname))
     return {"ok": True, "hostname": hostname, "status": val or "正常"}
 
 
@@ -748,13 +832,14 @@ def ack_command(command_id: int, req: AckIn):
 
 # ------------------------------- 升级任务 -------------------------------
 def task_progress(task: Dict[str, Any]) -> Dict[str, Any]:
-    cmds = pg_query("SELECT * FROM agent_commands WHERE task_id=%s ORDER BY id", (task["id"],))
+    cmds = pg_query("SELECT * FROM agent_commands WHERE tenant_id=%s AND task_id=%s ORDER BY id",
+                    (task["tenant_id"], task["id"]))
     total = len(cmds)
     delivered = sum(1 for c in cmds if c["status"] in ("delivered", "acked", "failed"))
     acked = sum(1 for c in cmds if c["status"] == "acked")
     failed = sum(1 for c in cmds if c["status"] == "failed")
     return {
-        "id": task["id"], "targetVersion": task["target_version"],
+        "id": task["id"], "tenant": task["tenant_id"], "targetVersion": task["target_version"],
         "concurrency": task["concurrency"], "createdBy": task.get("created_by"),
         "status": task["status"], "note": task.get("note"),
         "createdAt": to_local(task.get("created_at")),
@@ -771,9 +856,20 @@ def task_progress(task: Dict[str, Any]) -> Dict[str, Any]:
 
 
 @app.get("/upgrade-tasks")
-def list_upgrade_tasks(limit: int = Query(10, ge=1, le=100)):
+def list_upgrade_tasks(
+    limit: int = Query(10, ge=1, le=100),
+    tenant: Optional[str] = Query(None),
+    identity: Dict[str, Any] = Depends(current_identity),
+):
+    effective = resolve_tenant(identity, tenant)
     try:
-        rows = pg_query("SELECT * FROM agent_upgrade_tasks ORDER BY id DESC LIMIT %s", (limit,))
+        if effective == "all":
+            rows = pg_query("SELECT * FROM agent_upgrade_tasks ORDER BY id DESC LIMIT %s", (limit,))
+        else:
+            rows = pg_query(
+                "SELECT * FROM agent_upgrade_tasks WHERE tenant_id=%s ORDER BY id DESC LIMIT %s",
+                (effective, limit),
+            )
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=503, detail=f"PostgreSQL 不可用：{e}")
     tasks = [task_progress(r) for r in rows]
@@ -782,9 +878,16 @@ def list_upgrade_tasks(limit: int = Query(10, ge=1, le=100)):
 
 
 @app.post("/upgrade-tasks", status_code=201)
-def create_upgrade_task(req: UpgradeIn):
+def create_upgrade_task(
+    req: UpgradeIn,
+    tenant: Optional[str] = Query(None),
+    identity: Dict[str, Any] = Depends(current_identity),
+):
     """创建真实滚动升级任务：逐台生成指令，离线主机可跳过。"""
-    agents = build_agents()["items"]
+    effective = resolve_tenant(identity, tenant)
+    if effective == "all":
+        raise HTTPException(status_code=400, detail="创建升级任务需指定具体租户")
+    agents = build_agents(effective)["items"]
     selected = [a for a in agents if (not req.hostnames or a["hostname"] in req.hostnames)]
     if req.skip_offline:
         skipped = [a["hostname"] for a in selected if a["status"] == "离线"]
@@ -795,18 +898,18 @@ def create_upgrade_task(req: UpgradeIn):
         raise HTTPException(status_code=400, detail="没有可升级的在线 Agent")
     tid = pg_query(
         """
-        INSERT INTO agent_upgrade_tasks (target_version, concurrency, created_by, status, note)
-        VALUES (%s, %s, %s, 'running', %s) RETURNING id
+        INSERT INTO agent_upgrade_tasks (tenant_id, target_version, concurrency, created_by, status, note)
+        VALUES (%s, %s, %s, %s, 'running', %s) RETURNING id
         """,
-        (req.target_version, req.concurrency, req.created_by, req.note),
+        (effective, req.target_version, req.concurrency, req.created_by, req.note),
     )[0]["id"]
     for a in selected:
         pg_exec(
             """
-            INSERT INTO agent_commands (hostname, type, payload, task_id, detail)
-            VALUES (%s, 'upgrade', %s, %s, %s)
+            INSERT INTO agent_commands (tenant_id, hostname, type, payload, task_id, detail)
+            VALUES (%s, %s, 'upgrade', %s, %s, %s)
             """,
-            (a["hostname"], psycopg2.extras.Json({
+            (effective, a["hostname"], psycopg2.extras.Json({
                 "version": req.target_version, "strategy": "rolling",
                 "resume": True, "currentVersion": a["version"],
             }), tid, req.note),
@@ -816,23 +919,43 @@ def create_upgrade_task(req: UpgradeIn):
 
 
 @app.post("/upgrade-tasks/{task_id}/cancel")
-def cancel_upgrade_task(task_id: int):
-    pg_exec("UPDATE agent_upgrade_tasks SET status='cancelled', finished_at=now() WHERE id=%s", (task_id,))
-    pg_exec("UPDATE agent_commands SET status='failed', detail='任务已取消' WHERE task_id=%s AND status IN ('pending','delivered')", (task_id,))
+def cancel_upgrade_task(
+    task_id: int,
+    tenant: Optional[str] = Query(None),
+    identity: Dict[str, Any] = Depends(current_identity),
+):
+    effective = resolve_tenant(identity, tenant)
+    if effective == "all":
+        raise HTTPException(status_code=400, detail="取消升级任务需指定具体租户")
+    rows = pg_query(
+        "UPDATE agent_upgrade_tasks SET status='cancelled', finished_at=now() WHERE id=%s AND tenant_id=%s RETURNING id",
+        (task_id, effective),
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="升级任务不存在")
+    pg_exec("UPDATE agent_commands SET status='failed', detail='任务已取消' WHERE tenant_id=%s AND task_id=%s AND status IN ('pending','delivered')",
+            (effective, task_id))
     return {"ok": True, "taskId": task_id, "status": "cancelled"}
 
 
 @app.get("/install-config")
-def install_config(hostname: str = Query("new-host"), tenant: str = Query("i6000")):
+def install_config(
+    hostname: str = Query("new-host"),
+    tenant: Optional[str] = Query(None),
+    identity: Dict[str, Any] = Depends(current_identity),
+):
     """生成可直接落盘的 Fluent Bit 接入配置（真实可用，非占位安装包）。
 
     与 fluentbit/fluent-bit.conf 当前跑通的链路一致：tail 采集 → rewrite_tag 按租户路由 →
     OpenSearch；dummy + http 每 30s 上报心跳。含管控脚本 ack 端点说明。
     """
+    effective = resolve_tenant(identity, tenant)
+    if effective == "all":
+        raise HTTPException(status_code=400, detail="生成安装配置需指定具体租户")
     text = f"""# ============================================================================
 # 统一日志分析平台 · 采集端接入配置（由 agent-service 实时生成）
 # 目标主机 : {hostname}
-# 目标租户 : {tenant}
+# 目标租户 : {effective}
 # 生成时间 : {to_local(now_ms())} (Asia/Shanghai)
 # 说明    : 业务主机仅部署单一 Fluent Bit 进程；管控脚本随包分发，由 exec 插件调起。
 #           下方心跳段使用原生 dummy+http（适配 distroless 官方镜像无 exec 插件的情况）。
@@ -849,7 +972,7 @@ def install_config(hostname: str = Query("new-host"), tenant: str = Query("i6000
 [INPUT]
     Name         dummy
     Tag          agent.heartbeat
-    Dummy        {{"hostname":"{hostname}","version":"{FLUENTBIT_VERSION_HINT}","status":"online","ts":"{datetime.now(tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}"}}
+    Dummy        {{"hostname":"{hostname}","tenant":"{effective}","version":"{FLUENTBIT_VERSION_HINT}","status":"online","ts":"{datetime.now(tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}"}}
     Interval_Sec 30
 
 [OUTPUT]
@@ -881,7 +1004,7 @@ def install_config(hostname: str = Query("new-host"), tenant: str = Query("i6000
 [FILTER]
     Name    record_modifier
     Match   src.*
-    Record  tenant_id {tenant}
+    Record  tenant_id {effective}
 
 # ---- 统一写入：交给接入网关，不在采集端直连 OpenSearch ----
 # 好处：租户合法性校验、无法归属→入口拒收、脱敏/采样/限流都在网关一处扩展；

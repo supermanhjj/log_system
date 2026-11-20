@@ -11,18 +11,20 @@
 开发期 OpenSearch 安全插件已关闭，连接无需账号密码。租户隔离：tenant 映射到固定索引
 logs-<tenant>；tenant=all 走 logs-* 并按需附加 tenant_id 过滤（由鉴权中间件统一注入，本切片前端透传）。
 """
+import json
 import os
 import re
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional
 
 import httpx
-from fastapi import Depends, FastAPI, HTTPException
+import psycopg2.extras
+from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from opensearchpy import OpenSearch
 
-from .authz import current_identity, resolve_tenant, tenant_directory
+from .authz import _conn, current_identity, resolve_tenant, tenant_directory
 
 OPENSEARCH_HOST = os.getenv("OPENSEARCH_HOST", "opensearch")
 OPENSEARCH_PORT = int(os.getenv("OPENSEARCH_PORT", "9200"))
@@ -42,6 +44,41 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ---------------------------------------------------------------------------
+# saved-views 持久化：复用 authz 的惰性 PG 连接，不再维护第二套连接逻辑
+# ---------------------------------------------------------------------------
+def pg_query(sql: str, params: tuple = ()) -> List[Dict[str, Any]]:
+    with _conn().cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(sql, params)
+        return [dict(r) for r in cur.fetchall()]
+
+
+def init_db() -> None:
+    try:
+        with _conn().cursor() as cur:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS saved_views (
+                    id SERIAL PRIMARY KEY,
+                    tenant_id TEXT NOT NULL,
+                    owner TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    created_at TIMESTAMPTZ DEFAULT now(),
+                    updated_at TIMESTAMPTZ DEFAULT now(),
+                    UNIQUE (tenant_id, owner, name)
+                )
+                """
+            )
+    except Exception as e:  # noqa: BLE001
+        print(f"[search-service] init_db skipped: {e}", flush=True)
+
+
+@app.on_event("startup")
+def _startup() -> None:
+    init_db()
 
 
 # ----------------------------------------------------------------------------
@@ -323,7 +360,33 @@ LOG_FIELDS = [
 ]
 
 
-def normalize_hit(hit: Dict[str, Any], code2name: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+def source_aliases(tenant: Optional[str]) -> Dict[str, str]:
+    """数据源显示名：source_key → display_name（与「数据接入 → 数据源」同一张表）。
+
+    规则：配置了显示名就用显示名，没配就回落到原始来源标识。
+    原始字段 source 保持不变，筛选/下钻仍按真实值。
+    """
+    try:
+        with _conn().cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            if tenant in ("all", "*", "", None):
+                cur.execute(
+                    "SELECT source_key, display_name FROM data_sources "
+                    "WHERE display_name IS NOT NULL AND display_name <> ''"
+                )
+            else:
+                cur.execute(
+                    "SELECT source_key, display_name FROM data_sources "
+                    "WHERE tenant IN (%s, 'all') AND display_name IS NOT NULL AND display_name <> ''",
+                    (tenant,),
+                )
+            return {r["source_key"]: r["display_name"] for r in cur.fetchall()}
+    except Exception as e:  # noqa: BLE001
+        print(f"[search-service] source_aliases skipped: {e}", flush=True)
+        return {}
+
+
+def normalize_hit(hit: Dict[str, Any], code2name: Optional[Dict[str, str]] = None,
+                  aliases: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     s = hit.get("_source", {})
     code = s.get("tenant_id")
     return {
@@ -332,6 +395,8 @@ def normalize_hit(hit: Dict[str, Any], code2name: Optional[Dict[str, str]] = Non
         "time": to_local(s.get("@timestamp")),
         "level": s.get("level"),
         "source": s.get("source"),
+        # 展示用名称：配了显示名取显示名，否则就是原始来源标识
+        "sourceName": (aliases or {}).get(s.get("source"), s.get("source")),
         "host": s.get("host"),
         "traceId": s.get("traceId"),
         "message": s.get("message"),
@@ -390,6 +455,7 @@ def query(req: QueryReq, identity: Dict[str, Any] = Depends(current_identity)):
         if isinstance(total, dict):
             total = total.get("value")
         code2name = {str(t.get("code")): str(t.get("name")) for t in tenant_directory()}
+        aliases = source_aliases(tenant)
         return {
             "total": total,
             "took_ms": resp.get("took"),
@@ -397,7 +463,7 @@ def query(req: QueryReq, identity: Dict[str, Any] = Depends(current_identity)):
             "pageSize": req.pageSize,
             "tenant": tenant,
             "index": idx,
-            "hits": [normalize_hit(h, code2name) for h in resp["hits"]["hits"]],
+            "hits": [normalize_hit(h, code2name, aliases) for h in resp["hits"]["hits"]],
         }
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"opensearch error: {e}")
@@ -525,6 +591,7 @@ def context(req: ContextReq, identity: Dict[str, Any] = Depends(current_identity
     idx = index_for(tenant)
     src = LOG_FIELDS
     code2name = {str(t.get("code")): str(t.get("name")) for t in tenant_directory()}
+    aliases = source_aliases(tenant)
     base_must = []
     if req.source:
         base_must.append({"term": {"source": req.source}})
@@ -538,7 +605,7 @@ def context(req: ContextReq, identity: Dict[str, Any] = Depends(current_identity
             "_source": src,
         }
         resp = client.search(index=idx, body=body)
-        hits = [normalize_hit(h, code2name) for h in resp["hits"]["hits"]]
+        hits = [normalize_hit(h, code2name, aliases) for h in resp["hits"]["hits"]]
         if direction == "before":
             hits = list(reversed(hits))  # 逆序为时间正序（早→晚）
         return hits
@@ -549,16 +616,86 @@ def context(req: ContextReq, identity: Dict[str, Any] = Depends(current_identity
         raise HTTPException(status_code=502, detail=f"opensearch error: {e}")
 
 
-# saved-views：本切片为 stub（PG 落地留待统一数据模型阶段）
-# 落地时必须按 (租户, 用户) 维度存储——视图含查询条件，跨租户可见等同配置泄露。
+# saved-views：按 (租户, 用户) 落库——视图含查询条件，跨租户可见等同配置泄露。
+def public_view(row: Dict[str, Any]) -> Dict[str, Any]:
+    payload = row.get("payload")
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except ValueError:
+            payload = {}
+    return {
+        "id": row["id"],
+        "tenant": row["tenant_id"],
+        "name": row["name"],
+        "payload": payload or {},
+        "createdAt": str(row["created_at"]) if row.get("created_at") else None,
+        "updatedAt": str(row["updated_at"]) if row.get("updated_at") else None,
+    }
+
+
 @app.get("/saved-views")
-def list_saved_views(identity: Dict[str, Any] = Depends(current_identity)):
-    return {"items": [], "note": "stub: PG 持久化待阶段4统一实现"}
+def list_saved_views(
+    tenant: Optional[str] = Query(None),
+    identity: Dict[str, Any] = Depends(current_identity),
+):
+    effective = resolve_tenant(identity, tenant)
+    owner = identity["account"]
+    if effective == "all":
+        # 管理员跨租户巡检：仍只看本人的视图，避免读取他人配置
+        rows = pg_query(
+            "SELECT * FROM saved_views WHERE owner=%s ORDER BY updated_at DESC", (owner,)
+        )
+    else:
+        rows = pg_query(
+            "SELECT * FROM saved_views WHERE tenant_id=%s AND owner=%s ORDER BY updated_at DESC",
+            (effective, owner),
+        )
+    return {"items": [public_view(r) for r in rows], "tenant": effective}
 
 
 @app.post("/saved-views")
 def save_view(
     payload: Dict[str, Any],
+    tenant: Optional[str] = Query(None),
     identity: Dict[str, Any] = Depends(current_identity),
 ):
-    return {"status": "received", "note": "stub: 未落库", "payload": payload}
+    effective = resolve_tenant(identity, tenant)
+    if effective == "all":
+        raise HTTPException(status_code=400, detail="保存视图需指定具体租户")
+    name = str(payload.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="name 不能为空")
+    owner = identity["account"]
+    # name 已经是独立列，不再重复塞进 payload，避免读出来出现 payload.name 与 name 两份
+    body = {k: v for k, v in payload.items() if k != "name"}
+    rows = pg_query(
+        """
+        INSERT INTO saved_views (tenant_id, owner, name, payload)
+        VALUES (%s, %s, %s, %s)
+        ON CONFLICT (tenant_id, owner, name) DO UPDATE
+        SET payload=EXCLUDED.payload, updated_at=now()
+        RETURNING *
+        """,
+        (effective, owner, name, psycopg2.extras.Json(body)),
+    )
+    return public_view(rows[0])
+
+
+@app.delete("/saved-views/{view_id}")
+def delete_saved_view(
+    view_id: int,
+    tenant: Optional[str] = Query(None),
+    identity: Dict[str, Any] = Depends(current_identity),
+):
+    effective = resolve_tenant(identity, tenant)
+    if effective == "all":
+        raise HTTPException(status_code=400, detail="删除视图需指定具体租户")
+    owner = identity["account"]
+    rows = pg_query(
+        "DELETE FROM saved_views WHERE id=%s AND tenant_id=%s AND owner=%s RETURNING id",
+        (view_id, effective, owner),
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="视图不存在")
+    return {"status": "deleted", "id": view_id}

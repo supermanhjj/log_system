@@ -17,6 +17,12 @@ const router = useRouter()
 const app = useAppStore()
 
 // —— 模板内纯函数 ——
+function tenantLabel(code) {
+  if (!code) return '—'
+  if (code === 'all') return '全部租户'
+  const t = app.tenants.find((x) => x.value === code)
+  return t ? `${t.label}（${code}）` : code
+}
 function formatVal(v) { return v === undefined || v === null ? '—' : Number(v).toLocaleString('zh-CN') }
 function filterText(flt) {
   if (!flt || !Object.keys(flt).length) return '全部'
@@ -37,10 +43,10 @@ const error = ref(false)
 const editMode = ref(route.query.edit === '1')
 
 const dashboard = reactive({
-  id: dashId, name: '', owner: '', description: '',
+  id: dashId, name: '', owner: '', description: '', tenant: '',
   status: 'running', defaultRange: '近 24 小时', widgets: [],
 })
-const meta = reactive({ chartTypes: [], dimensions: [], ranges: [] })
+const meta = reactive({ chartTypes: [], dimensions: [], ranges: [], sourceTypes: [] })
 const rangeLabel = ref('近 24 小时')
 const dataMap = reactive({})          // widgetId -> 聚合结果
 const updatedAt = ref(null)
@@ -314,12 +320,17 @@ const logClassOptions = [
   { value: 'container', label: '容器' },
 ]
 const logClassLabel = (v) => logClassOptions.find((x) => x.value === v)?.label || v
-const sourceTypeOptions = [
-  'syslog', 'auth', 'kern', 'cron',
-  'nginx-access', 'nginx-error', 'redis',
-  'mysql-error', 'mysql-slow', 'postgres',
-  'app',
-]
+const sourceTypeOptions = computed(() => {
+  // 候选值以当前租户最近 7 天真实日志里出现的 source_type 为准，再并入常见内置值；
+  // 不再写死某一种 parser，避免「syslog 场景配不上 nginx-access」这类问题。
+  const builtin = [
+    'syslog', 'auth', 'kern', 'cron',
+    'nginx-access', 'nginx-error', 'redis',
+    'mysql-error', 'mysql-slow', 'postgres',
+    'app',
+  ]
+  return Array.from(new Set([...(meta.sourceTypes || []), ...builtin]))
+})
 const metricOptions = [
   { value: 'count', label: '日志条数' },
   { value: 'distinct_host', label: '去重主机数' },
@@ -391,7 +402,7 @@ onBeforeUnmount(() => {
       <div class="head-bar">
         <div>
           <h1 class="title">{{ dashboard.name }}</h1>
-          <p class="desc">负责人 {{ dashboard.owner }} · 共 {{ dashboard.widgets.length }} 个图表</p>
+          <p class="desc">负责人 {{ dashboard.owner }} · 所属租户 {{ tenantLabel(dashboard.tenant) }} · 共 {{ dashboard.widgets.length }} 个图表</p>
         </div>
         <div class="head-actions">
           <template v-if="!editMode">

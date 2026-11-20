@@ -24,12 +24,13 @@ from typing import Any, Dict, List, Optional
 import httpx
 import psycopg2
 import psycopg2.extras
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict
 
 from . import nl2ppl
+from .authz import current_identity, is_admin, resolve_tenant
 
 PG_DSN = os.getenv(
     "AI_PG_DSN",
@@ -64,6 +65,17 @@ KINDS = [
     },
 ]
 KIND_KEYS = {k["key"] for k in KINDS}
+
+# 模型接入是平台级配置：所有租户共用同一份，不随业务系统隔离。
+# 统一落在 PROVIDER_SCOPE 这个保留租户下，便于和真正的租户数据区分（也便于日后审计）。
+PROVIDER_SCOPE = "platform"
+
+
+def require_provider_admin(identity: Dict[str, Any]) -> None:
+    """模型接入影响全平台所有租户的 AI 能力，只有平台管理员可以改动。"""
+    if not is_admin(identity):
+        raise HTTPException(status_code=403, detail="模型接入为平台级配置，仅平台管理员可修改")
+
 
 PROVIDER_PRESETS = {
     "deepseek": {"label": "DeepSeek", "kind": "commercial", "base_url": "https://api.deepseek.com",
@@ -172,7 +184,8 @@ def init_db() -> None:
             """
             CREATE TABLE IF NOT EXISTS ai_model_providers (
                 id SERIAL PRIMARY KEY,
-                name TEXT NOT NULL UNIQUE,
+                tenant_id TEXT NOT NULL DEFAULT 'i6000',
+                name TEXT NOT NULL,
                 kind TEXT NOT NULL,
                 provider TEXT NOT NULL DEFAULT 'custom',
                 base_url TEXT NOT NULL DEFAULT '',
@@ -195,21 +208,22 @@ def init_db() -> None:
             """
             CREATE TABLE IF NOT EXISTS ai_grammar_rules (
                 id SERIAL PRIMARY KEY,
+                tenant_id TEXT NOT NULL DEFAULT 'i6000',
                 category TEXT NOT NULL,
                 rule_key TEXT NOT NULL,
                 rule_value TEXT NOT NULL DEFAULT '',
                 priority INTEGER NOT NULL DEFAULT 0,
                 enabled BOOLEAN NOT NULL DEFAULT TRUE,
                 note TEXT NOT NULL DEFAULT '',
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                UNIQUE (category, rule_key)
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
             )
             """
         )
         pg_exec(
             """
             CREATE TABLE IF NOT EXISTS ai_capabilities (
-                cap_key TEXT PRIMARY KEY,
+                tenant_id TEXT NOT NULL DEFAULT 'i6000',
+                cap_key TEXT NOT NULL,
                 name TEXT NOT NULL,
                 description TEXT NOT NULL DEFAULT '',
                 status TEXT NOT NULL DEFAULT 'planned',
@@ -221,22 +235,78 @@ def init_db() -> None:
             )
             """
         )
-        for key, name, desc, order in CAPABILITY_SEEDS:
-            pg_exec(
-                """INSERT INTO ai_capabilities (cap_key, name, description, status, enabled, sort_order)
-                   VALUES (%s, %s, %s, 'planned', FALSE, %s)
-                   ON CONFLICT (cap_key) DO NOTHING""",
-                (key, name, desc, order),
-            )
-        # NL→PPL 运行时已落地：只更新状态，不改动用户已保存的 enabled 开关
-        pg_exec("UPDATE ai_capabilities SET status='available' WHERE cap_key='nl2ppl' AND status<>'available'")
-        for category, key, value, note in DEFAULT_GRAMMAR:
-            pg_exec(
-                """INSERT INTO ai_grammar_rules (category, rule_key, rule_value, note)
-                   VALUES (%s, %s, %s, %s)
-                   ON CONFLICT (category, rule_key) DO NOTHING""",
-                (category, key, value, note),
-            )
+        # 老库平滑升级：CREATE TABLE IF NOT EXISTS 不会给已存在的表补列
+        pg_exec("ALTER TABLE ai_model_providers ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'i6000'")
+        pg_exec("ALTER TABLE ai_grammar_rules ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'i6000'")
+        pg_exec("ALTER TABLE ai_capabilities ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'i6000'")
+        # 全局唯一约束改为「按租户唯一」；按约束定义匹配删除，不硬编码约束名
+        pg_exec(
+            """
+            DO $$
+            DECLARE c record;
+            BEGIN
+                FOR c IN
+                    SELECT conname FROM pg_constraint
+                     WHERE conrelid = 'ai_model_providers'::regclass AND contype = 'u'
+                       AND pg_get_constraintdef(oid) = 'UNIQUE (name)'
+                LOOP
+                    EXECUTE format('ALTER TABLE ai_model_providers DROP CONSTRAINT %%I', c.conname);
+                END LOOP;
+            END $$;
+            """
+        )
+        pg_exec(
+            """
+            DO $$
+            DECLARE c record;
+            BEGIN
+                FOR c IN
+                    SELECT conname FROM pg_constraint
+                     WHERE conrelid = 'ai_grammar_rules'::regclass AND contype = 'u'
+                       AND pg_get_constraintdef(oid) = 'UNIQUE (category, rule_key)'
+                LOOP
+                    EXECUTE format('ALTER TABLE ai_grammar_rules DROP CONSTRAINT %%I', c.conname);
+                END LOOP;
+            END $$;
+            """
+        )
+        # capabilities 原以 cap_key 单列主键，需放开为 (tenant_id, cap_key)
+        pg_exec(
+            """
+            DO $$
+            DECLARE c record;
+            BEGIN
+                FOR c IN
+                    SELECT conname FROM pg_constraint
+                     WHERE conrelid = 'ai_capabilities'::regclass AND contype = 'p'
+                LOOP
+                    EXECUTE format('ALTER TABLE ai_capabilities DROP CONSTRAINT %%I', c.conname);
+                END LOOP;
+            END $$;
+            """
+        )
+        pg_exec("CREATE UNIQUE INDEX IF NOT EXISTS uq_ai_providers_tenant_name ON ai_model_providers(tenant_id, name)")
+        pg_exec("CREATE UNIQUE INDEX IF NOT EXISTS uq_ai_grammar_tenant_cat_key ON ai_grammar_rules(tenant_id, category, rule_key)")
+        pg_exec("CREATE UNIQUE INDEX IF NOT EXISTS uq_ai_capabilities_tenant_key ON ai_capabilities(tenant_id, cap_key)")
+        # 种子只给「还没有任何 provider」的默认租户写一次，避免多租户重复灌入
+        seeded = pg_query("SELECT 1 FROM ai_model_providers WHERE tenant_id='i6000' LIMIT 1")
+        if not seeded:
+            for key, name, desc, order in CAPABILITY_SEEDS:
+                pg_exec(
+                    """INSERT INTO ai_capabilities (tenant_id, cap_key, name, description, status, enabled, sort_order)
+                       VALUES ('i6000', %s, %s, %s, 'planned', FALSE, %s)
+                       ON CONFLICT (tenant_id, cap_key) DO NOTHING""",
+                    (key, name, desc, order),
+                )
+            # NL→PPL 运行时已落地：只更新状态，不改动用户已保存的 enabled 开关
+            pg_exec("UPDATE ai_capabilities SET status='available' WHERE tenant_id='i6000' AND cap_key='nl2ppl' AND status<>'available'")
+            for category, key, value, note in DEFAULT_GRAMMAR:
+                pg_exec(
+                    """INSERT INTO ai_grammar_rules (tenant_id, category, rule_key, rule_value, note)
+                       VALUES ('i6000', %s, %s, %s, %s)
+                       ON CONFLICT (tenant_id, category, rule_key) DO NOTHING""",
+                    (category, key, value, note),
+                )
         print("[ai-service] init_db done", flush=True)
     except Exception as e:  # noqa: BLE001
         print(f"[ai-service] init_db skipped: {e}", flush=True)
@@ -273,6 +343,7 @@ def public_provider(row: Dict[str, Any]) -> Dict[str, Any]:
     # CLI 接入已下线：cli_path / cli_args / work_dir 仅保留在 DB 列中兼容旧数据，API 不再暴露
     for legacy in ("cli_args", "cli_path", "work_dir"):
         r.pop(legacy, None)
+    r["tenant"] = r.get("tenant_id")
     r["api_key"] = mask_key(r.get("api_key") or "")
     r["api_key_set"] = bool(row.get("api_key"))
     for k in ("created_at", "updated_at"):
@@ -403,16 +474,31 @@ def meta():
 # 模型来源接入
 # ---------------------------------------------------------------------------
 @app.get("/providers")
-def list_providers(kind: str = Query("")):
+def list_providers(
+    kind: str = Query(""),
+    tenant: Optional[str] = Query(None),
+    identity: Dict[str, Any] = Depends(current_identity),
+):
+    """模型接入是平台级能力：所有租户共用同一份配置，不按租户隔离。
+
+    tenant 参数保留只为兼容旧前端调用（前端会在所有 /api/ai 请求上自动补租户），
+    这里一律忽略——模型不是某个业务系统的私有资源，租户区分只会带来
+    「管理员看不到/建不了配置」这类无意义摩擦。
+    """
     if kind:
         require_kind(kind)
-        rows = pg_query("SELECT * FROM ai_model_providers WHERE kind=%s ORDER BY id", (kind,))
-    else:
-        rows = pg_query("SELECT * FROM ai_model_providers ORDER BY id")
+    sql = "SELECT * FROM ai_model_providers WHERE 1=1"
+    params: List[Any] = []
+    if kind:
+        sql += " AND kind=%s"
+        params.append(kind)
+    sql += " ORDER BY id"
+    rows = pg_query(sql, tuple(params))
     items = [public_provider(r) for r in rows]
     return {
         "items": items,
         "total": len(items),
+        "tenant": PROVIDER_SCOPE,
         "byKind": {k: sum(1 for i in items if i["kind"] == k) for k in sorted(KIND_KEYS)},
         "defaultId": next((i["id"] for i in items if i["is_default"]), None),
     }
@@ -428,19 +514,28 @@ def _provider_values(req: ProviderIn, key_value: str) -> tuple:
 
 
 @app.post("/providers")
-def create_provider(req: ProviderIn):
+def create_provider(
+    req: ProviderIn,
+    tenant: Optional[str] = Query(None),
+    identity: Dict[str, Any] = Depends(current_identity),
+):
+    """新建模型接入：平台级配置，不要求也不使用租户参数。"""
+    require_provider_admin(identity)
     require_kind(req.kind)
     if not req.name.strip():
         raise HTTPException(status_code=400, detail="名称不能为空")
     if req.kind in ("commercial", "local") and not req.base_url.strip().lower().startswith(("http://", "https://")):
         raise HTTPException(status_code=400, detail="商用 API / 本地模型需填 http(s) 开头的 Base URL")
+    # 名称在平台范围内唯一：历史数据可能散落在各租户下，这里跨租户做冲突检查
+    if pg_query("SELECT id FROM ai_model_providers WHERE lower(name)=lower(%s)", (req.name.strip(),)):
+        raise HTTPException(status_code=409, detail="同名接入已存在")
     try:
         rows = pg_query(
             """INSERT INTO ai_model_providers
-               (name, kind, provider, base_url, model_name, api_key,
+               (tenant_id, name, kind, provider, base_url, model_name, api_key,
                 timeout, enabled, note, extra)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *""",
-            _provider_values(req, req.api_key.strip()),
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *""",
+            (PROVIDER_SCOPE,) + _provider_values(req, req.api_key.strip()),
         )
     except psycopg2.errors.UniqueViolation:
         raise HTTPException(status_code=409, detail="同名接入已存在")
@@ -450,7 +545,13 @@ def create_provider(req: ProviderIn):
 
 
 @app.put("/providers/{pid:int}")
-def update_provider(pid: int, req: ProviderIn):
+def update_provider(
+    pid: int,
+    req: ProviderIn,
+    tenant: Optional[str] = Query(None),
+    identity: Dict[str, Any] = Depends(current_identity),
+):
+    require_provider_admin(identity)
     require_kind(req.kind)
     old = pg_query("SELECT * FROM ai_model_providers WHERE id=%s", (pid,))
     if not old:
@@ -470,7 +571,12 @@ def update_provider(pid: int, req: ProviderIn):
 
 
 @app.delete("/providers/{pid:int}")
-def delete_provider(pid: int):
+def delete_provider(
+    pid: int,
+    tenant: Optional[str] = Query(None),
+    identity: Dict[str, Any] = Depends(current_identity),
+):
+    require_provider_admin(identity)
     rows = pg_query("DELETE FROM ai_model_providers WHERE id=%s RETURNING id", (pid,))
     if not rows:
         raise HTTPException(status_code=404, detail="接入配置不存在")
@@ -478,9 +584,15 @@ def delete_provider(pid: int):
 
 
 @app.post("/providers/{pid:int}/default")
-def set_default_provider(pid: int):
+def set_default_provider(
+    pid: int,
+    tenant: Optional[str] = Query(None),
+    identity: Dict[str, Any] = Depends(current_identity),
+):
+    require_provider_admin(identity)
     if not pg_query("SELECT id FROM ai_model_providers WHERE id=%s", (pid,)):
         raise HTTPException(status_code=404, detail="接入配置不存在")
+    # 平台只保留一个默认实例（全平台共享）
     pg_exec("UPDATE ai_model_providers SET is_default=FALSE")
     pg_exec("UPDATE ai_model_providers SET is_default=TRUE, updated_at=now() WHERE id=%s", (pid,))
     return {"status": "ok", "defaultId": pid}
@@ -523,7 +635,12 @@ def probe(row: Dict[str, Any]):
 
 
 @app.post("/providers/{pid:int}/test")
-def test_provider(pid: int):
+def test_provider(
+    pid: int,
+    tenant: Optional[str] = Query(None),
+    identity: Dict[str, Any] = Depends(current_identity),
+):
+    # 探测是只读操作，所有登录用户可用；模型配置本身是平台级，不再按租户查找
     rows = pg_query("SELECT * FROM ai_model_providers WHERE id=%s", (pid,))
     if not rows:
         raise HTTPException(status_code=404, detail="接入配置不存在")
@@ -549,9 +666,19 @@ def test_provider(pid: int):
 # PPL 语法规则库（静态路径先注册，避免与 /grammar/{id} 冲突）
 # ---------------------------------------------------------------------------
 @app.get("/grammar")
-def list_grammar(category: str = Query(""), keyword: str = Query(""), enabled: str = Query("")):
+def list_grammar(
+    category: str = Query(""),
+    keyword: str = Query(""),
+    enabled: str = Query(""),
+    tenant: Optional[str] = Query(None),
+    identity: Dict[str, Any] = Depends(current_identity),
+):
+    effective = resolve_tenant(identity, tenant)
     sql = "SELECT * FROM ai_grammar_rules WHERE 1=1"
     params: List[Any] = []
+    if effective != "all":
+        sql += " AND tenant_id=%s"
+        params.append(effective)
     if category:
         require_category(category)
         sql += " AND category=%s"
@@ -571,19 +698,26 @@ def list_grammar(category: str = Query(""), keyword: str = Query(""), enabled: s
     counts = {}
     for c in GRAMMAR_CATEGORIES:
         counts[c["key"]] = sum(1 for i in items if i["category"] == c["key"])
-    return {"items": items, "total": len(items), "byCategory": counts}
+    return {"items": items, "total": len(items), "tenant": effective, "byCategory": counts}
 
 
 @app.post("/grammar")
-def create_grammar(req: GrammarIn):
+def create_grammar(
+    req: GrammarIn,
+    tenant: Optional[str] = Query(None),
+    identity: Dict[str, Any] = Depends(current_identity),
+):
+    effective = resolve_tenant(identity, tenant)
+    if effective == "all":
+        raise HTTPException(status_code=400, detail="新增规则需指定具体租户")
     require_category(req.category)
     if not req.rule_key.strip():
         raise HTTPException(status_code=400, detail="规则键不能为空")
     try:
         rows = pg_query(
-            """INSERT INTO ai_grammar_rules (category, rule_key, rule_value, priority, enabled, note)
-               VALUES (%s,%s,%s,%s,%s,%s) RETURNING *""",
-            (req.category, req.rule_key.strip(), req.rule_value, req.priority, req.enabled, req.note),
+            """INSERT INTO ai_grammar_rules (tenant_id, category, rule_key, rule_value, priority, enabled, note)
+               VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING *""",
+            (effective, req.category, req.rule_key.strip(), req.rule_value, req.priority, req.enabled, req.note),
         )
     except psycopg2.errors.UniqueViolation:
         raise HTTPException(status_code=409, detail="同分类下规则键已存在")
@@ -591,8 +725,21 @@ def create_grammar(req: GrammarIn):
 
 
 @app.get("/grammar/export")
-def export_grammar():
-    rows = pg_query("SELECT category, rule_key, rule_value, priority, enabled, note FROM ai_grammar_rules ORDER BY category, id")
+def export_grammar(
+    tenant: Optional[str] = Query(None),
+    identity: Dict[str, Any] = Depends(current_identity),
+):
+    effective = resolve_tenant(identity, tenant)
+    if effective == "all":
+        rows = pg_query(
+            "SELECT tenant_id, category, rule_key, rule_value, priority, enabled, note FROM ai_grammar_rules ORDER BY category, id"
+        )
+    else:
+        rows = pg_query(
+            """SELECT category, rule_key, rule_value, priority, enabled, note
+               FROM ai_grammar_rules WHERE tenant_id=%s ORDER BY category, id""",
+            (effective,),
+        )
     payload = {"version": 1, "exportedAt": now_str(), "rules": [dict(r) for r in rows]}
     content = json.dumps(payload, ensure_ascii=False, indent=2, default=str)
     return Response(
@@ -603,40 +750,54 @@ def export_grammar():
 
 
 @app.post("/grammar/import")
-def import_grammar(req: ImportIn):
+def import_grammar(
+    req: ImportIn,
+    tenant: Optional[str] = Query(None),
+    identity: Dict[str, Any] = Depends(current_identity),
+):
+    effective = resolve_tenant(identity, tenant)
+    if effective == "all":
+        raise HTTPException(status_code=400, detail="导入规则需指定具体租户")
     if req.mode not in ("merge", "replace"):
         raise HTTPException(status_code=400, detail="mode 只能是 merge 或 replace")
     if req.mode == "replace":
-        pg_exec("DELETE FROM ai_grammar_rules")
+        pg_exec("DELETE FROM ai_grammar_rules WHERE tenant_id=%s", (effective,))
     created, updated = 0, 0
     for r in req.rules:
         require_category(r.category)
         if not r.rule_key.strip():
             continue
         exists = pg_query(
-            "SELECT id FROM ai_grammar_rules WHERE category=%s AND rule_key=%s",
-            (r.category, r.rule_key.strip()),
+            "SELECT id FROM ai_grammar_rules WHERE tenant_id=%s AND category=%s AND rule_key=%s",
+            (effective, r.category, r.rule_key.strip()),
         )
         if exists:
             pg_exec(
                 """UPDATE ai_grammar_rules SET rule_value=%s, priority=%s, enabled=%s, note=%s, updated_at=now()
-                   WHERE category=%s AND rule_key=%s""",
-                (r.rule_value, r.priority, r.enabled, r.note, r.category, r.rule_key.strip()),
+                   WHERE tenant_id=%s AND category=%s AND rule_key=%s""",
+                (r.rule_value, r.priority, r.enabled, r.note, effective, r.category, r.rule_key.strip()),
             )
             updated += 1
         else:
             pg_exec(
-                """INSERT INTO ai_grammar_rules (category, rule_key, rule_value, priority, enabled, note)
-                   VALUES (%s,%s,%s,%s,%s,%s)""",
-                (r.category, r.rule_key.strip(), r.rule_value, r.priority, r.enabled, r.note),
+                """INSERT INTO ai_grammar_rules (tenant_id, category, rule_key, rule_value, priority, enabled, note)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s)""",
+                (effective, r.category, r.rule_key.strip(), r.rule_value, r.priority, r.enabled, r.note),
             )
             created += 1
-    return {"created": created, "updated": updated, "mode": req.mode}
+    return {"created": created, "updated": updated, "mode": req.mode, "tenant": effective}
 
 
 @app.post("/grammar/sync-fields")
-def sync_fields(tenant: str = Query("i6000")):
+def sync_fields(
+    tenant: Optional[str] = Query(None),
+    identity: Dict[str, Any] = Depends(current_identity),
+):
     """从 ingest-service /meta 读真实 mapping，写入字段别名（不编造字段）。"""
+    effective = resolve_tenant(identity, tenant)
+    if effective == "all":
+        raise HTTPException(status_code=400, detail="同步字段需指定具体租户")
+    tenant = effective
     try:
         resp = httpx.get(INGEST_META_URL, params={"tenant": tenant}, timeout=8)
         resp.raise_for_status()
@@ -661,27 +822,35 @@ def sync_fields(tenant: str = Query("i6000")):
         raise HTTPException(status_code=502, detail="/meta 未返回字段清单，未写入任何规则")
     for name, ftype in normalized.items():
         pg_exec(
-            """INSERT INTO ai_grammar_rules (category, rule_key, rule_value, priority, enabled, note)
-               VALUES ('field_alias', %s, %s, 10, TRUE, %s)
-               ON CONFLICT (category, rule_key) DO UPDATE
+            """INSERT INTO ai_grammar_rules (tenant_id, category, rule_key, rule_value, priority, enabled, note)
+               VALUES (%s, 'field_alias', %s, %s, 10, TRUE, %s)
+               ON CONFLICT (tenant_id, category, rule_key) DO UPDATE
                SET note=EXCLUDED.note, updated_at=now()""",
-            (name, name, f"来自 {tenant} 索引真实 mapping（{ftype}）；同步不会覆盖人工编辑的映射值"),
+            (tenant, name, name, f"来自 {tenant} 索引真实 mapping（{ftype}）；同步不会覆盖人工编辑的映射值"),
         )
     return {"synced": len(normalized), "source": "ingest-service /meta",
             "tenant": tenant, "index": meta_data.get("index"), "fields": sorted(normalized.keys())}
 
 
 @app.post("/grammar/preview")
-def preview_grammar(req: PreviewIn):
+def preview_grammar(
+    req: PreviewIn,
+    tenant: Optional[str] = Query(None),
+    identity: Dict[str, Any] = Depends(current_identity),
+):
     """规则键字面命中预览：展示将注入模型的语法片段，不调用模型。"""
+    effective = resolve_tenant(identity, tenant)
     q = (req.question or "").strip()
     if not q:
         raise HTTPException(status_code=400, detail="question 不能为空")
-    rows = pg_query(
-        """SELECT * FROM ai_grammar_rules
-           WHERE enabled=TRUE AND category IN ('term_mapping','field_alias','example','time_rule')
-           ORDER BY priority DESC, id"""
-    )
+    sql = """SELECT * FROM ai_grammar_rules
+             WHERE enabled=TRUE AND category IN ('term_mapping','field_alias','example','time_rule')"""
+    params: tuple = ()
+    if effective != "all":
+        sql += " AND tenant_id=%s"
+        params = (effective,)
+    sql += " ORDER BY priority DESC, id"
+    rows = pg_query(sql, params)
     hits = [r for r in rows if r["rule_key"] and r["rule_key"] in q]
     lines = [f"[{r['category']}] {r['rule_key']} → {r['rule_value']}" for r in hits]
     return {
@@ -694,11 +863,19 @@ def preview_grammar(req: PreviewIn):
 
 
 @app.post("/nl2ppl")
-def nl_to_ppl(req: Nl2PplIn):
+def nl_to_ppl(
+    req: Nl2PplIn,
+    identity: Dict[str, Any] = Depends(current_identity),
+):
     """自然语言 → PPL：规则库注入 + 已配置模型 + 后端规范化闸门；失败按 stage 如实返回。"""
+    effective = resolve_tenant(identity, req.tenant)
+    if effective == "all":
+        raise HTTPException(status_code=400, detail="NL→PPL 需指定具体租户")
     q = (req.question or "").strip()
     if not q:
         raise HTTPException(status_code=400, detail="question 不能为空")
+    # 模型接入为平台级配置：优先用指定接入，否则取全平台默认/首个已启用接入。
+    # 租户只决定要生成哪个租户索引的语句（下方渲染），不决定用哪套模型。
     if req.provider_id:
         rows = pg_query("SELECT * FROM ai_model_providers WHERE id=%s", (req.provider_id,))
     else:
@@ -714,7 +891,8 @@ def nl_to_ppl(req: Nl2PplIn):
     try:
         rules = pg_query(
             """SELECT category, rule_key, rule_value, enabled FROM ai_grammar_rules
-               WHERE enabled=TRUE ORDER BY priority DESC, id"""
+               WHERE enabled=TRUE AND tenant_id=%s ORDER BY priority DESC, id""",
+            (effective,),
         )
     except Exception as e:  # noqa: BLE001
         return {
@@ -727,20 +905,29 @@ def nl_to_ppl(req: Nl2PplIn):
     except Exception:  # noqa: BLE001
         tenants = []
     return nl2ppl.generate(
-        q, rows[0], rules, tenant=(req.tenant or "i6000").strip(),
+        q, rows[0], rules, tenant=effective,
         model_name=req.model_name, include_prompt=req.include_prompt,
         tenants=tenants,
     )
 
 
 @app.put("/grammar/{rid:int}")
-def update_grammar(rid: int, req: GrammarIn):
+def update_grammar(
+    rid: int,
+    req: GrammarIn,
+    tenant: Optional[str] = Query(None),
+    identity: Dict[str, Any] = Depends(current_identity),
+):
+    effective = resolve_tenant(identity, tenant)
+    if effective == "all":
+        raise HTTPException(status_code=400, detail="更新规则需指定具体租户")
     require_category(req.category)
     rows = pg_query(
         """UPDATE ai_grammar_rules SET category=%s, rule_key=%s, rule_value=%s,
            priority=%s, enabled=%s, note=%s, updated_at=now()
-           WHERE id=%s RETURNING *""",
-        (req.category, req.rule_key.strip(), req.rule_value, req.priority, req.enabled, req.note, rid),
+           WHERE id=%s AND tenant_id=%s RETURNING *""",
+        (req.category, req.rule_key.strip(), req.rule_value, req.priority, req.enabled,
+         req.note, rid, effective),
     )
     if not rows:
         raise HTTPException(status_code=404, detail="规则不存在")
@@ -748,8 +935,16 @@ def update_grammar(rid: int, req: GrammarIn):
 
 
 @app.delete("/grammar/{rid:int}")
-def delete_grammar(rid: int):
-    rows = pg_query("DELETE FROM ai_grammar_rules WHERE id=%s RETURNING id", (rid,))
+def delete_grammar(
+    rid: int,
+    tenant: Optional[str] = Query(None),
+    identity: Dict[str, Any] = Depends(current_identity),
+):
+    effective = resolve_tenant(identity, tenant)
+    if effective == "all":
+        raise HTTPException(status_code=400, detail="删除规则需指定具体租户")
+    rows = pg_query("DELETE FROM ai_grammar_rules WHERE id=%s AND tenant_id=%s RETURNING id",
+                    (rid, effective))
     if not rows:
         raise HTTPException(status_code=404, detail="规则不存在")
     return {"status": "deleted", "id": rid}
@@ -759,19 +954,38 @@ def delete_grammar(rid: int):
 # AI 能力注册表（后续扩展位）
 # ---------------------------------------------------------------------------
 @app.get("/capabilities")
-def list_capabilities():
-    rows = pg_query("SELECT * FROM ai_capabilities ORDER BY sort_order, cap_key")
+def list_capabilities(
+    tenant: Optional[str] = Query(None),
+    identity: Dict[str, Any] = Depends(current_identity),
+):
+    effective = resolve_tenant(identity, tenant)
+    if effective == "all":
+        rows = pg_query("SELECT * FROM ai_capabilities ORDER BY tenant_id, sort_order, cap_key")
+    else:
+        rows = pg_query(
+            "SELECT * FROM ai_capabilities WHERE tenant_id=%s ORDER BY sort_order, cap_key",
+            (effective,),
+        )
     items = [dict(r) for r in rows]
     for i in items:
         if i.get("updated_at") is not None:
             i["updated_at"] = str(i["updated_at"])
-    return {"items": items, "total": len(items),
+    return {"items": items, "total": len(items), "tenant": effective,
             "note": "status=available 表示运行时已接入；nl2ppl（自然语言转 PPL）已可用，其余能力待接入。"}
 
 
 @app.put("/capabilities/{key}")
-def update_capability(key: str, req: CapabilityIn):
-    if not pg_query("SELECT cap_key FROM ai_capabilities WHERE cap_key=%s", (key,)):
+def update_capability(
+    key: str,
+    req: CapabilityIn,
+    tenant: Optional[str] = Query(None),
+    identity: Dict[str, Any] = Depends(current_identity),
+):
+    effective = resolve_tenant(identity, tenant)
+    if effective == "all":
+        raise HTTPException(status_code=400, detail="更新能力需指定具体租户")
+    if not pg_query("SELECT cap_key FROM ai_capabilities WHERE cap_key=%s AND tenant_id=%s",
+                    (key, effective)):
         raise HTTPException(status_code=404, detail="能力不存在")
     sets, params = [], []
     if req.enabled is not None:
@@ -786,6 +1000,9 @@ def update_capability(key: str, req: CapabilityIn):
     if not sets:
         raise HTTPException(status_code=400, detail="没有需要更新的字段")
     sets.append("updated_at=now()")
-    params.append(key)
-    rows = pg_query(f"UPDATE ai_capabilities SET {', '.join(sets)} WHERE cap_key=%s RETURNING *", tuple(params))
+    params.extend([key, effective])
+    rows = pg_query(
+        f"UPDATE ai_capabilities SET {', '.join(sets)} WHERE cap_key=%s AND tenant_id=%s RETURNING *",
+        tuple(params),
+    )
     return dict(rows[0])

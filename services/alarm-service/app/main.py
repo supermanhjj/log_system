@@ -509,6 +509,26 @@ def eval_cache_put(tenant: str, data):
     _EVAL_CACHE[tenant] = {"ts": now_ms(), "data": data}
 
 
+def source_aliases(tenant: str) -> Dict[str, str]:
+    """数据源显示名：source_key → display_name；没配显示名就回落到原始标识。"""
+    try:
+        if tenant in ("all", "*", "", None):
+            rows = pg_query(
+                "SELECT source_key, display_name FROM data_sources "
+                "WHERE display_name IS NOT NULL AND display_name <> ''"
+            )
+        else:
+            rows = pg_query(
+                "SELECT source_key, display_name FROM data_sources "
+                "WHERE tenant IN (%s,'all') AND display_name IS NOT NULL AND display_name <> ''",
+                (tenant,),
+            )
+        return {r["source_key"]: r["display_name"] for r in rows}
+    except Exception as e:  # noqa: BLE001
+        print(f"[alarm-service] source_aliases skipped: {e}", flush=True)
+        return {}
+
+
 def build_events(tenant: str) -> List[Dict[str, Any]]:
     """按租户判定告警：本租户规则 + 平台级通用规则（tenant='all'）合并评估。"""
     cached = eval_cache_get(tenant)
@@ -551,6 +571,12 @@ def build_events(tenant: str) -> List[Dict[str, Any]]:
             ev["handler"] = None
             ev["closeReason"] = None
         events.append(ev)
+    aliases = source_aliases(tenant)
+    for e in events:
+        e["sourceName"] = aliases.get(e.get("source"), e.get("source"))
+        e["matchedSourceNames"] = [aliases.get(s, s) for s in (e.get("matchedSources") or [])]
+        smp = e.get("sample") or {}
+        smp["sourceName"] = aliases.get(smp.get("source"), smp.get("source"))
     events.sort(key=lambda e: (e["firstSeenTs"] or 0), reverse=True)
     eval_cache_put(tenant, events)
     return events

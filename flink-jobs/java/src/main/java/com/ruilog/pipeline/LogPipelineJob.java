@@ -86,6 +86,8 @@ public class LogPipelineJob {
         public int status;
         public String message;
         public String raw;
+        /** 网关归一化后的原始 JSON（含 log/attrs/parse_status 等明细字段）。 */
+        public String payload;
 
         // 多类型日志维度（系统 / 中间件 / 数据库 / 业务），见 docs/log-ingestion-model.md
         public String logClass;
@@ -166,6 +168,7 @@ public class LogPipelineJob {
                 e.status = intVal(n, "status");
                 e.message = text(n, "message");
                 e.raw = value;
+                e.payload = value;
                 // 多类型日志维度：由网关归一化后随消息带上来，Flink 只做透传映射
                 e.logClass = text(n, "log_class");
                 e.sourceType = text(n, "source_type");
@@ -383,33 +386,63 @@ public class LogPipelineJob {
                     String idx = "logs-" + tenant + "-write";
                     sb.append("{\"index\":{\"_index\":\"").append(idx)
                       .append("\",\"_id\":\"").append(e.eventId).append("\"}}\n");
-                    // 字段名与 ingest.normalize_record 输出对齐（snake_case + @timestamp）
-                    com.fasterxml.jackson.databind.node.ObjectNode o = mapper.createObjectNode();
+                    // 直接复用网关归一化后的整条 JSON：字段集由 ingest 统一维护。
+                    // 逐字段重建会漏掉 log/attrs/parse_status/src_file 等明细字段，
+                    // 切到 kafka 主干模式后表现为「异常栈搜不到、attrs 为空」。
+                    com.fasterxml.jackson.databind.node.ObjectNode o;
+                    if (e.payload != null && !e.payload.isEmpty()) {
+                        com.fasterxml.jackson.databind.JsonNode n = mapper.readTree(e.payload);
+                        o = n.isObject() ? (com.fasterxml.jackson.databind.node.ObjectNode) n
+                                         : mapper.createObjectNode();
+                    } else {
+                        o = mapper.createObjectNode();
+                        o.put("level", e.level == null ? "" : e.level);
+                        o.put("source", e.source == null ? "" : e.source);
+                        o.put("host", e.host == null ? "" : e.host);
+                        o.put("log_class", e.logClass == null ? "" : e.logClass);
+                        o.put("source_type", e.sourceType == null ? "" : e.sourceType);
+                        o.put("app", e.app == null ? "" : e.app);
+                        o.put("instance", e.instance == null ? "" : e.instance);
+                        o.put("facility", e.facility == null ? "" : e.facility);
+                        o.put("severity", e.severity);
+                        o.put("traceId", e.traceId == null ? "" : e.traceId);
+                        o.put("status", e.status);
+                        o.put("message", e.message == null ? "" : e.message);
+                    }
+                    // 服务端强制的三个字段以 Flink 侧归一化结果为准
                     o.put("event_id", e.eventId == null ? "" : e.eventId);
                     o.put("tenant_id", tenant);
                     o.put("@timestamp", e.ts == null ? Instant.now().toString() : e.ts);
-                    o.put("level", e.level == null ? "" : e.level);
-                    o.put("source", e.source == null ? "" : e.source);
-                    o.put("host", e.host == null ? "" : e.host);
-                    o.put("log_class", e.logClass == null ? "" : e.logClass);
-                    o.put("source_type", e.sourceType == null ? "" : e.sourceType);
-                    o.put("app", e.app == null ? "" : e.app);
-                    o.put("instance", e.instance == null ? "" : e.instance);
-                    o.put("facility", e.facility == null ? "" : e.facility);
-                    o.put("severity", e.severity);
-                    o.put("traceId", e.traceId == null ? "" : e.traceId);
-                    o.put("status", e.status);
-                    o.put("message", e.message == null ? "" : e.message);
+                    // attrs 在 OS 是 flat_object，必须是对象；历史数据可能把 JSON 当字符串传
+                    com.fasterxml.jackson.databind.JsonNode attrs = o.get("attrs");
+                    if (attrs != null && attrs.isTextual()) {
+                        try {
+                            o.set("attrs", mapper.readTree(attrs.asText()));
+                        } catch (Exception ignore) {
+                            o.remove("attrs");
+                        }
+                    }
                     sb.append(mapper.writeValueAsString(o)).append('\n');
                 } catch (Exception ignore) { }
             }
             buffer.clear();
+            if (sb.length() == 0) return;
             HttpPost post = new HttpPost(bulkUrl);
             post.setHeader("Content-Type", "application/x-ndjson");
             post.setEntity(new ByteArrayEntity(sb.toString().getBytes(StandardCharsets.UTF_8)));
             try (CloseableHttpResponse resp = http.execute(post)) {
-                if (resp.getStatusLine().getStatusCode() >= 400) {
-                    System.err.println("[os-sink] HTTP " + resp.getStatusLine().getStatusCode());
+                int code = resp.getStatusLine().getStatusCode();
+                if (code >= 400) {
+                    String body = resp.getEntity() == null ? ""
+                            : org.apache.http.util.EntityUtils.toString(resp.getEntity());
+                    System.err.println("[os-sink] HTTP " + code + " " + body.substring(0, Math.min(body.length(), 300)));
+                } else if (resp.getEntity() != null) {
+                    // _bulk 即使 HTTP 200 也可能部分 item 失败（如 mapping 冲突），必须看 errors 标志
+                    String body = org.apache.http.util.EntityUtils.toString(resp.getEntity());
+                    if (body.contains("\"errors\":true")) {
+                        System.err.println("[os-sink] bulk partial failure: "
+                                + body.substring(0, Math.min(body.length(), 300)));
+                    }
                 }
             } catch (Exception ex) {
                 System.err.println("[os-sink] write failed: " + ex.getMessage());

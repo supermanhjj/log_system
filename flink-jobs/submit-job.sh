@@ -5,16 +5,17 @@
 # 前置：
 #   - java/target/log-pipeline.jar 已编译（挂载到 JM 容器 /opt/flink/jobs/）
 #   - flink-jobmanager / flink-taskmanager 已 up（自定义镜像含 Kafka connector）
-# 方式：docker exec 进 JM 用 flink CLI 提交；参数用 -D 传给 JM/TM JVM（Job 内 System.getProperty 读取）。
+# 方式：docker exec 进 JM 用 flink CLI 提交；参数同时用 -e 环境变量和 -D 注入，
+# Job 内 env() 优先读 system property，再回退环境变量（-D 在各版本透传行为不完全一致）。
 # 幂等：先取消旧作业，再 -d 后台提交新作业。
 # 环境变量：
-#   FLINK_WRITE_OS    true/false，是否由 Flink 写 OpenSearch 明细（dual 阶段=false）
+#   FLINK_WRITE_OS    true/false，是否由 Flink 写 OpenSearch 明细（稳态=true）
 #   KAFKA_BROKER / CLICKHOUSE_HTTP_URL / OPENSEARCH_URL  下游地址
 # =============================================================================
 set -e
 JM="log_system-flink-jobmanager-1"
 JAR="/opt/flink/jobs/log-pipeline.jar"
-WRITE_OS="${FLINK_WRITE_OS:-false}"
+WRITE_OS="${FLINK_WRITE_OS:-true}"
 BROKER="${KAFKA_BROKER:-kafka:9092}"
 CH_URL="${CLICKHOUSE_HTTP_URL:-http://clickhouse:8123}"
 OS_URL="${OPENSEARCH_URL:-http://opensearch:9200}"
@@ -31,9 +32,11 @@ for j in $JOBS; do
 done
 [ -n "$JOBS" ] && sleep 3
 
-# 提交（-D 参数透传到集群 JVM）
+# 提交（参数同时走 -e 和 -D；Job 内 env() 两者都认）
 echo "[submit] submit..."
-docker exec "$JM" flink run -d \
+docker exec -e FLINK_WRITE_OS="$WRITE_OS" -e KAFKA_BROKER="$BROKER" \
+  -e CLICKHOUSE_HTTP_URL="$CH_URL" -e OPENSEARCH_URL="$OS_URL" "$JM" \
+  flink run -d \
   -D FLINK_WRITE_OS="$WRITE_OS" \
   -D KAFKA_BROKER="$BROKER" \
   -D CLICKHOUSE_HTTP_URL="$CH_URL" \

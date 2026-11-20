@@ -14,7 +14,10 @@ import { TOKEN_KEY } from './auth'
 export const TENANT_KEY = 'ruilog.currentTenant'
 
 // 真正做「按租户隔离数据」的服务前缀。只有这些接口才自动补 tenant。
-const TENANT_SCOPED_PREFIXES = ['/api/search', '/api/dashboards', '/api/alarms', '/api/data']
+const TENANT_SCOPED_PREFIXES = [
+  '/api/search', '/api/dashboards', '/api/alarms', '/api/data',
+  '/api/agents', '/api/ai',
+]
 
 // 租户已重构为「按业务系统划分」。浏览器 localStorage 里可能仍存着旧租户编码，
 // 若原样发给服务端，各服务的 resolve_tenant 会返回 404「租户「default」不存在或已停用」，

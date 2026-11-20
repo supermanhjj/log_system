@@ -25,7 +25,9 @@ Fluent Bit → ingest-service → Kafka(ruilog.logs.raw) → Flink Job →
 | 重启策略 | fixed-delay / 3 次（compose FLINK_PROPERTIES 配置） |
 | 反压 | Flink 原生背压 + Kafka 分区缓冲；并行度 2，可在线调 |
 
-## 构建（本机无 JDK，用 Maven 容器）
+## 构建（宿主机无 Maven，直接用本地 Maven 容器）
+
+镜像 `maven:3.9-eclipse-temurin-17` 已在本地，构建不再拉取、也不需要在宿主机装 Maven：
 
 ```bash
 cd flink-jobs/java
@@ -35,6 +37,8 @@ docker run --rm -v "$PWD":/w -v "$HOME/.m2":/root/.m2 -w /w \
 # 产物：java/target/log-pipeline.jar（fat jar，含 httpclient/jackson/jdbc）
 ```
 
+> 本机没有该镜像时才需要 `docker pull`（网络受限可加 `docker.m.daocloud.io/` 前缀）。
+> `target/` 被 gitignore，换机器或重新 clone 后必须重新构建。
 > settings.xml 已配阿里云 mirror。首次构建需下载 Flink/HTTP/Jackson/JDBC 依赖。
 > Flink/Kafka connector 依赖声明为 provided（由集群 lib 提供，不重复打进 jar）。
 
@@ -54,13 +58,13 @@ compose 已把 `flink-jobs/lib` 挂到 JM/TM 的 `/opt/flink/lib`（见 docker-c
 ## 部署 + 提交
 
 1. `java/target/log-pipeline.jar` 编译完成，`lib/` 内有 Kafka connector jar。
-2. 重启集群让挂载生效：`docker compose up -d flink-jobmanager flink-taskmanager`
-3. 提交：`FLINK_WRITE_OS=false sh flink-jobs/submit-job.sh`
+2. 重启集群让挂载生效（尤其 `mvn clean` 重建过 jar）：`docker compose restart flink-jobmanager flink-taskmanager`
+3. 提交：`sh flink-jobs/submit-job.sh`（默认 `FLINK_WRITE_OS=true`，即 kafka 稳态）
 
 | FLINK_WRITE_OS | 阶段 | OS 明细由谁写 |
 |----------------|------|--------------|
-| `false` | dual 过渡（默认） | ingest 直写（Flink 只写 CH） |
-| `true` | kafka 主干 | Flink 统一写 OS+CH，同时 ingest 切 `INGEST_STORAGE_MODE=kafka` |
+| `true`（默认） | kafka 稳态 | Flink 统一写 OS+CH，ingest 配 `INGEST_STORAGE_MODE=kafka` |
+| `false` | dual / direct 回退 | ingest 直写（Flink 只写 CH） |
 
 ## 验证
 

@@ -32,8 +32,8 @@ export function deleteDashboard(id) {
 }
 
 // —— 字典：图表类型 / 维度 / 时间范围 ——
-export function getDashboardMeta() {
-  return client.get('/dashboards/meta').then((r) => r.data)
+export function getDashboardMeta(params) {
+  return client.get('/dashboards/meta', { params }).then((r) => r.data)
 }
 
 // —— 按配置聚合图表数据 ——

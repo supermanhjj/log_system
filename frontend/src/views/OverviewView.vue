@@ -521,7 +521,7 @@ onBeforeUnmount(() => {
     </section>
 
     <!-- 检索耗时与数据源健康 -->
-    <section class="grid-2" aria-label="检索耗时与数据源健康">
+    <section class="grid-2 grid-health" aria-label="检索耗时与数据源健康">
       <el-card shadow="never" class="card">
         <template #header>
           <div class="card-head">
@@ -543,7 +543,7 @@ onBeforeUnmount(() => {
           </div>
         </template>
         <div class="health-list">
-          <div v-for="src in overview.sources" :key="src.name" class="health-item">
+          <div v-for="src in overview.sources" :key="src.sourceKey || src.name" class="health-item">
             <div class="health-row">
               <span class="health-name">{{ src.name }}</span>
               <span v-if="src.rate" class="hint">{{ src.rate }}</span>
@@ -581,7 +581,11 @@ onBeforeUnmount(() => {
             <el-tag :type="levelTagType(row.level)" size="small" effect="light">{{ row.level }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="source" label="告警来源" width="160" />
+        <el-table-column label="告警来源" width="180">
+          <template #default="{ row }">
+            <span :title="row.source || ''">{{ row.sourceName || row.source }}</span>
+          </template>
+        </el-table-column>
         <el-table-column prop="occurTime" label="发生时间" width="180" />
         <el-table-column label="状态" width="110">
           <template #default="{ row }">
@@ -678,7 +682,23 @@ onBeforeUnmount(() => {
 .lc-legend li { display: flex; align-items: center; gap: 8px; padding: 7px 0; font-size: 13px; color: var(--color-text-2); border-bottom: 1px dashed var(--color-border-1); }
 
 /* 数据源健康度 */
-.health-list { display: flex; flex-direction: column; gap: 14px; }
+.health-list {
+  display: flex; flex-direction: column; gap: 14px;
+  /* 高度由所在卡片撑开，异常条目多时在卡片内部滚动，不改变整行高度 */
+  flex: 1; min-height: 0; overflow-y: auto; padding-right: 6px;
+}
+.health-list::-webkit-scrollbar { width: 6px; }
+.health-list::-webkit-scrollbar-thumb { background: #D5DCE3; border-radius: 3px; }
+.health-list::-webkit-scrollbar-track { background: transparent; }
+
+/* 检索耗时与数据源健康：两卡等高，右侧列表在固定高度内滚动 */
+.grid-health { align-items: stretch; }
+.grid-health > .card { height: 300px; display: flex; flex-direction: column; }
+.grid-health > .card :deep(.el-card__body) {
+  flex: 1; min-height: 0; display: flex; flex-direction: column;
+}
+.grid-health .chart { flex: none; }
+.grid-health .chart-foot { margin-top: auto; padding-top: 8px; }
 .health-row { display: flex; justify-content: space-between; align-items: center; font-size: 13px; }
 .health-name { font-weight: 600; color: var(--color-text-1); }
 .health-bar { margin-top: 8px; height: 6px; background: #EEF1F4; border-radius: 3px; overflow: hidden; }
