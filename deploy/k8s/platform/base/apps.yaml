@@ -1,0 +1,253 @@
+# 8 个 FastAPI 服务：同一镜像、不同工作目录与入口，与 compose 一一对应。
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: auth-service }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: auth-service } }
+  template:
+    metadata: { labels: { app: auth-service } }
+    spec:
+      containers:
+        - name: auth-service
+          image: log_system-backend:k8s
+          workingDir: /app/services/auth-service
+          command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+          envFrom: [{ configMapRef: { name: ruilog-env } }, { secretRef: { name: ruilog-secret } }]
+          ports: [{ containerPort: 8000 }]
+          readinessProbe: { httpGet: { path: /health, port: 8000 }, initialDelaySeconds: 5, periodSeconds: 10, timeoutSeconds: 5 }
+          livenessProbe: { httpGet: { path: /health, port: 8000 }, initialDelaySeconds: 60, periodSeconds: 20, timeoutSeconds: 5, failureThreshold: 6 }
+          resources:
+            requests: { cpu: 50m, memory: 96Mi }
+            limits: { cpu: 500m, memory: 384Mi }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: auth-service }
+spec:
+  selector: { app: auth-service }
+  ports: [{ port: 8000, targetPort: 8000 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: search-service }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: search-service } }
+  template:
+    metadata: { labels: { app: search-service } }
+    spec:
+      containers:
+        - name: search-service
+          image: log_system-backend:k8s
+          workingDir: /app/services/search-service
+          command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+          envFrom: [{ configMapRef: { name: ruilog-env } }, { secretRef: { name: ruilog-secret } }]
+          ports: [{ containerPort: 8000 }]
+          readinessProbe: { httpGet: { path: /health, port: 8000 }, initialDelaySeconds: 5, periodSeconds: 10, timeoutSeconds: 5 }
+          livenessProbe: { httpGet: { path: /health, port: 8000 }, initialDelaySeconds: 60, periodSeconds: 20, timeoutSeconds: 5, failureThreshold: 6 }
+          resources:
+            requests: { cpu: 50m, memory: 96Mi }
+            limits: { cpu: 500m, memory: 384Mi }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: search-service }
+spec:
+  selector: { app: search-service }
+  ports: [{ port: 8000, targetPort: 8000 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: dashboard-service }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: dashboard-service } }
+  template:
+    metadata: { labels: { app: dashboard-service } }
+    spec:
+      containers:
+        - name: dashboard-service
+          image: log_system-backend:k8s
+          workingDir: /app/services/dashboard-service
+          command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+          envFrom: [{ configMapRef: { name: ruilog-env } }, { secretRef: { name: ruilog-secret } }]
+          ports: [{ containerPort: 8000 }]
+          readinessProbe: { httpGet: { path: /health, port: 8000 }, initialDelaySeconds: 5, periodSeconds: 10, timeoutSeconds: 5 }
+          livenessProbe: { httpGet: { path: /health, port: 8000 }, initialDelaySeconds: 60, periodSeconds: 20, timeoutSeconds: 5, failureThreshold: 6 }
+          resources:
+            requests: { cpu: 50m, memory: 96Mi }
+            limits: { cpu: 500m, memory: 384Mi }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: dashboard-service }
+spec:
+  selector: { app: dashboard-service }
+  ports: [{ port: 8000, targetPort: 8000 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: alarm-service }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: alarm-service } }
+  template:
+    metadata: { labels: { app: alarm-service } }
+    spec:
+      containers:
+        - name: alarm-service
+          image: log_system-backend:k8s
+          workingDir: /app/services/alarm-service
+          command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+          envFrom: [{ configMapRef: { name: ruilog-env } }, { secretRef: { name: ruilog-secret } }]
+          ports: [{ containerPort: 8000 }]
+          readinessProbe: { httpGet: { path: /health, port: 8000 }, initialDelaySeconds: 5, periodSeconds: 10, timeoutSeconds: 5 }
+          livenessProbe: { httpGet: { path: /health, port: 8000 }, initialDelaySeconds: 60, periodSeconds: 20, timeoutSeconds: 5, failureThreshold: 6 }
+          resources:
+            requests: { cpu: 50m, memory: 96Mi }
+            limits: { cpu: 500m, memory: 384Mi }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: alarm-service }
+spec:
+  selector: { app: alarm-service }
+  ports: [{ port: 8000, targetPort: 8000 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: ingest-service }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: ingest-service } }
+  template:
+    metadata: { labels: { app: ingest-service } }
+    spec:
+      # 等 system-service 播完租户/namespace 映射再接收日志，避免首分钟日志因归属不明被拒收
+      initContainers:
+        - name: wait-tenant-map
+          image: log_system-backend:k8s
+          envFrom: [{ configMapRef: { name: ruilog-env } }, { secretRef: { name: ruilog-secret } }]
+          command:
+            - python
+            - -c
+            - |
+              import os, time, psycopg2
+              for _ in range(120):
+                  try:
+                      c = psycopg2.connect(host=os.getenv("POSTGRES_HOST"), port=os.getenv("POSTGRES_PORT"),
+                                           dbname=os.getenv("POSTGRES_DB"), user=os.getenv("POSTGRES_USER"),
+                                           password=os.getenv("POSTGRES_PASSWORD"), connect_timeout=3)
+                      cur = c.cursor(); cur.execute("SELECT 1 FROM namespace_tenant LIMIT 1"); cur.fetchall()
+                      print("tenant map ready"); break
+                  except Exception:
+                      time.sleep(3)
+              else:
+                  raise SystemExit("tenant map timeout")
+      containers:
+        - name: ingest-service
+          image: log_system-backend:k8s
+          workingDir: /app/services/ingest-service
+          command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+          envFrom: [{ configMapRef: { name: ruilog-env } }, { secretRef: { name: ruilog-secret } }]
+          ports: [{ containerPort: 8000 }]
+          readinessProbe: { httpGet: { path: /health, port: 8000 }, initialDelaySeconds: 5, periodSeconds: 10, timeoutSeconds: 5 }
+          livenessProbe: { httpGet: { path: /health, port: 8000 }, initialDelaySeconds: 60, periodSeconds: 20, timeoutSeconds: 5, failureThreshold: 6 }
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: "1", memory: 512Mi }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: ingest-service }
+spec:
+  selector: { app: ingest-service }
+  ports: [{ port: 8000, targetPort: 8000 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: agent-service }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: agent-service } }
+  template:
+    metadata: { labels: { app: agent-service } }
+    spec:
+      containers:
+        - name: agent-service
+          image: log_system-backend:k8s
+          workingDir: /app/services/agent-service
+          command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+          envFrom: [{ configMapRef: { name: ruilog-env } }, { secretRef: { name: ruilog-secret } }]
+          ports: [{ containerPort: 8000 }]
+          readinessProbe: { httpGet: { path: /health, port: 8000 }, initialDelaySeconds: 5, periodSeconds: 10, timeoutSeconds: 5 }
+          livenessProbe: { httpGet: { path: /health, port: 8000 }, initialDelaySeconds: 60, periodSeconds: 20, timeoutSeconds: 5, failureThreshold: 6 }
+          resources:
+            requests: { cpu: 50m, memory: 96Mi }
+            limits: { cpu: 500m, memory: 384Mi }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: agent-service }
+spec:
+  selector: { app: agent-service }
+  ports: [{ port: 8000, targetPort: 8000 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: system-service }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: system-service } }
+  template:
+    metadata: { labels: { app: system-service } }
+    spec:
+      containers:
+        - name: system-service
+          image: log_system-backend:k8s
+          workingDir: /app/services/system-service
+          command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+          envFrom: [{ configMapRef: { name: ruilog-env } }, { secretRef: { name: ruilog-secret } }]
+          ports: [{ containerPort: 8000 }]
+          readinessProbe: { httpGet: { path: /health, port: 8000 }, initialDelaySeconds: 5, periodSeconds: 10, timeoutSeconds: 5 }
+          livenessProbe: { httpGet: { path: /health, port: 8000 }, initialDelaySeconds: 60, periodSeconds: 20, timeoutSeconds: 5, failureThreshold: 6 }
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 512Mi }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: system-service }
+spec:
+  selector: { app: system-service }
+  ports: [{ port: 8000, targetPort: 8000 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: ai-service }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: ai-service } }
+  template:
+    metadata: { labels: { app: ai-service } }
+    spec:
+      containers:
+        - name: ai-service
+          image: log_system-backend:k8s
+          workingDir: /app/services/ai-service
+          command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+          envFrom: [{ configMapRef: { name: ruilog-env } }, { secretRef: { name: ruilog-secret } }]
+          ports: [{ containerPort: 8000 }]
+          readinessProbe: { httpGet: { path: /health, port: 8000 }, initialDelaySeconds: 5, periodSeconds: 10, timeoutSeconds: 5 }
+          livenessProbe: { httpGet: { path: /health, port: 8000 }, initialDelaySeconds: 60, periodSeconds: 20, timeoutSeconds: 5, failureThreshold: 6 }
+          resources:
+            requests: { cpu: 50m, memory: 96Mi }
+            limits: { cpu: 500m, memory: 384Mi }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: ai-service }
+spec:
+  selector: { app: ai-service }
+  ports: [{ port: 8000, targetPort: 8000 }]

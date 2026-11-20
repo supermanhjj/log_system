@@ -1,0 +1,67 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: ruilog-system
+resources:
+  - data.yaml
+  - flink.yaml
+  - apps.yaml
+  - web.yaml
+  - init-jobs.yaml
+configMapGenerator:
+  - name: ruilog-env
+    literals:
+      - TZ=Asia/Shanghai
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=loguser
+      - POSTGRES_DB=logdb
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - OPENSEARCH_HOST=opensearch
+      - OPENSEARCH_PORT=9200
+      - OPENSEARCH_URL=http://opensearch:9200
+      - OPENSEARCH_SHARDS=1
+      - OPENSEARCH_REPLICAS=0
+      - KAFKA_BROKER=kafka:9092
+      - KAFKA_TOPIC_RAW=ruilog.logs.raw
+      - KAFKA_TOPIC_DLQ=ruilog.logs.dlq
+      - CLICKHOUSE_HOST=clickhouse
+      - CLICKHOUSE_PORT=8123
+      - CLICKHOUSE_HTTP_URL=http://clickhouse:8123
+      - CLICKHOUSE_DB=ruilog
+      - CLICKHOUSE_USER=ruilog
+      - FLINK_JOBMANAGER=flink-jobmanager:8081
+      - FLINK_WRITE_OS=true
+      - INGEST_STORAGE_MODE=kafka
+      - AGG_ENGINE=ch
+      - PIPELINE_MODE=active
+      - PIPELINE_CACHE_TTL=30
+      - INGEST_MAX_BATCH=1000
+      - INGEST_COLLECTOR_KEYS=dev-collector-key
+      - INGEST_API_KEYS=key-i6000=i6000,key-log-system=log-system
+      - AI_INGEST_META_URL=http://ingest-service:8000/meta
+      - ACCESS_TOKEN_EXPIRE_MINUTES=1440
+      - JWT_ALGORITHM=HS256
+  - name: kafka-init-script
+    files:
+      - init-topics.sh=../../../shared/scripts/kafka/init-topics.sh
+  - name: os-init-script
+    files:
+      - apply-logs-template.sh=../../../shared/scripts/opensearch/apply-logs-template.sh
+  - name: os-template
+    files:
+      - logs-template.json=../../../shared/opensearch/index-templates/logs-template.json
+  - name: os-ism
+    files:
+      - ruilog-detail-retention.json=../../../shared/opensearch/ism/ruilog-detail-retention.json
+  - name: ch-init
+    files:
+      - 01-schema.sql=../../../shared/clickhouse/init/01-schema.sql
+secretGenerator:
+  - name: ruilog-secret
+    literals:
+      - JWT_SECRET=dev-k8s-only-not-secret
+      - POSTGRES_PASSWORD=logpass
+      - CLICKHOUSE_PASSWORD=ruilogpass
+generatorOptions:
+  disableNameSuffixHash: true

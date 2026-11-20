@@ -1,0 +1,7 @@
+# Flink 作业镜像：在已有的 Flink 运行镜像里加入作业 jar。
+# 云上只需由 CI 用 buildx 构建并推送，不再依赖宿主机 bind mount。
+FROM log_system-flink:1.18
+USER root
+RUN mkdir -p /opt/flink/jobs && chown flink:flink /opt/flink/jobs
+COPY flink-jobs/java/target/log-pipeline.jar /opt/flink/jobs/log-pipeline.jar
+USER flink

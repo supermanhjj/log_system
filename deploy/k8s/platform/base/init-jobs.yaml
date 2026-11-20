@@ -1,0 +1,52 @@
+# 一次性初始化：Kafka topic 与 OpenSearch 索引模板/ISM。
+# 与 compose 的 depends_on 不同，K8s 用 Job 重试保证最终一致。
+apiVersion: batch/v1
+kind: Job
+metadata: { name: kafka-init }
+spec:
+  backoffLimit: 10
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: init-topics
+          image: bitnami/kafka:3.7
+          command: ["sh", "/init/init-topics.sh"]
+          env:
+            - { name: KAFKA_BROKER, valueFrom: { configMapKeyRef: { name: ruilog-env, key: KAFKA_BROKER } } }
+          volumeMounts: [{ name: script, mountPath: /init }]
+      volumes:
+        - name: script
+          configMap: { name: kafka-init-script }
+---
+apiVersion: batch/v1
+kind: Job
+metadata: { name: opensearch-init }
+spec:
+  backoffLimit: 10
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: apply-template
+          image: opensearchproject/opensearch:3.9.0
+          command: ["bash", "/init/apply-logs-template.sh"]
+          env:
+            - { name: OPENSEARCH_URL, valueFrom: { configMapKeyRef: { name: ruilog-env, key: OPENSEARCH_URL } } }
+            - { name: OPENSEARCH_SHARDS, valueFrom: { configMapKeyRef: { name: ruilog-env, key: OPENSEARCH_SHARDS } } }
+            - { name: OPENSEARCH_REPLICAS, valueFrom: { configMapKeyRef: { name: ruilog-env, key: OPENSEARCH_REPLICAS } } }
+            - { name: RUILOG_HOME, value: /opt/ruilog }
+          volumeMounts:
+            - { name: script, mountPath: /init }
+            - { name: template, mountPath: /opt/ruilog/opensearch/index-templates }
+            - { name: ism, mountPath: /opt/ruilog/opensearch/ism }
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 512Mi }
+      volumes:
+        - name: script
+          configMap: { name: os-init-script }
+        - name: template
+          configMap: { name: os-template }
+        - name: ism
+          configMap: { name: os-ism }

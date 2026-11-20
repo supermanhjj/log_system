@@ -1,0 +1,12 @@
+# 覆盖根 .dockerignore：web 镜像必须把前端构建产物打进镜像
+.git
+.gitignore
+.DS_Store
+**/node_modules
+docs
+tools
+services
+flink-jobs
+opensearch
+clickhouse
+deploy/helm

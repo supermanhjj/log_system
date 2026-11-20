@@ -1,0 +1,21 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+# 本地 Docker Desktop：镜像由 docker build 生成后导入节点 containerd，
+# 因此 tag 不用 latest（避免默认 Always），也不需要镜像仓库。
+images:
+  - name: log_system-backend
+    newTag: k8s
+  - name: ruilog-web
+    newTag: k8s
+  - name: ruilog-flink-job
+    newTag: k8s
+patches:
+  # 本地入口：Docker Desktop 的 LoadBalancer 会把 80 映射到宿主机 localhost，
+  # 直接浏览器访问 http://localhost 即可（compose 已停，不会占用 80）。
+  - target: { kind: Service, name: web }
+    patch: |-
+      - op: replace
+        path: /spec/type
+        value: LoadBalancer
