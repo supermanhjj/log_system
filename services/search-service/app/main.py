@@ -265,7 +265,7 @@ def build_must(time_range, filters, tenant) -> List[Dict[str, Any]]:
 # 请求模型
 # ----------------------------------------------------------------------------
 class QueryReq(BaseModel):
-    tenant: str = "default"
+    tenant: str = "i6000"
     timeRange: Optional[Dict[str, Any]] = None
     filters: Optional[Dict[str, Any]] = None
     page: int = 1
@@ -275,19 +275,19 @@ class QueryReq(BaseModel):
 
 class PqlReq(BaseModel):
     pql: str
-    tenant: str = "default"
+    tenant: str = "i6000"
     timeRange: Optional[Dict[str, Any]] = None
 
 
 class HistReq(BaseModel):
-    tenant: str = "default"
+    tenant: str = "i6000"
     timeRange: Optional[Dict[str, Any]] = None
     filters: Optional[Dict[str, Any]] = None
     interval: Optional[str] = None
 
 
 class ContextReq(BaseModel):
-    tenant: str = "default"
+    tenant: str = "i6000"
     time: str  # 锚点日志的 @timestamp（ISO，UTC）
     source: Optional[str] = None  # 限定同一来源，取该服务流的相邻日志
     before: int = 2

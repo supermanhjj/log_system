@@ -263,7 +263,7 @@ async function doNl2Ppl() {
   try {
     nlResult.value = await nl2ppl({
       question: q, provider_id: nlProviderId.value,
-      model_name: nlModelOverride.value.trim(), tenant: app.tenant || 'default',
+      model_name: nlModelOverride.value.trim(), tenant: app.tenant || 'i6000',
     })
     previewResult.value = await previewGrammar(q).catch(() => null)
     if (!nlResult.value.ok) ElMessage.warning('生成失败：' + nlResult.value.error)

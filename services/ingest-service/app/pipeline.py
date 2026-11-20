@@ -126,7 +126,10 @@ def execute_one(doc: Dict[str, Any],
                 rules: List[Dict[str, Any]],
                 pmap: Dict[int, Dict[str, Any]]) -> Dict[str, Any]:
     """按 priority 从小到大找第一条命中的规则并执行。"""
-    raw = doc.get("raw") or doc.get("message") or ""
+    # 原文可能落在不同字段：应用直报/老链路用 raw/message；K8s 容器日志经
+    # Fluent Bit CRI parser 拆帧后落在 log（此时 message 为空）。必须都认，
+    # 否则 K8s 日志送到 grok 的是空串，解析全线 unmatched 但归属判定仍正确。
+    raw = doc.get("raw") or doc.get("message") or doc.get("log") or ""
     ordered = sorted(rules, key=lambda r: int(r.get("priority") or 100))
     for rule in ordered:
         if not matches(rule, doc):

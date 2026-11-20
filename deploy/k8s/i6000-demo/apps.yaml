@@ -1,0 +1,137 @@
+# I6000 模拟系统的两个服务：order（Java 业务日志）/ sys（syslog 系统日志）
+# 两个服务同属 i6000 namespace → 采集器按 namespace 判定归属 i6000 租户，
+# 用 log_class 区分 business / system。
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: i6000-order-script
+  namespace: i6000
+data:
+  order-app.py: |
+    #!/usr/bin/env python3
+    import sys, time
+    from datetime import datetime
+    LEVELS = ["INFO", "INFO", "INFO", "WARN", "ERROR"]
+    MSG = [
+        "order created orderId=ORD-20261120-%03d amount=%.2f status=SUCCESS",
+        "payment callback received orderId=ORD-20261120-%03d channel=UNIONPAY",
+        "query order detail orderId=ORD-20261120-%03d cost=%dms",
+        "retry scheduled orderId=ORD-20261120-%03d attempt=2 reason=timeout",
+    ]
+    STACK = [
+        "java.lang.NullPointerException: cannot invoke method on null object",
+        "\tat com.sgcc.i6000.order.service.OrderService.submit(OrderService.java:142)",
+        "\tat com.sgcc.i6000.order.controller.OrderController.create(OrderController.java:88)",
+        "\tat java.base/java.lang.reflect.Method.invoke(Method.java:568)",
+        "\tat org.springframework.web.servlet.mvc.method.annotation.ServletInvocableHandlerMethod.invokeAndHandle(ServletInvocableHandlerMethod.java:117)",
+        "\tat org.springframework.web.servlet.DispatcherServlet.doDispatch(DispatcherServlet.java:1070)",
+        "\tat org.springframework.web.servlet.DispatcherServlet.service(DispatcherServlet.java:501)",
+    ]
+    def ts():
+        return datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+    def main():
+        n = 0
+        while True:
+            n += 1
+            level = LEVELS[n % len(LEVELS)]
+            if level == "ERROR":
+                print("%s  [http-nio-8080-exec-%d] ERROR c.s.i.order.service.OrderService - failed to submit order orderId=ORD-20261120-%03d" % (ts(), n % 8, n), flush=True)
+                for line in STACK:
+                    print(line, flush=True)
+            else:
+                idx = n % len(MSG)
+                if idx == 0: body = MSG[idx] % (n, 128.50 + n)
+                elif idx == 1: body = MSG[idx] % n
+                elif idx == 2: body = MSG[idx] % (n, 30 + n)
+                else: body = MSG[idx] % n
+                print("%s  [http-nio-8080-exec-%d] %s c.s.i.order.service.OrderService - %s" % (ts(), n % 8, level, body), flush=True)
+            time.sleep(2)
+    if __name__ == "__main__":
+        main()
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: i6000-sys-script
+  namespace: i6000
+data:
+  sys-app.py: |
+    #!/usr/bin/env python3
+    import time
+    from datetime import datetime
+    MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
+    EVENTS = [
+        ("authpriv.warn", "sshd", "Failed password for invalid user admin from 10.20.30.40 port 51234 ssh2"),
+        ("cron.info", "CROND", "(root) CMD (/usr/bin/i6000-healthcheck.sh)"),
+        ("daemon.err", "i6000-agent", "heartbeat lost to collector, retry in 5s"),
+        ("kern.warn", "kernel", "TCP: request_sock_TCP: Possible SYN flooding on port 8080"),
+        ("user.notice", "systemd", "Started I6000 System Monitoring Service."),
+        ("authpriv.info", "sshd", "Accepted publickey for ops from 10.20.30.41 port 51000 ssh2"),
+    ]
+    def main():
+        n = 0
+        while True:
+            n += 1
+            facility_sev, tag, msg = EVENTS[n % len(EVENTS)]
+            now = datetime.now()
+            stamp = "%s %2d %02d:%02d:%02d" % (MONTHS[now.month-1], now.day, now.hour, now.minute, now.second)
+            print("%s i6000-node-01 %s %s: %s" % (stamp, facility_sev, tag, msg), flush=True)
+            time.sleep(3)
+    if __name__ == "__main__":
+        main()
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: i6000-order
+  namespace: i6000
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: i6000-order
+  template:
+    metadata:
+      labels:
+        app: i6000-order
+    spec:
+      containers:
+        - name: order
+          image: python:3.11-slim
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-u", "/app/order-app.py"]
+          volumeMounts:
+            - name: script
+              mountPath: /app
+      volumes:
+        - name: script
+          configMap:
+            name: i6000-order-script
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: i6000-sys
+  namespace: i6000
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: i6000-sys
+  template:
+    metadata:
+      labels:
+        app: i6000-sys
+    spec:
+      containers:
+        - name: sys
+          image: python:3.11-slim
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-u", "/app/sys-app.py"]
+          volumeMounts:
+            - name: script
+              mountPath: /app
+      volumes:
+        - name: script
+          configMap:
+            name: i6000-sys-script

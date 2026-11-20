@@ -336,7 +336,7 @@ async function generateNl() {
   nlPpl.value = ''
   try {
     // 不指定 provider_id：后端自动取默认/首个已启用模型，检索页无需再配一遍
-    const r = await nl2ppl({ question: q, tenant: app.tenant || 'default' })
+    const r = await nl2ppl({ question: q, tenant: app.tenant || 'i6000' })
     nlResult.value = r
     if (!r.ok) {
       nlError.value = {

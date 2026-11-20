@@ -439,7 +439,7 @@ def root():
 @app.get("/overview")
 def overview(
     range_in: str = Query("今日", description="时间范围：今日/近 1 小时/近 24 小时/近 7 天/近 30 天 或 today/1h/1d/7d/30d。今日=东八区自然日 00:00→当前"),
-    tenant: str = Query("default"),
+    tenant: str = Query("i6000"),
     force: bool = Query(False, description="强制刷新：绕过缓存重新聚合"),
     identity: Dict[str, Any] = Depends(current_identity),
 ):
@@ -797,7 +797,7 @@ def init_dashboard_table() -> None:
                     cur.execute(
                         """INSERT INTO dashboards (tenant, name, owner, description, status, default_range, widgets)
                            VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb)""",
-                        (d.get("tenant") or "default", d["name"], d["owner"], d["description"],
+                        (d.get("tenant") or "i6000", d["name"], d["owner"], d["description"],
                          d["status"], d["default_range"], json.dumps(d["widgets"], ensure_ascii=False)),
                     )
     except Exception as e:  # noqa: BLE001
@@ -850,7 +850,7 @@ def _seed_dashboards() -> List[Dict[str, Any]]:
 def _row_to_dashboard(row) -> Dict[str, Any]:
     d = {
         "id": row["id"], "name": row["name"], "owner": row["owner"],
-        "tenant": row.get("tenant") or "default",
+        "tenant": row.get("tenant") or "i6000",
         "description": row["description"], "status": row["status"],
         "defaultRange": row["default_range"],
         "widgets": row["widgets"] if isinstance(row["widgets"], list) else json.loads(row["widgets"] or "[]"),
@@ -868,7 +868,7 @@ def _load_dashboard(dash_id: int, tenant: str):
         row = cur.fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="仪表盘不存在")
-    if tenant != "all" and (row.get("tenant") or "default") != tenant:
+    if tenant != "all" and (row.get("tenant") or "i6000") != tenant:
         raise HTTPException(status_code=404, detail="仪表盘不存在")
     return row
 
@@ -880,7 +880,7 @@ def _startup_dashboards():
 
 @app.get("/dashboards")
 def list_dashboards(
-    tenant: str = Query("default"),
+    tenant: str = Query("i6000"),
     identity: Dict[str, Any] = Depends(current_identity),
 ):
     """看板为租户级资产：普通账号只看本租户，管理员可用 tenant=all 巡检全平台。"""
@@ -914,7 +914,7 @@ def dashboard_meta(identity: Dict[str, Any] = Depends(current_identity)):
 @app.get("/dashboards/{dash_id}")
 def get_dashboard(
     dash_id: int,
-    tenant: str = Query("default"),
+    tenant: str = Query("i6000"),
     identity: Dict[str, Any] = Depends(current_identity),
 ):
     tenant = resolve_tenant(identity, tenant)
@@ -929,7 +929,7 @@ def get_dashboard(
 @app.post("/dashboards")
 def create_dashboard(
     payload: Dict[str, Any] = Body(...),
-    tenant: str = Query("default"),
+    tenant: str = Query("i6000"),
     identity: Dict[str, Any] = Depends(current_identity),
 ):
     tenant = resolve_tenant(identity, tenant)
@@ -963,7 +963,7 @@ def create_dashboard(
 def update_dashboard(
     dash_id: int,
     payload: Dict[str, Any] = Body(...),
-    tenant: str = Query("default"),
+    tenant: str = Query("i6000"),
     identity: Dict[str, Any] = Depends(current_identity),
 ):
     tenant = resolve_tenant(identity, tenant)
@@ -996,7 +996,7 @@ def update_dashboard(
 @app.delete("/dashboards/{dash_id}")
 def delete_dashboard(
     dash_id: int,
-    tenant: str = Query("default"),
+    tenant: str = Query("i6000"),
     identity: Dict[str, Any] = Depends(current_identity),
 ):
     tenant = resolve_tenant(identity, tenant)

@@ -52,7 +52,7 @@ function emptyForm() {
   return {
     sourceKey: '', displayName: '', ingestType: 'Agent', endpoint: '',
     region: '', encoding: 'UTF-8', parserRule: '', sampleRate: 100,
-    targetIndex: '', tenant: app.tenant === 'all' ? 'default' : app.tenant,
+    targetIndex: '', tenant: app.tenant === 'all' ? 'i6000' : app.tenant,
     tags: [], note: '', statusOverride: '',
     silenceWarnMin: null, silenceOfflineMin: null,
     fieldMap: { source: '', time: '', level: '', host: '', tenant: '', message: '' },
@@ -164,7 +164,7 @@ function openEdit(row) {
     endpoint: row.endpoint || '', region: row.region === '—' ? '' : (row.region || ''),
     encoding: row.encoding || 'UTF-8', parserRule: row.parserRule || '',
     sampleRate: row.sampleRate ?? 100, targetIndex: row.targetIndex || '',
-    tenant: row.tenant || (app.tenant === 'all' ? 'default' : app.tenant),
+    tenant: row.tenant || (app.tenant === 'all' ? 'i6000' : app.tenant),
     tags: [...(row.tags || [])], note: row.note || '',
     statusOverride: row.statusOverride || '',
     silenceWarnMin: row.silenceWarnMin, silenceOfflineMin: row.silenceOfflineMin,

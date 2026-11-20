@@ -136,7 +136,7 @@ const isAdmin = computed(() => auth.user?.roleKey === 'platform_admin')
 // 非管理员锁定在登录租户（后端同样强制），管理员额外可选「全部租户」巡检。
 async function syncTenants() {
   if (!auth.user) return
-  app.setTenant(auth.user.tenant || 'default')
+  app.setTenant(auth.user.tenant || 'i6000')
   await app.loadTenants({ includeAll: isAdmin.value })
 }
 onMounted(syncTenants)

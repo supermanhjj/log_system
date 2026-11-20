@@ -126,7 +126,7 @@ async function doPreview() {
 }
 
 // ---- 重放 ----
-const replayForm = reactive({ tenant: 'default', days: 1, limit: 1000, dryRun: true })
+const replayForm = reactive({ tenant: 'i6000', days: 1, limit: 1000, dryRun: true })
 const replayResult = ref(null)
 async function doReplay() {
   try {
@@ -347,7 +347,7 @@ async function submitCollector() {
         <el-form-item label="编码"><el-input v-model="collectorForm.code" :disabled="!!collectorForm.code" /></el-form-item>
         <el-form-item label="名称"><el-input v-model="collectorForm.name" /></el-form-item>
         <el-form-item label="允许租户">
-          <el-input v-model="collectorForm.tenantAllow" placeholder="逗号分隔，如 acme, default" />
+          <el-input v-model="collectorForm.tenantAllow" placeholder="逗号分隔，如 i6000, log-system" />
         </el-form-item>
         <el-form-item label="凭证 Key">
           <el-input v-model="collectorForm.key" type="password" show-password

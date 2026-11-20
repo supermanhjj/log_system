@@ -53,3 +53,6 @@ flink-jobs/java/target/
 *.class
 # 例外：flink-jobs/lib/ 下的 connector jar 是 Dockerfile COPY 的运行时依赖，
 # 官方 Flink 镜像不含，必须随仓库提供以保证可复现构建，故不忽略。
+
+# 本地工具二进制（helm 等），不入版本库
+.tools/

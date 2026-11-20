@@ -9,8 +9,8 @@ import { TENANT_KEY } from '../api/http'
 // 注意：前端这层只决定「下拉里能看到什么」；真正的隔离由后端从登录态强制解析。
 export const useAppStore = defineStore('app', {
   state: () => ({
-    tenant: localStorage.getItem(TENANT_KEY) || 'default',
-    tenants: [{ value: 'default', label: '总部生产' }],
+    tenant: localStorage.getItem(TENANT_KEY) || 'i6000',
+    tenants: [{ value: 'i6000', label: 'I6000 系统' }],
     tenantsLoaded: false,
     loading: false,
   }),

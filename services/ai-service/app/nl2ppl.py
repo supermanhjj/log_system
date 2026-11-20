@@ -608,7 +608,7 @@ def detect_tenant(question: str, current: str,
 # 6. 主流程
 # ---------------------------------------------------------------------------
 def generate(question: str, row: Dict[str, Any], rules: List[Dict[str, Any]],
-             tenant: str = "default", model_name: str = "",
+             tenant: str = "i6000", model_name: str = "",
              include_prompt: bool = False,
              tenants: Optional[List[Dict[str, str]]] = None) -> Dict[str, Any]:
     started = time.time()

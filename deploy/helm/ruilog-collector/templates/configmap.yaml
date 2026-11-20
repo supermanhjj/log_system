@@ -19,19 +19,25 @@ data:
         storage.max_chunks_up 128
 
     # =========================================================================
-    # 每个 namespace 一条 INPUT：按文件名中的 namespace 片段采集。
+    # 每条 INPUT 对应一组容器日志，按文件名 <pod>_<namespace>_<container>-<id>.log 匹配。
+    # 粒度可控：
+    #   - 只填 namespace：采整个 namespace（Path *_<ns>_*.log），适合同 namespace 内
+    #     所有服务共用同一种多行规则的场景。
+    #   - 再填 container：精确到容器（Path *_<ns>_<container>-*.log），适合同 namespace
+    #     内不同服务分帧规则不同（如 Java 服务要合异常栈、syslog 服务按单行）——
+    #     这是必须按 container 拆 INPUT 的真实原因，否则 java 多行会把 syslog 续行吞掉。
     # K8s 的 pod / namespace / container 名不允许含下划线，按 "_" 切分安全。
     # Parser cri 必须先拆出 log 字段；只做分帧，不在这里抽业务字段。
     # =========================================================================
     {{- range .Values.inputs }}
     [INPUT]
         Name              tail
-        Path              /var/log/containers/*_{{ .namespace }}_*.log
+        Path              /var/log/containers/*_{{ .namespace }}_{{ .container | default "" }}{{ if .container }}-{{ end }}*.log
         {{- if $.Values.excludeNamespaces }}
         Exclude_Path      {{ range $i, $ns := $.Values.excludeNamespaces }}{{ if $i }},{{ end }}/var/log/containers/*_{{ $ns }}_*.log{{ end }}
         {{- end }}
         Parser            cri
-        Tag               kube.{{ .namespace }}
+        Tag               kube.{{ .name }}
         Path_Key          src_file
         DB                {{ $.Values.dbPath }}/ruilog-{{ .name }}.db
         Mem_Buf_Limit     {{ $.Values.collector.memBufLimit }}
@@ -43,13 +49,36 @@ data:
     # 多行分帧（FILTER 而非 INPUT）：必须先由 Parser cri 拆出 log 字段，
     # 再对 log 做分帧。放在 INPUT 的 multiline.parser 会在 CRI 前缀上匹配，
     # 异常栈续行永远认不出来。这是服务端解析唯一的硬边界。
+    #
+    # 两个必须项（Fluent Bit 官方文档 + 实测踩坑）：
+    #   Buffer On —— tail 逐行读是「逐条输入」，不开 Buffer 时 filter 只处理单个
+    #     chunk，跨行堆栈拆不开（创建 emitter 但永远不合并）。
+    #   multiline.key_content log —— 明确对 CRI 拆出的 log 字段做分帧。
+    # multiline filter 必须是第一个 filter：合并后的记录会重新注入管线头部，
+    # 放在它之后的 filter 会被重复应用（见官方文档 issue #5235）。
+    # Match 用每条 INPUT 唯一的 .name，才能对不同 container 施加不同分帧规则。
     # =========================================================================
     {{- range .Values.inputs }}
     {{- if and .multiline (ne .multiline "none") }}
     [FILTER]
-        Name              multiline
-        Match             kube.{{ .namespace }}
-        Multiline_Parser  {{ .multiline }}
+        Name                  multiline
+        Match                 kube.{{ .name }}
+        Buffer                On
+        multiline.key_content log
+        multiline.parser      {{ .multiline }}
+    {{- end }}
+    {{- end }}
+
+    # 按每条 INPUT 声明的 labels 打来源元数据（如 log_class=system / source_type=syslog）。
+    # 采集端只打「来源分类」这类可信部署元数据，不注入 tenant_id（归属由服务端判定）。
+    {{- range .Values.inputs }}
+    {{- if .labels }}
+    [FILTER]
+        Name              record_modifier
+        Match             kube.{{ .name }}
+        {{- range $k, $v := .labels }}
+        Record            {{ $k }} {{ $v }}
+        {{- end }}
     {{- end }}
     {{- end }}
 
@@ -59,12 +88,14 @@ data:
         Record            cluster_id {{ .Values.collector.clusterId }}
 
     # 只上报网关，不直连 OS/CH。网关做归属判定、脱敏、按租户落索引。
+    # 端口用显式 ingestPort：Helm 的 urlParse 在部分版本不返回 port 字段，
+    # 曾导致 Port 渲染为空、Fluent Bit 连不上 ingest 的静默故障。
     {{- $u := urlParse .Values.collector.ingestUrl }}
     [OUTPUT]
         Name              http
         Match             kube.*
         Host              {{ $u.hostname }}
-        Port              {{ $u.port }}
+        Port              {{ .Values.collector.ingestPort }}
         URI               {{ $u.path }}
         Format            json
         Header            Content-Type application/json
@@ -82,26 +113,34 @@ data:
         Time_Format %Y-%m-%dT%H:%M:%S.%L%z
 
     # 以下只做「分帧」，不抽字段。Key_Content 指向 cri parser 拆出的 log。
+    # 语法用 Rule（单数）逐行写：Fluent Bit 5.2 的 MULTILINE_PARSER 只认 Rule，
+    # 旧写法 Rules "..." \ 带反斜杠续行会报 "invalid indentation level"
+    # 导致整个 parsers.conf 加载失败、cri parser 未注册。
+    # cont 只认「块内续行特征」，绝不能写 /.*/ —— 那会把下一条带时间戳的
+    # 新日志也吞成续行，永远不触发 flush，堆栈拆不开（已实测踩坑）。
     [MULTILINE_PARSER]
         Name          java
         Type          regex
         Key_Content   log
-        Flush_State   On
-        Rules         "start_state   /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}/" \
-                      "cont          /.*/"
+        Flush_Timeout 2000
+        Rule          "start_state"  "/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}/"  "cont"
+        Rule          "cont"         "/^\s+at .*/"        "cont"
+        Rule          "cont"         "/^\s*Caused by:.*/"  "cont"
+        Rule          "cont"         "/^\s*\.\.\. .*/"    "cont"
 
     [MULTILINE_PARSER]
         Name          python
         Type          regex
         Key_Content   log
-        Flush_State   On
-        Rules         "start_state   /^Traceback \(most recent call last\):/" \
-                      "cont          /.*/"
+        Flush_Timeout 2000
+        Rule          "start_state"  "/^Traceback \(most recent call last\):/"  "cont"
+        Rule          "cont"         "/^\s+File .*/"       "cont"
+        Rule          "cont"         "/^\w+Error:.*/"      "cont"
 
     [MULTILINE_PARSER]
         Name          go
         Type          regex
         Key_Content   log
-        Flush_State   On
-        Rules         "start_state   /^panic:/" \
-                      "cont          /.*/"
+        Flush_Timeout 2000
+        Rule          "start_state"  "/^panic:/"   "cont"
+        Rule          "cont"         "/^\s+.*/"    "cont"

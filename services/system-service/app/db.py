@@ -85,26 +85,36 @@ ROLE_SEEDS = [
     ),
 ]
 
+# 租户 = 业务系统（按系统划分隔离边界，与 K8s namespace 一一映射）。
+# i6000：模拟现场的 I6000 系统（两个服务：order 业务日志 / sys 系统日志）；
+# log-system：日志平台自身组件日志（web/redis/postgres/kafka 等）。
+# 新增系统 = 在 namespace_tenant 加一行映射 + 这里加一个租户种子，不改采集器。
 TENANT_SEEDS = [
-    ("default", "总部生产"),
-    ("acme", "省侧运维"),
-    ("gp", "测试租户"),
+    ("i6000", "I6000 系统"),
+    ("log-system", "日志平台"),
     # 未归属：采集端无法判定来源租户时统一写入 logs-unknown，供管理员治理，
-    # 禁止静默归入 default（否则造成跨租户数据污染，比查不到更危险）。
+    # 禁止静默归入某个业务系统（否则造成跨系统数据污染，比查不到更危险）。
     ("unknown", "未归属日志"),
 ]
 
 # 保留租户编码：不能被新建，也不能删除（unknown 是采集兜底落点）
 RESERVED_TENANT_CODES = ("all", "*", "unknown")
 
+# K8s namespace → 租户映射种子。新增业务系统时加一行即可，采集器与服务端规则都不用改。
+# 未在此表的 namespace 会落 logs-unknown，由管理员治理，绝不静默归到某业务系统。
+NAMESPACE_TENANT_SEEDS = [
+    ("i6000", "i6000", "I6000 系统两个服务共用命名空间"),
+    ("log-system", "log-system", "日志平台自身组件命名空间（预留）"),
+]
+
 # 种子用户：(账号, 姓名, 角色, 租户, 启用, 手机号, 是否内置)
 USER_SEEDS = [
-    ("admin", "系统管理员", "platform_admin", "default", True, "", True),
-    ("ops_chenli", "陈立", "platform_admin", "default", True, "13800000001", False),
-    ("ops_zhouhang", "周航", "ops_duty", "default", True, "13800000002", False),
-    ("ops_gaoyuan", "高远", "viewer", "acme", True, "13800000003", False),
-    ("audit_linjing", "林静", "auditor", "default", True, "13800000004", False),
-    ("ops_zhaolei", "赵磊", "ops_duty", "default", False, "13800000005", False),
+    ("admin", "系统管理员", "platform_admin", "log-system", True, "", True),
+    ("ops_chenli", "陈立", "platform_admin", "log-system", True, "13800000001", False),
+    ("ops_zhouhang", "周航", "ops_duty", "i6000", True, "13800000002", False),
+    ("ops_gaoyuan", "高远", "viewer", "i6000", True, "13800000003", False),
+    ("audit_linjing", "林静", "auditor", "log-system", True, "13800000004", False),
+    ("ops_zhaolei", "赵磊", "ops_duty", "i6000", False, "13800000005", False),
 ]
 
 # 系统参数：(key, 值, 类型, 名称, 说明, 可选项)
@@ -173,6 +183,18 @@ def init_db() -> None:
                 name TEXT NOT NULL,
                 enabled BOOLEAN NOT NULL DEFAULT TRUE,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+            """
+        )
+        # K8s namespace → 租户(code) 映射：采集器不注入租户，服务端按来源 namespace
+        # 查此表判定归属。与 hosts 台账同构（一个是主机→租户，一个是 namespace→租户）。
+        pg_exec(
+            """
+            CREATE TABLE IF NOT EXISTS namespace_tenant (
+                namespace TEXT PRIMARY KEY,
+                tenant TEXT NOT NULL,
+                note TEXT NOT NULL DEFAULT '',
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
             )
             """
         )
@@ -303,6 +325,12 @@ def init_db() -> None:
             pg_exec(
                 "INSERT INTO tenants (code, name) VALUES (%s, %s) ON CONFLICT (code) DO NOTHING",
                 (code, name),
+            )
+        for ns, tenant, note in NAMESPACE_TENANT_SEEDS:
+            pg_exec(
+                """INSERT INTO namespace_tenant (namespace, tenant, note)
+                   VALUES (%s, %s, %s) ON CONFLICT (namespace) DO NOTHING""",
+                (ns, tenant, note),
             )
         for key, name, desc, perms, order in ROLE_SEEDS:
             pg_exec(

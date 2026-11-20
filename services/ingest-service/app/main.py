@@ -253,14 +253,13 @@ def init_db() -> None:
             """
         )
         # 平台自身组件即采集源（真实进程、真实格式），host 由采集端静态打标。
-        # 归属统一为 default：这些是"日志平台自己"的基础设施，不对应任何业务租户；
-        # 生产环境按 namespace/标签分租户时，这里换成对应租户编码即可。
+        # 租户按业务系统划分：这些是"日志平台自己"的基础设施，统一归 log-system 租户。
+        # 业务系统（如 i6000）不在这里，走 namespace_tenant 映射判定。
         seed = [
-            ("sys-sim",  "default", "dev", "linux-host", "系统日志主机（syslogd 真实落盘）"),
-            ("web",      "default", "dev", "web",        "平台前端/API 网关 nginx"),
-            ("redis",    "default", "dev", "cache",      "平台缓存/会话 redis"),
-            ("postgres", "default", "dev", "db",         "平台元数据库 PostgreSQL"),
-            ("kafka",    "default", "dev", "mq",         "日志主干 Kafka broker"),
+            ("web",      "log-system", "dev", "web",   "平台前端/API 网关 nginx"),
+            ("redis",    "log-system", "dev", "cache", "平台缓存/会话 redis"),
+            ("postgres", "log-system", "dev", "db",    "平台元数据库 PostgreSQL"),
+            ("kafka",    "log-system", "dev", "mq",    "日志主干 Kafka broker"),
         ]
         for host, tenant, env, role, note in seed:
             pg_exec(
@@ -271,6 +270,12 @@ def init_db() -> None:
                 """,
                 (host, tenant, env, role, note),
             )
+        # 修正历史映射：ON CONFLICT DO NOTHING 不会更新已存在行，旧库里 host→default
+        # 的映射会残留。这里把平台自身组件的归属显式纠正到 log-system，并清掉已停用的
+        # 模拟主机台账。幂等，每次启动执行。
+        for host in ("web", "redis", "postgres", "kafka"):
+            pg_exec("UPDATE hosts SET tenant=%s WHERE host=%s", ("log-system", host))
+        pg_exec("DELETE FROM hosts WHERE host LIKE '%-sim'")
         # 服务端解析管线的规则表（解析器 / 管线 / 采集器凭证）
         pipeline_store.init_tables()
         pipeline_store.seed_defaults()
@@ -677,7 +682,7 @@ def capabilities() -> Dict[str, bool]:
 # 请求模型
 # ---------------------------------------------------------------------------
 class SourceIn(BaseModel):
-    tenant: str = "default"
+    tenant: str = "i6000"
     source_key: str = Field(..., min_length=1, max_length=200)
     display_name: Optional[str] = None
     ingest_type: str = "Agent"
@@ -960,7 +965,7 @@ def _startup():
 
 @app.get("/meta")
 def meta(
-    tenant: str = Query("default"),
+    tenant: str = Query("i6000"),
     identity: Dict[str, Any] = Depends(current_identity),
 ):
     """新建/编辑表单所需的真实环境信息：索引、字段角色候选、接入类型、组件可达性。
@@ -1010,7 +1015,7 @@ def put_settings(
 
 @app.get("/sources")
 def list_sources(
-    tenant: str = Query("default"),
+    tenant: str = Query("i6000"),
     keyword: str = Query("", description="名称 / 来源标识模糊匹配"),
     type: str = Query("", description="接入类型"),
     status: str = Query("", description="运行状态"),
@@ -1081,7 +1086,7 @@ def update_source(source_key: str, payload: SourceIn,
 
 
 @app.delete("/sources/{source_key}")
-def delete_source(source_key: str, tenant: str = Query("default"),
+def delete_source(source_key: str, tenant: str = Query("i6000"),
                   identity: Dict[str, Any] = Depends(current_identity)):
     """仅删除平台侧登记配置；不会、也不能删除已写入 OpenSearch 的真实日志。"""
     tenant = resolve_tenant(identity, tenant)
@@ -1120,7 +1125,7 @@ def batch_status(payload: Dict[str, Any],
 
 
 @app.get("/sources/{source_key}")
-def source_detail(source_key: str, tenant: str = Query("default"),
+def source_detail(source_key: str, tenant: str = Query("i6000"),
                   identity: Dict[str, Any] = Depends(current_identity)):
     tenant = resolve_tenant(identity, tenant)
     """详情：登记配置 + 真实趋势 / 级别分布 / 字段覆盖率 / 样例原始日志。"""
@@ -1189,7 +1194,7 @@ class TestReq(BaseModel):
     ingest_type: str = "Agent"
     endpoint: Optional[str] = ""
     source_key: Optional[str] = ""
-    tenant: str = "default"
+    tenant: str = "i6000"
     target_index: Optional[str] = ""
 
 
@@ -1300,7 +1305,7 @@ def test_connectivity(req: TestReq):
 
 
 @app.get("/export")
-def export_config(tenant: str = Query("default"),
+def export_config(tenant: str = Query("i6000"),
                   identity: Dict[str, Any] = Depends(current_identity)):
     tenant = resolve_tenant(identity, tenant)
     """导出真实登记配置 + 自动发现清单，供新环境导入/存档。"""
@@ -1388,6 +1393,45 @@ def require_collector(
 _HOST_CACHE: Dict[str, Any] = {"ts": 0.0, "map": {}}
 _HOST_CACHE_TTL = 30.0
 
+_NS_CACHE: Dict[str, Any] = {"ts": 0.0, "map": {}}
+_NS_CACHE_TTL = 30.0
+
+
+def namespace_tenant_map() -> Dict[str, str]:
+    """K8s namespace → 租户(code) 映射，带 30s 缓存（与 hosts 台账同构）。
+
+    租户按业务系统划分后，K8s 场景最可靠的归属来源是容器日志文件名里的 namespace：
+    采集器不注入 tenant_id，服务端用 namespace 查这张映射表定租户。新增业务系统
+    只需在 namespace_tenant 表加一行，不改采集器配置与服务端规则。
+    """
+    now = time.time()
+    if now - _NS_CACHE["ts"] > _NS_CACHE_TTL:
+        try:
+            rows = pg_query("SELECT namespace, tenant FROM namespace_tenant WHERE tenant <> ''")
+            _NS_CACHE["map"] = {str(r["namespace"]): str(r["tenant"]) for r in rows}
+            _NS_CACHE["ts"] = now
+        except Exception as e:  # noqa: BLE001
+            # 查库失败不缓存空结果，避免一次抖动导致整批 K8s 日志落 unknown
+            print(f"[ingest] namespace_tenant 台账查询失败（沿用旧缓存）: {e}", flush=True)
+    return _NS_CACHE["map"]
+
+
+def k8s_namespace_from_src(src: str) -> str:
+    """从 K8s 容器日志路径解析 namespace。
+
+    Docker/CRI 容器日志文件名格式：<pod>_<namespace>_<container>.log
+    pod / namespace / container 名都不含下划线（K8s DNS 命名规则），所以按 '_'
+    切分取倒数第二段即 namespace。非 K8s 路径返回空串，由调用方回退其他判定。
+    例：/var/log/containers/order-7d9f_i6000_order-1a2b.log -> i6000
+    """
+    base = os.path.basename(str(src or ""))
+    if not base.endswith(".log"):
+        return ""
+    parts = base[: -len(".log")].split("_")
+    if len(parts) < 3:
+        return ""
+    return parts[-2]
+
 
 def host_tenant_map() -> Dict[str, str]:
     """主机台账缓存（30s）：系统/中间件/数据库日志的归属依据。
@@ -1435,18 +1479,29 @@ def derive_tenant(rec: Dict[str, Any],
     旧实现把采集端注入的 tenant_id 放第一优先级——任何持有 collector key 的人
     都能往任意租户写数据，索引隔离与行级过滤在这个口子下全部失效。现在改为：
 
-      推导值 = 主机台账(hosts) > 来源文件名
+      推导值 = K8s namespace 映射 > 主机台账(hosts) > 来源文件名
       注入值与推导值冲突 → 以推导为准 + 审计
       最终值不在 collector.tenant_allow 白名单 → 拒收该条 + 审计
 
-    系统/中间件/数据库日志本身无租户信息，只能靠主机台账（CMDB 雏形）判断。
+    租户按业务系统划分：K8s 日志最可靠的来源是容器文件名里的 namespace（部署
+    元数据，非正文），查 namespace_tenant 映射表定租户；平台自身组件日志靠 host
+    台账（CMDB 雏形）归到 log-system；本地构造日志走文件名兜底（兼容 demo）。
     """
     injected = str(rec.get("tenant_id") or "").strip()
     inferred = ""
-    host = str(rec.get("host") or "").strip()
-    if host:
-        inferred = host_tenant_map().get(host, "")
     src = str(rec.get("src_file") or "").strip()
+
+    # 1) K8s 场景：从容器日志文件名解析 namespace，查映射表（最高优先级）
+    ns = k8s_namespace_from_src(src)
+    if ns:
+        inferred = namespace_tenant_map().get(ns, "")
+
+    # 2) 平台自身组件日志：host → hosts 台账（如 web/redis/postgres/kafka → log-system）
+    host = str(rec.get("host") or "").strip()
+    if not inferred and host:
+        inferred = host_tenant_map().get(host, "")
+
+    # 3) 兜底：来源文件名（本地 demo 的 acme.log / 非 K8s 单文件日志）
     if not inferred and src:
         base = os.path.basename(src)
         if base.endswith(".log"):

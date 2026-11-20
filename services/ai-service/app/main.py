@@ -346,7 +346,7 @@ class PreviewIn(BaseModel):
 class Nl2PplIn(BaseModel):
     question: str
     provider_id: Optional[int] = None
-    tenant: str = "default"
+    tenant: str = "i6000"
     model_name: str = ""          # 预览时临时覆盖模型 ID，不写回配置库
     include_prompt: bool = False
 
@@ -635,7 +635,7 @@ def import_grammar(req: ImportIn):
 
 
 @app.post("/grammar/sync-fields")
-def sync_fields(tenant: str = Query("default")):
+def sync_fields(tenant: str = Query("i6000")):
     """从 ingest-service /meta 读真实 mapping，写入字段别名（不编造字段）。"""
     try:
         resp = httpx.get(INGEST_META_URL, params={"tenant": tenant}, timeout=8)
@@ -727,7 +727,7 @@ def nl_to_ppl(req: Nl2PplIn):
     except Exception:  # noqa: BLE001
         tenants = []
     return nl2ppl.generate(
-        q, rows[0], rules, tenant=(req.tenant or "default").strip(),
+        q, rows[0], rules, tenant=(req.tenant or "i6000").strip(),
         model_name=req.model_name, include_prompt=req.include_prompt,
         tenants=tenants,
     )

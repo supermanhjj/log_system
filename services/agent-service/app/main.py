@@ -823,7 +823,7 @@ def cancel_upgrade_task(task_id: int):
 
 
 @app.get("/install-config")
-def install_config(hostname: str = Query("new-host"), tenant: str = Query("default")):
+def install_config(hostname: str = Query("new-host"), tenant: str = Query("i6000")):
     """生成可直接落盘的 Fluent Bit 接入配置（真实可用，非占位安装包）。
 
     与 fluentbit/fluent-bit.conf 当前跑通的链路一致：tail 采集 → rewrite_tag 按租户路由 →
