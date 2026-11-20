@@ -49,7 +49,7 @@ app.add_middleware(
 #
 # 索引命名是**约定**（logs-<租户编码>），不再维护硬编码租户清单：
 # tenants 表是唯一真源，新增租户无需改这里。all → logs-*（仅管理员，由 authz 放行）。
-# 无法归属的日志统一落 logs-unknown（采集/接入端写入），便于治理而非污染 default。
+# 无法归属的日志在写入入口直接拒收（不再有兜底索引），避免出现归属不明的数据。
 # ----------------------------------------------------------------------------
 def index_for(tenant: Optional[str]) -> str:
     if tenant in ("all", "*", "", None):
@@ -265,7 +265,7 @@ def build_must(time_range, filters, tenant) -> List[Dict[str, Any]]:
 # 请求模型
 # ----------------------------------------------------------------------------
 class QueryReq(BaseModel):
-    tenant: str = "i6000"
+    tenant: Optional[str] = None
     timeRange: Optional[Dict[str, Any]] = None
     filters: Optional[Dict[str, Any]] = None
     page: int = 1
@@ -275,19 +275,19 @@ class QueryReq(BaseModel):
 
 class PqlReq(BaseModel):
     pql: str
-    tenant: str = "i6000"
+    tenant: Optional[str] = None
     timeRange: Optional[Dict[str, Any]] = None
 
 
 class HistReq(BaseModel):
-    tenant: str = "i6000"
+    tenant: Optional[str] = None
     timeRange: Optional[Dict[str, Any]] = None
     filters: Optional[Dict[str, Any]] = None
     interval: Optional[str] = None
 
 
 class ContextReq(BaseModel):
-    tenant: str = "i6000"
+    tenant: Optional[str] = None
     time: str  # 锚点日志的 @timestamp（ISO，UTC）
     source: Optional[str] = None  # 限定同一来源，取该服务流的相邻日志
     before: int = 2

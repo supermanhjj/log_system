@@ -126,7 +126,11 @@ def publish(docs: List[Dict[str, Any]], tenant: str) -> int:
     if p is None:
         raise RuntimeError(f"kafka producer unavailable: {_last_error}")
 
-    key = (tenant or "unknown").encode("utf-8")
+    # 分区 key 必须是明确租户：无租户的记录不允许进入 Kafka（入口已拒收），
+    # 否则会以兜底 key 混进主干，下游无法追溯归属。
+    if not tenant:
+        raise ValueError("Kafka 写入需要明确的租户编码（无法归属的记录应在入口拒收）")
+    key = tenant.encode("utf-8")
     results = {"ok": 0, "fail": 0, "err": None}
 
     def _cb(err, msg):

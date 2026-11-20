@@ -330,12 +330,12 @@ def _rule_visible(rule: Dict[str, Any], tenant: str) -> bool:
     """可见性：管理员 all 巡检可见全部；否则只能看本租户规则与平台级通用规则。"""
     if tenant == "all":
         return True
-    return (rule.get("tenant") or "i6000") in (tenant, "all")
+    return (rule.get("tenant") or "all") in (tenant, "all")
 
 
 def _rule_writable(rule: Dict[str, Any], tenant: str) -> bool:
     """可写性：平台级通用规则（tenant='all'）不允许普通账号改；其余限本租户。"""
-    owner_tenant = rule.get("tenant") or "i6000"
+    owner_tenant = rule.get("tenant") or "all"
     if owner_tenant == "all":
         return tenant == "all"
     return tenant == "all" or owner_tenant == tenant
@@ -345,7 +345,7 @@ def row_to_rule(r: Dict[str, Any]) -> Dict[str, Any]:
     notify = [x for x in (r.get("notify") or "").split(",") if x]
     return {
         "id": r["id"],
-        "tenant": r.get("tenant") or "i6000",
+        "tenant": r.get("tenant") or "all",
         "name": r["name"],
         "matchSource": r.get("match_source"),
         "matchLogClass": r.get("match_log_class"),
@@ -764,7 +764,7 @@ def _startup():
 # ------------------------------- 告警规则 -------------------------------
 @app.get("/rules")
 def list_rules(
-    tenant: str = Query("i6000"),
+    tenant: Optional[str] = Query(None),
     keyword: str = Query("", description="规则名称模糊匹配"),
     level: str = Query("", description="告警级别：严重/警告/提示"),
     enabled: str = Query("", description="启用状态：true/false/空=全部"),
@@ -801,7 +801,7 @@ def list_rules(
 @app.post("/rules")
 def create_rule(
     payload: RuleIn,
-    tenant: str = Query("i6000"),
+    tenant: Optional[str] = Query(None),
     identity: Dict[str, Any] = Depends(current_identity),
 ):
     tenant = resolve_tenant(identity, tenant)
@@ -842,7 +842,7 @@ def create_rule(
 @app.get("/rules/{rule_id}")
 def get_rule(
     rule_id: int,
-    tenant: str = Query("i6000"),
+    tenant: Optional[str] = Query(None),
     identity: Dict[str, Any] = Depends(current_identity),
 ):
     tenant = resolve_tenant(identity, tenant)
@@ -856,7 +856,7 @@ def get_rule(
 def update_rule(
     rule_id: int,
     payload: RuleIn,
-    tenant: str = Query("i6000"),
+    tenant: Optional[str] = Query(None),
     identity: Dict[str, Any] = Depends(current_identity),
 ):
     tenant = resolve_tenant(identity, tenant)
@@ -900,7 +900,7 @@ def update_rule(
 @app.delete("/rules/{rule_id}")
 def delete_rule(
     rule_id: int,
-    tenant: str = Query("i6000"),
+    tenant: Optional[str] = Query(None),
     identity: Dict[str, Any] = Depends(current_identity),
 ):
     tenant = resolve_tenant(identity, tenant)
@@ -918,7 +918,7 @@ def delete_rule(
 def toggle_rule(
     rule_id: int,
     payload: Dict[str, bool] = {},
-    tenant: str = Query("i6000"),
+    tenant: Optional[str] = Query(None),
     identity: Dict[str, Any] = Depends(current_identity),
 ):
     tenant = resolve_tenant(identity, tenant)
@@ -936,7 +936,7 @@ def toggle_rule(
 # ------------------------------- 告警事件 -------------------------------
 @app.get("/events")
 def list_events(
-    tenant: str = Query("i6000"),
+    tenant: Optional[str] = Query(None),
     keyword: str = Query("", description="规则名称 / 来源关键字"),
     level: str = Query("", description="告警级别：严重/警告/提示"),
     status: str = Query("", description="处理状态：告警中/已恢复/维护中"),
@@ -971,7 +971,7 @@ def list_events(
 
 
 @app.get("/events/{event_id}/related-query")
-def event_related_query(event_id: str, tenant: str = Query("i6000"),
+def event_related_query(event_id: str, tenant: Optional[str] = Query(None),
                         identity: Dict[str, Any] = Depends(current_identity)):
     """分析「当前规则配置 + 索引真实字段」，生成可直接在日志检索页执行的 PPL。"""
     tenant = resolve_tenant(identity, tenant)
@@ -996,7 +996,7 @@ def event_related_query(event_id: str, tenant: str = Query("i6000"),
 
 
 @app.get("/events/{event_id}")
-def event_detail(event_id: str, tenant: str = Query("i6000"),
+def event_detail(event_id: str, tenant: Optional[str] = Query(None),
                  identity: Dict[str, Any] = Depends(current_identity)):
     tenant = resolve_tenant(identity, tenant)
     events = build_events(tenant)
@@ -1013,7 +1013,7 @@ class CloseReq(BaseModel):
 
 
 @app.post("/events/close")
-def close_events(req: CloseReq, tenant: str = Query("i6000"),
+def close_events(req: CloseReq, tenant: Optional[str] = Query(None),
                  identity: Dict[str, Any] = Depends(current_identity)):
     tenant = resolve_tenant(identity, tenant)
     if not req.ids:
@@ -1035,7 +1035,7 @@ def close_events(req: CloseReq, tenant: str = Query("i6000"),
 
 
 @app.post("/events/{event_id}/close")
-def close_one(event_id: str, req: Dict[str, Any] = {}, tenant: str = Query("i6000"),
+def close_one(event_id: str, req: Dict[str, Any] = {}, tenant: Optional[str] = Query(None),
               identity: Dict[str, Any] = Depends(current_identity)):
     tenant = resolve_tenant(identity, tenant)
     set_event_state(tenant, event_id, "已恢复", req.get("handler"), req.get("reason"))
@@ -1043,7 +1043,7 @@ def close_one(event_id: str, req: Dict[str, Any] = {}, tenant: str = Query("i600
 
 
 @app.post("/events/{event_id}/maintain")
-def maintain_one(event_id: str, req: Dict[str, Any] = {}, tenant: str = Query("i6000"),
+def maintain_one(event_id: str, req: Dict[str, Any] = {}, tenant: Optional[str] = Query(None),
                  identity: Dict[str, Any] = Depends(current_identity)):
     tenant = resolve_tenant(identity, tenant)
     set_event_state(tenant, event_id, "维护中", req.get("handler"), req.get("reason"))

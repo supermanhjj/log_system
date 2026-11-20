@@ -168,7 +168,7 @@ const CHIPS = [
   'log_class:database',
   'level:ERROR',
   'status>=500',
-  "source=logs-default | stats count() by log_class, level",
+  "source=logs-i6000 | stats count() by log_class, level",
 ]
 
 function intervalMs(iv) {
@@ -749,7 +749,7 @@ watch(
           v-model="splText"
           size="default"
           class="spl-input"
-          placeholder="输入 PPL 或关键字，例如 source=logs-default | where level='ERROR'"
+          placeholder="输入 PPL 或关键字，例如 source=logs-i6000 | where level='ERROR'"
           @keyup.enter="doSearch"
         >
           <template #prepend><span class="mono">检索</span></template>
@@ -815,7 +815,7 @@ watch(
           <el-table v-if="pqlResult" :data="pqlRows" size="small" stripe max-height="480" v-loading="pqlLoading">
             <el-table-column v-for="c in pqlCols" :key="c" :prop="c" :label="pplColLabel(c)" show-overflow-tooltip />
           </el-table>
-          <el-empty v-else description="输入含 | 的 PPL 语句后执行，例如 source=logs-default | stats count() by level" />
+          <el-empty v-else description="输入含 | 的 PPL 语句后执行，例如 source=logs-i6000 | stats count() by level" />
         </template>
 
         <!-- 关键字/过滤检索模式 -->

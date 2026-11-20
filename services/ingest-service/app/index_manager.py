@@ -37,9 +37,17 @@ def index_date() -> str:
 
 
 def normalize_tenant(tenant: Optional[str]) -> str:
-    """未归属租户统一落 logs-unknown，绝不静默写 default。"""
+    """写入目标必须有明确的租户编码。
+
+    平台只保留真实业务系统租户，没有 `unknown` 这类兜底桶：无法归属的日志
+    在入口（derive_tenant 之后）就被拒收并计数，不会被静默塞进某个模糊索引。
+    因此这里是**硬约束**——传入空租户/聚合范围直接报错，让问题立刻暴露，
+    而不是生成一个谁都说不清归属的索引。
+    """
     if not tenant or tenant in ("all", "*"):
-        return "unknown"
+        raise ValueError(
+            f"写入需要明确的租户编码，收到 {tenant!r}；无法归属的日志应在入口拒收，不允许兜底落库"
+        )
     return tenant
 
 

@@ -884,7 +884,7 @@ def install_config(hostname: str = Query("new-host"), tenant: str = Query("i6000
     Record  tenant_id {tenant}
 
 # ---- 统一写入：交给接入网关，不在采集端直连 OpenSearch ----
-# 好处：租户合法性校验、无法归属→logs-unknown、脱敏/采样/限流都在网关一处扩展；
+# 好处：租户合法性校验、无法归属→入口拒收、脱敏/采样/限流都在网关一处扩展；
 # 采集端也无需因新增租户而改配置或多个 output。
 [OUTPUT]
     Name    http

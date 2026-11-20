@@ -28,6 +28,9 @@ export const useAppStore = defineStore('app', {
         const data = await listTenants()
         const items = (data.items || [])
           .filter((t) => t.enabled)
+          // 顶栏只列真实业务系统租户。unknown 已随「归属必须清晰」下线（无法归属的
+          // 日志在入口直接拒收），这里保留过滤是为了防御历史库/灰度环境的残留值。
+          .filter((t) => t.code !== 'unknown')
           .map((t) => ({ value: t.code, label: t.name }))
         if (includeAll) items.push({ value: 'all', label: '全部租户' })
         if (items.length) {

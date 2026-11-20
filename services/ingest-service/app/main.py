@@ -86,15 +86,16 @@ app.include_router(api_pipelines.router)
 def index_for(tenant: Optional[str], override: str = "") -> str:
     """索引命名是约定（logs-<租户编码>）；租户清单以 tenants 表为唯一真源。
 
-    空租户 → logs-unknown：采集/接入端无法归属时集中落这里等待治理，
-    绝不静默写入 default（跨租户污染比查不到更危险）。
+    平台只保留真实业务系统租户，没有 unknown 兜底桶：无法归属的日志在写入入口
+    就被拒收并计数，不会再产生归属不明的索引。空租户在这里直接报错暴露，
+    避免又出现一个"谁都不认领"的数据孤岛。
     """
     if override:
         return override
     if tenant in ("all", "*"):
         return "logs-*"
     if not tenant:
-        return "logs-unknown"
+        raise ValueError("索引解析需要明确租户编码；空租户已在入口拒收，不再映射兜底索引")
     return f"logs-{tenant}"
 
 
@@ -682,7 +683,7 @@ def capabilities() -> Dict[str, bool]:
 # 请求模型
 # ---------------------------------------------------------------------------
 class SourceIn(BaseModel):
-    tenant: str = "i6000"
+    tenant: Optional[str] = None
     source_key: str = Field(..., min_length=1, max_length=200)
     display_name: Optional[str] = None
     ingest_type: str = "Agent"
@@ -768,7 +769,7 @@ def root():
 # App 直报等无法部署采集器的系统，需要一个通用 HTTP 入口。租户归属在这里确定：
 # - 机器接入：X-Api-Key → 映射到租户（租户绑在凭证上，与日志正文无关）
 # - 控制台/调试：Authorization: Bearer <JWT> → 用登录身份所属租户
-# - 无法归属：写 logs-unknown 并告警，绝不静默归 default
+# - 无法归属：入口拒收 + 计数 + 给出原因，绝不静默归到某个默认租户
 # ---------------------------------------------------------------------------
 INGEST_API_KEYS = os.getenv("INGEST_API_KEYS", "")
 MAX_BATCH = int(os.getenv("INGEST_MAX_BATCH", "1000"))
@@ -876,8 +877,10 @@ def normalize_record(rec: Dict[str, Any], tenant: str) -> Dict[str, Any]:
     except Exception as e:  # noqa: BLE001
         # 归一化失败不能丢日志：保留原始形态入库，后续按 source_type 治理
         print(f"[ingest] 日志归一化失败（保留原始记录）: {e}", flush=True)
-    # 服务端强制覆盖：正文里的 tenant 字段不可信，一律以入口判定结果为准
-    doc["tenant_id"] = tenant or "unknown"
+    # 服务端强制覆盖：正文里的 tenant 字段不可信，一律以入口判定结果为准。
+    # tenant 为空说明调用方漏了入口校验——不写任何兜底值，让异常尽早暴露。
+    if tenant:
+        doc["tenant_id"] = tenant
     return doc
 
 
@@ -915,6 +918,14 @@ def ingest(
         identity = current_identity(authorization)
         tenant = resolve_ingest_tenant(identity, payload.get("tenant"))
 
+    # 归属必须明确：没有 unknown 兜底桶，判定不出租户就当场拒收（400），
+    # 让调用方立刻看到问题，而不是把日志塞进一个没人认领的索引。
+    if not tenant:
+        raise HTTPException(
+            status_code=400,
+            detail="无法判定租户：请在请求体指定 tenant，或使用绑定了有效租户的 API Key",
+        )
+
     docs = [normalize_record(r, tenant) for r in records if isinstance(r, dict)]
     if not docs:
         raise HTTPException(status_code=400, detail="records 中没有有效的日志对象")
@@ -942,19 +953,14 @@ def ingest(
     if errors and not any(written.values()):
         raise HTTPException(status_code=502, detail="; ".join(errors))
 
-    if not tenant:
-        print(f"[ingest-service] 未归属日志 {len(docs)} 条已写入 logs-unknown，请检查接入端租户绑定",
-              flush=True)
     return {
         "ok": any(written.values()),
         "accepted": len(docs),
-        "tenant": tenant or "unknown",
+        "tenant": tenant,
         "index": idx,
         "written": written,
         "storageMode": kafka_writer.mode(),
-        "unassigned": not bool(tenant),
-        "message": ("已写入 " + idx) if tenant else
-                   "无法判定租户，已写入 logs-unknown 待治理（请为接入端绑定租户或 API Key）",
+        "message": "已写入 " + idx,
     }
 
 
@@ -965,7 +971,7 @@ def _startup():
 
 @app.get("/meta")
 def meta(
-    tenant: str = Query("i6000"),
+    tenant: Optional[str] = Query(None),
     identity: Dict[str, Any] = Depends(current_identity),
 ):
     """新建/编辑表单所需的真实环境信息：索引、字段角色候选、接入类型、组件可达性。
@@ -1015,7 +1021,7 @@ def put_settings(
 
 @app.get("/sources")
 def list_sources(
-    tenant: str = Query("i6000"),
+    tenant: Optional[str] = Query(None),
     keyword: str = Query("", description="名称 / 来源标识模糊匹配"),
     type: str = Query("", description="接入类型"),
     status: str = Query("", description="运行状态"),
@@ -1086,7 +1092,7 @@ def update_source(source_key: str, payload: SourceIn,
 
 
 @app.delete("/sources/{source_key}")
-def delete_source(source_key: str, tenant: str = Query("i6000"),
+def delete_source(source_key: str, tenant: Optional[str] = Query(None),
                   identity: Dict[str, Any] = Depends(current_identity)):
     """仅删除平台侧登记配置；不会、也不能删除已写入 OpenSearch 的真实日志。"""
     tenant = resolve_tenant(identity, tenant)
@@ -1125,7 +1131,7 @@ def batch_status(payload: Dict[str, Any],
 
 
 @app.get("/sources/{source_key}")
-def source_detail(source_key: str, tenant: str = Query("i6000"),
+def source_detail(source_key: str, tenant: Optional[str] = Query(None),
                   identity: Dict[str, Any] = Depends(current_identity)):
     tenant = resolve_tenant(identity, tenant)
     """详情：登记配置 + 真实趋势 / 级别分布 / 字段覆盖率 / 样例原始日志。"""
@@ -1194,13 +1200,17 @@ class TestReq(BaseModel):
     ingest_type: str = "Agent"
     endpoint: Optional[str] = ""
     source_key: Optional[str] = ""
-    tenant: str = "i6000"
+    tenant: Optional[str] = None
     target_index: Optional[str] = ""
 
 
 @app.post("/sources/test")
 def test_connectivity(req: TestReq):
     """真实连通性校验。任何失败都如实返回原因，不产生假的「正常 / 12ms」。"""
+    # 本端点无登录身份上下文，租户必须由调用方显式给出；缺失就明确报错，
+    # 不能靠"兜底租户"去猜（否则会拿错索引起探测结果）。
+    if not req.tenant:
+        raise HTTPException(status_code=400, detail="请指定租户编码后再做连通性校验")
     started = time.time()
     result: Dict[str, Any] = {
         "ok": False, "type": req.ingest_type, "endpoint": req.endpoint or "",
@@ -1305,7 +1315,7 @@ def test_connectivity(req: TestReq):
 
 
 @app.get("/export")
-def export_config(tenant: str = Query("i6000"),
+def export_config(tenant: Optional[str] = Query(None),
                   identity: Dict[str, Any] = Depends(current_identity)):
     tenant = resolve_tenant(identity, tenant)
     """导出真实登记配置 + 自动发现清单，供新环境导入/存档。"""
@@ -1501,8 +1511,13 @@ def derive_tenant(rec: Dict[str, Any],
     if not inferred and host:
         inferred = host_tenant_map().get(host, "")
 
-    # 3) 兜底：来源文件名（本地 demo 的 acme.log / 非 K8s 单文件日志）
-    if not inferred and src:
+    # 3) 兜底：来源文件名（仅用于非 K8s 的单文件日志，如本地 /var/log/app/acme.log）
+    #
+    #    绝不能对 K8s 容器路径生效：<pod>_<namespace>_<container>.log 去掉 .log 后
+    #    整串会被当成"租户名"，于是未配置映射的 namespace 会报成
+    #    「租户 app-1_prod-pms_app-2 不存在」，把排查方向引到完全错误的地方。
+    #    这里以「是否解析出 namespace」为准：是 K8s 路径就只认 namespace 映射结果。
+    if not inferred and src and not ns:
         base = os.path.basename(src)
         if base.endswith(".log"):
             inferred = base[: -len(".log")]
@@ -1521,6 +1536,29 @@ def derive_tenant(rec: Dict[str, Any],
     return final, action
 
 
+def reject_reason(rec: Dict[str, Any], tenant: str, known: set) -> str:
+    """给出「无法归属」的可操作原因，供采集端日志与运维直接定位。
+
+    平台没有 logs-unknown 兜底桶，判不出租户就必须拒收，因此原因要能指向
+    具体的配置缺口：namespace 未映射 / 主机未进台账 / 租户已停用。
+    """
+    src = str(rec.get("src_file") or "").strip()
+    ns = k8s_namespace_from_src(src)
+    if ns:
+        # K8s 场景优先指向 namespace：这是现场唯一需要改的地方（加一行映射）
+        if tenant and tenant not in known:
+            return f"namespace「{ns}」映射到已停用租户「{tenant}」（请更新 namespace_tenant 表）"
+        return f"namespace「{ns}」未在 namespace_tenant 表配置租户映射"
+    if tenant and tenant not in known:
+        return f"租户「{tenant}」不存在或已停用"
+    host = str(rec.get("host") or "").strip()
+    if host:
+        return f"主机「{host}」不在 hosts 台账"
+    if src:
+        return f"来源文件「{os.path.basename(src)}」无法映射到任何租户"
+    return "记录既无 host 也无 src_file，缺少判定归属所需的来源元数据"
+
+
 @app.post("/ingest/collector")
 def ingest_collector(
     records: List[Dict[str, Any]] = Body(...),
@@ -1528,8 +1566,10 @@ def ingest_collector(
 ):
     """采集器批量上报（Fluent Bit 等）。每条记录按来源元数据判定租户。
 
-    无法判定或租户不存在的记录统一落 logs-unknown，并在响应里如实计数，
-    绝不静默归 default。鉴权由 require_collector 依赖前置完成。
+    归属必须清晰：判定不出租户（namespace 未映射 / 主机不在台账 / 租户已停用）
+    的记录**直接拒收**，并在响应里给出原因分类与样本，便于当场定位配置缺口。
+    平台只保留真实业务系统租户，不存在 logs-unknown 这类兜底桶。
+    鉴权由 require_collector 依赖前置完成。
     """
     if not isinstance(records, list) or not records:
         raise HTTPException(status_code=400, detail="records 不能为空")
@@ -1540,6 +1580,9 @@ def ingest_collector(
     buckets: Dict[str, List[Dict[str, Any]]] = {}
     rejected = 0      # 越白名单，拒收且不入库（已写审计）
     mismatches = 0    # 注入值与推导冲突，已按推导纠正
+    unassigned = 0    # 判定不出租户 → 拒收（没有 unknown 兜底）
+    reasons: Dict[str, int] = {}
+    samples: List[Dict[str, str]] = []
     for rec in records:
         if not isinstance(rec, dict):
             rejected += 1
@@ -1550,8 +1593,18 @@ def ingest_collector(
             continue
         if action == "mismatch":
             mismatches += 1
-        if tenant not in known:
-            tenant = ""   # 未归属 → logs-unknown
+        if not tenant or tenant not in known:
+            # 归属不清晰就拒收：宁可少采，也不制造归属不明的数据。
+            unassigned += 1
+            why = reject_reason(rec, tenant, known)
+            reasons[why] = reasons.get(why, 0) + 1
+            if len(samples) < 5:
+                samples.append({
+                    "reason": why,
+                    "host": str(rec.get("host") or "")[:64],
+                    "srcFile": str(rec.get("src_file") or "")[:200],
+                })
+            continue
         # 按租户分桶而不是按索引名分桶：写入目标已改为按天索引 + 写别名，
         # 同一租户的不同日期索引不能拆成不同 Kafka key。
         buckets.setdefault(tenant, []).append(normalize_record(rec, tenant))
@@ -1567,7 +1620,7 @@ def ingest_collector(
     errors = []
     # 逐个租户写：OS 走该租户的写别名，Kafka 按租户 key 分区。
     for tenant, docs in buckets.items():
-        kafka_tenant = tenant or "unknown"
+        kafka_tenant = tenant   # buckets 只含判定成功的租户，不存在空 key
         # 采集器一次 flush 可能上千条：按 MAX_BATCH 分片，避免整个 chunk 因单批过大被拒后
         # 无限重试（采集链路上最常见的数据丢失点）。
         for i in range(0, len(docs), MAX_BATCH):
@@ -1589,23 +1642,27 @@ def ingest_collector(
     if errors and os_ok == 0 and kafka_ok == 0:
         raise HTTPException(status_code=502, detail="; ".join(errors[:5]))
 
-    # buckets 已改为按租户编码分桶，未归属的 key 是空串（写入时才映射 logs-unknown）
-    unassigned = len(buckets.get("", []))
     if unassigned:
-        print(f"[ingest-service] 采集器上报中 {unassigned} 条无法归属，已写入 logs-unknown", flush=True)
+        detail = "；".join(f"{k}（{v} 条）" for k, v in list(reasons.items())[:3])
+        print(
+            f"[ingest-service] 采集器上报 {unassigned} 条无法归属已拒收，请补齐归属配置：{detail}",
+            flush=True,
+        )
     return {
         "ok": os_ok > 0 or kafka_ok > 0,
         "accepted": accepted,
-        "rejected": rejected,
+        "rejected": rejected + unassigned,
         "tenantMismatches": mismatches,
         "written": {"opensearch": os_ok, "kafka": kafka_ok},
         "storageMode": kafka_writer.mode(),
-        "byTenant": {k or "unknown": len(v) for k, v in buckets.items()},
+        "byTenant": {k: len(v) for k, v in buckets.items()},
         "unassigned": unassigned,
+        "rejectReasons": reasons,
+        "rejectSamples": samples,
         "message": (
             "已按服务端推导的租户写入"
-            + (f"，其中 {unassigned} 条未归属进 logs-unknown" if unassigned else "")
             + (f"，{mismatches} 条注入租户与推导冲突已纠正" if mismatches else "")
             + (f"，{rejected} 条越出采集器租户白名单被拒收" if rejected else "")
+            + (f"，{unassigned} 条无法归属已拒收（详见 rejectReasons）" if unassigned else "")
         ),
     }

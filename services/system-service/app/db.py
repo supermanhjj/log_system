@@ -89,19 +89,21 @@ ROLE_SEEDS = [
 # i6000：模拟现场的 I6000 系统（两个服务：order 业务日志 / sys 系统日志）；
 # log-system：日志平台自身组件日志（web/redis/postgres/kafka 等）。
 # 新增系统 = 在 namespace_tenant 加一行映射 + 这里加一个租户种子，不改采集器。
+# 一期只有两个业务系统租户。不再保留 unknown 这类兜底租户：
+# 无法归属的日志在写入入口直接拒收并给出原因，绝不落一个"谁都不认领"的索引。
 TENANT_SEEDS = [
     ("i6000", "I6000 系统"),
     ("log-system", "日志平台"),
-    # 未归属：采集端无法判定来源租户时统一写入 logs-unknown，供管理员治理，
-    # 禁止静默归入某个业务系统（否则造成跨系统数据污染，比查不到更危险）。
-    ("unknown", "未归属日志"),
 ]
 
-# 保留租户编码：不能被新建，也不能删除（unknown 是采集兜底落点）
-RESERVED_TENANT_CODES = ("all", "*", "unknown")
+# 保留租户编码：不能被新建，也不能删除（all/* 是查询范围语义，不是真实租户）
+RESERVED_TENANT_CODES = ("all", "*")
+
+# 已废止的租户编码：历史库或前端残留会带这些值，启动时幂等清理，避免再被当成有效租户。
+RETIRED_TENANT_CODES = ("unknown", "default", "acme", "gp")
 
 # K8s namespace → 租户映射种子。新增业务系统时加一行即可，采集器与服务端规则都不用改。
-# 未在此表的 namespace 会落 logs-unknown，由管理员治理，绝不静默归到某业务系统。
+# 未在此表登记的 namespace 会被拒收（响应 rejectReasons 指明具体 namespace）。
 NAMESPACE_TENANT_SEEDS = [
     ("i6000", "i6000", "I6000 系统两个服务共用命名空间"),
     ("log-system", "log-system", "日志平台自身组件命名空间（预留）"),
@@ -326,6 +328,17 @@ def init_db() -> None:
                 "INSERT INTO tenants (code, name) VALUES (%s, %s) ON CONFLICT (code) DO NOTHING",
                 (code, name),
             )
+        # 废止租户幂等清理：unknown/default/acme/gp 一律下线，避免历史残留继续
+        # 出现在租户下拉或索引命名里。顺序：先迁用户（外键），再清配额/映射，最后删租户。
+        retired = list(RETIRED_TENANT_CODES)
+        pg_exec(
+            """UPDATE users SET tenant_id=(SELECT id FROM tenants WHERE code='i6000')
+                WHERE tenant_id IN (SELECT id FROM tenants WHERE code = ANY(%s))""",
+            (retired,),
+        )
+        pg_exec("DELETE FROM tenant_quotas WHERE tenant_code = ANY(%s)", (retired,))
+        pg_exec("DELETE FROM namespace_tenant WHERE tenant = ANY(%s)", (retired,))
+        pg_exec("DELETE FROM tenants WHERE code = ANY(%s)", (retired,))
         for ns, tenant, note in NAMESPACE_TENANT_SEEDS:
             pg_exec(
                 """INSERT INTO namespace_tenant (namespace, tenant, note)

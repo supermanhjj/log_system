@@ -10,14 +10,26 @@
 // 前端传的只是「查看意图」，改 localStorage 也只能拿到 403，不会越权。
 import { TOKEN_KEY } from './auth'
 
-// 当前租户持久化键：刷新页面后保持用户选择，避免回落到 default 造成误解
+// 当前租户持久化键：刷新页面后保持用户选择
 export const TENANT_KEY = 'ruilog.currentTenant'
 
-// 真正做到「按租户隔离数据」的服务前缀。只有这些接口才自动补 tenant。
+// 真正做「按租户隔离数据」的服务前缀。只有这些接口才自动补 tenant。
 const TENANT_SCOPED_PREFIXES = ['/api/search', '/api/dashboards', '/api/alarms', '/api/data']
 
+// 租户已重构为「按业务系统划分」。浏览器 localStorage 里可能仍存着旧租户编码，
+// 若原样发给服务端，各服务的 resolve_tenant 会返回 404「租户「default」不存在或已停用」，
+// 表现为切换租户或刷新页面后整页报错。这里做一次性自愈：识别到废弃编码就清掉，
+// 回落到默认业务系统租户，避免把历史脏值扩散到每个请求。
+const LEGACY_TENANTS = new Set(['default', 'acme', 'gp'])
+const FALLBACK_TENANT = 'i6000'
+
 export function currentTenant() {
-  return localStorage.getItem(TENANT_KEY) || 'default'
+  const v = localStorage.getItem(TENANT_KEY) || ''
+  if (!v || LEGACY_TENANTS.has(v)) {
+    if (v) localStorage.removeItem(TENANT_KEY)
+    return FALLBACK_TENANT
+  }
+  return v
 }
 
 function isTenantScoped(cfg) {

@@ -6,7 +6,7 @@
 2. 普通账号：只能访问自己所属租户；请求其他租户 → 403。
 3. 平台管理员：可巡检任意已启用租户；`all` 表示跨租户，仅管理员可用。
 4. 账号被停用 / 被删除时立即失效（每次请求现查，不依赖 Token 内容）。
-5. 未知租户不会静默落到 default：查询直接 404；写入端由调用方落 logs-unknown。
+5. 未知租户不会静默落到某个默认租户：查询直接 404；写入端判定不出归属就直接拒收（无兜底桶）。
 
 该文件在 search / dashboard / alarm / ingest 四个服务中各存一份（与项目既有
 security.py 的做法一致：各服务独立打包，未抽公共包）。改动时需同步保持行为一致。
@@ -110,7 +110,7 @@ def resolve_tenant(identity: Dict[str, Any], requested: Optional[str]) -> str:
 def resolve_ingest_tenant(identity: Dict[str, Any], requested: Optional[str]) -> str:
     """写入端租户解析：与查询端一致，但允许管理员显式指定任意已启用租户。
 
-    返回空字符串表示"无法归属"（调用方应写 logs-unknown 并告警），绝不静默归 default。
+    返回空字符串表示"无法归属"（调用方应拒收并计数），绝不静默归到某个默认租户。
     """
     req = (requested or "").strip()
     own = identity["tenant_code"]

@@ -346,7 +346,7 @@ class PreviewIn(BaseModel):
 class Nl2PplIn(BaseModel):
     question: str
     provider_id: Optional[int] = None
-    tenant: str = "i6000"
+    tenant: Optional[str] = None
     model_name: str = ""          # 预览时临时覆盖模型 ID，不写回配置库
     include_prompt: bool = False
 
