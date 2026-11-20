@@ -501,13 +501,20 @@ def tenant_code_valid(code: str) -> bool:
 
 
 def tenant_index_stats() -> Dict[str, Dict[str, int]]:
-    """按租户汇总 logs-<code> 的真实体积与文档数（取不到时返回空，不编造）。"""
+    """按租户汇总 logs-<code> 的真实体积与文档数（取不到时返回空，不编造）。
+
+    索引名带日期与写别名（logs-i6000-2026.11.20 / logs-i6000-write），
+    必须用 index_tenant() 归一出租户编码。早期实现直接切掉 "logs-" 前缀，
+    code 变成 "i6000-2026.11.20"，永远匹配不上租户 → 配额页文档数恒为 0。
+    """
     try:
-        from .storage import fetch_indices
+        from .storage import fetch_indices, index_tenant
 
         stats: Dict[str, Dict[str, int]] = {}
         for ix in fetch_indices(""):
-            code = ix["name"][len("logs-"):] if ix["name"].startswith("logs-") else ix["name"]
+            code = index_tenant(ix["name"])
+            if not code:          # logs-unknown 之类无法归属的索引不参与配额统计
+                continue
             cur = stats.setdefault(code, {"bytes": 0, "docs": 0})
             cur["bytes"] += int(ix.get("bytes") or 0)
             cur["docs"] += int(ix.get("docs") or 0)

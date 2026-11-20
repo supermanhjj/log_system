@@ -39,6 +39,10 @@ inputs:
     labels:
       log_class: business
       source_type: app
+      # 容器日志正文没有主机字段：host 取采集器所在节点（DaemonSet 注入
+      # NODE_NAME，配置里以 ${NODE_NAME} 引用）。系统日志不设此项——
+      # 它自带真实主机名（i6000-node-01），比节点名更精确。
+      host: ${NODE_NAME}
   - name: i6000-sys
     namespace: i6000
     container: sys

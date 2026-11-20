@@ -254,7 +254,10 @@ def build_must(time_range, filters, tenant) -> List[Dict[str, Any]]:
                 {
                     "multi_match": {
                         "query": filters["keyword"],
-                        "fields": ["message", "source", "host", "traceId"],
+                        # log：K8s 容器日志的正文（CRI 拆帧结果）。不带上它，
+                        # 检索框搜异常栈、搜容器原文永远 0 命中——而这类日志
+                        # 的 message 往往只是首行。
+                        "fields": ["message", "log", "raw", "source", "host", "traceId"],
                     }
                 }
             )
@@ -307,6 +310,8 @@ LOG_FIELDS = [
     "status",
     "tenant_id",
     "raw",
+    # K8s 容器日志正文：详情页/上下文要看完整原始行（含异常栈）时必须带回来
+    "log",
     # v2.1 多类型采集新增维度（与 index template 显式字段一一对应）
     "log_class",
     "source_type",
@@ -334,6 +339,7 @@ def normalize_hit(hit: Dict[str, Any], code2name: Optional[Dict[str, str]] = Non
         "tenant_id": code,  # 编码，稳定标识（导出/对账用）
         "tenant": (code2name or {}).get(code, code),  # 中文名，展示用（虚拟维度）
         "raw": s.get("raw"),  # 原始整行日志（采集端 app_log 解析器整体捕获）
+        "log": s.get("log"),  # K8s 容器日志原文（CRI 拆帧后），详情/上下文展示用
         # 多类型维度：log_class 是筛选主轴，source_type 是细分来源，attrs 存各类特有字段
         "log_class": s.get("log_class"),
         "source_type": s.get("source_type"),

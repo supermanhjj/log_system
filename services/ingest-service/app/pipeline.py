@@ -1,14 +1,19 @@
 """服务端解析管线执行层：匹配 → 抽取 → 映射 → 归属建议。
 
-影子模式（PIPELINE_MODE=shadow，默认）
-    老链路的 normalize_record 结果照常入库，新管线结果写进 attrs.__shadow，
-    两边可在 OpenSearch 里逐条比对。确认一致后才切 active。
-    这是唯一安全的切换方式：解析规则配错了，影子模式只多存几个字段，
-    不会把 level / @timestamp 这些公共维度改坏。
+三种模式（PIPELINE_MODE）
+    active（默认）
+        解析结果覆盖 level / source / host / message 等契约字段，parse_status=parsed。
+        上 K8s 后采集端只搬原文（CRI 正文落在 log 字段），level/source/host 全靠
+        这里抽出来；留在 shadow 会让检索页内容空、级别全 UNKNOWN、仪表盘与告警
+        都取不到值——默认必须是 active，否则新装环境就是"有日志但页面全空"。
+    shadow
+        老链路 normalize_record 结果照常入库，管线结果只写 attrs.__shadow，
+        两边可在 OpenSearch 里逐条比对。改规则前想先验证就用它。
+    off
+        完全停用解析。
 
-active 模式
-    解析结果覆盖到契约字段，parse_status=parsed。未匹配仍保留原文并标
-    parse_status=unmatched，绝不丢弃——否则现场「配了没生效」无从发现。
+未匹配仍保留原文并标 parse_status=unmatched，绝不丢弃——否则现场
+「配了没生效」无从发现。
 
 规则缓存 30 秒：改规则后最多 30 秒全集群生效，避免每条日志都查 PG。
 """
@@ -20,9 +25,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from . import log_schema, parsers
 
-MODE = os.getenv("PIPELINE_MODE", "shadow").strip().lower()
+MODE = os.getenv("PIPELINE_MODE", "active").strip().lower()
 if MODE not in ("off", "shadow", "active"):
-    MODE = "shadow"
+    MODE = "active"
 CACHE_TTL = int(os.getenv("PIPELINE_CACHE_TTL", "30"))
 
 _cache: Dict[str, Any] = {"at": 0.0, "rules": [], "parsers": {}}

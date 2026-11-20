@@ -26,6 +26,7 @@ import hashlib
 import time
 import socket
 import secrets
+import traceback
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
@@ -276,7 +277,10 @@ def init_db() -> None:
         # 模拟主机台账。幂等，每次启动执行。
         for host in ("web", "redis", "postgres", "kafka"):
             pg_exec("UPDATE hosts SET tenant=%s WHERE host=%s", ("log-system", host))
-        pg_exec("DELETE FROM hosts WHERE host LIKE '%-sim'")
+        # 参数化 LIKE：pg_exec 会以空 tuple 调 cur.execute(sql, ())，SQL 里的裸 %
+        # 会被 psycopg2 当成占位符，抛 "tuple index out of range"，
+        # 导致整个 init_db 中断（下面的解析规则播种、审计表都不会执行）。
+        pg_exec("DELETE FROM hosts WHERE host LIKE %s", ("%-sim",))
         # 服务端解析管线的规则表（解析器 / 管线 / 采集器凭证）
         pipeline_store.init_tables()
         pipeline_store.seed_defaults()
@@ -298,7 +302,11 @@ def init_db() -> None:
             """
         )
     except Exception as e:  # noqa: BLE001
+        # 建表/播种失败不能让服务起不来，但**必须留下完整堆栈**：
+        # 只打印 e 的 str（如 "tuple index out of range"）会让"哪条 SQL 挂了"
+        # 完全无从定位——这个坑曾导致解析规则播种静默跳过，页面全是空值。
         print(f"[ingest-service] init_db skipped: {e}", flush=True)
+        traceback.print_exc()
 
 
 def load_settings() -> Dict[str, Any]:

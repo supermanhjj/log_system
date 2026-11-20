@@ -100,6 +100,12 @@ spec:
           image: python:3.11-slim
           imagePullPolicy: IfNotPresent
           command: ["python", "-u", "/app/order-app.py"]
+          # 容器默认 UTC：日志正文时间会比本地早 8 小时，排障时与页面时间对不上。
+          # CRI 时间戳本身带时区（采集端按它写 @timestamp，绝对时刻正确），
+          # 这里只影响正文里的 body_ts，必须与现场时区一致。
+          env:
+            - name: TZ
+              value: Asia/Shanghai
           volumeMounts:
             - name: script
               mountPath: /app
@@ -128,6 +134,10 @@ spec:
           image: python:3.11-slim
           imagePullPolicy: IfNotPresent
           command: ["python", "-u", "/app/sys-app.py"]
+          # 同 order：RFC3164 时间戳没有时区，必须由容器时区决定含义
+          env:
+            - name: TZ
+              value: Asia/Shanghai
           volumeMounts:
             - name: script
               mountPath: /app

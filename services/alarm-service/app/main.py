@@ -245,8 +245,13 @@ MULTICLASS_RULE_SEEDS = [
          match_source_type=None, match_level="FATAL", match_status_gte=None, keyword=None,
          window_minutes=5, threshold=1, level="严重", notify="wecom,sms", enabled=True,
          owner="系统", note="内核/服务致命错误，单条即告警"),
+    # 认证失败按「关键字」圈定，而不是按 source_type=auth：
+    # 上 K8s 后系统日志统一由采集器打标 source_type=syslog（一个容器一种格式），
+    # 认证事件只是 syslog 里 tag=sshd 的一类，按 source_type 圈会导致规则永不命中
+    # （表现为「告警事件没数据」）。关键字 + 级别 + 类型三者组合才是稳定圈定。
     dict(name="系统认证失败激增（authpriv）", match_log_class="system",
-         match_source_type="auth", match_level="WARN", match_status_gte=None, keyword=None,
+         match_source_type=None, match_level="WARN", match_status_gte=None,
+         keyword="Failed password",
          window_minutes=10, threshold=10, level="警告", notify="wecom", enabled=True,
          owner="系统", note="疑似暴力破解或凭据失效，10 分钟内 >10 次"),
     # MySQL 两条默认关闭：本地开发不再部署 MySQL（改用平台自身的 PostgreSQL），
@@ -305,6 +310,18 @@ def _seed_multiclass_rules() -> None:
             )
         except Exception as e:  # noqa: BLE001
             print(f"[alarm-service] seed multiclass rule failed ({s['name']}): {e}", flush=True)
+    # 定点迁移：早期「认证失败激增」把条件固定成 source_type=auth（旧采集端的
+    # auth 分类）。上 K8s 后系统日志统一是 syslog，该分类不再存在，规则永不命中。
+    # 只在条件仍是旧值时改，运营侧手工改过的不动。
+    try:
+        pg_exec("""
+            UPDATE alarm_rules
+               SET match_source_type = NULL, keyword = 'Failed password'
+             WHERE name = '系统认证失败激增（authpriv）' AND tenant = 'all'
+               AND match_source_type = 'auth'
+        """)
+    except Exception as e:  # noqa: BLE001
+        print(f"[alarm-service] migrate auth rule failed: {e}", flush=True)
 
 
 # ---------------------------------------------------------------------------

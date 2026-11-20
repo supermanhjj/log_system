@@ -374,15 +374,19 @@ services:
       - fluentbit_db:/fluent-bit/db
     networks: [log_net]
 
-  # ===================== 测试业务系统模拟器（log-generator） =====================
-  # 无真实业务，持续输出 [LEVEL] <msg> tenant=<id> 日志到共享卷 app_logs，
-  # 由 fluentbit 的 tail 输入采集，构成完整"业务系统→采集→多租户索引"链路。
-  # 见 docs/tech-stack-selection.md 9.x 测试 harness。
+  # ===================== 测试业务系统模拟器（log-generator，默认不启动） =====================
+  # 采集对象上 K8s 后，业务日志由 i6000-order 产出（deploy/k8s/i6000-demo），
+  # 本服务仅为「只起 compose、没有 K8s」的纯本地环境保留，避免与 K8s 双来源重复。
+  # 用 profiles 隔离：docker compose up 不会启动它；需要时
+  #   docker compose --profile legacy-docker up -d log-generator
+  # 并同步启回 fluent-bit.conf 里的 10-business.conf（否则写了没人采）。
+  # 租户名已同步为现存租户 i6000（旧 default/acme/gp 已废止，写这些文件会被网关拒收）。
   log-generator:
+    profiles: ["legacy-docker"]
     image: log_system-log-generator
     environment:
       <<: *tz
-      TENANTS: "default,acme,gp"
+      TENANTS: "i6000"
       LOG_INTERVAL: "1.0"
       ERROR_RATE: "0.2"
       WARN_RATE: "0.25"
@@ -394,34 +398,25 @@ services:
       # 且 @timestamp 落在过去 7 天（索引名虽是当天但内容是历史）。
       # 需要历史分布时用 tools/log-generator/backfill.py 手动补，不放在启动路径里。
       BACKFILL_DAYS: "0"
-      # 一小部分日志模拟"归属不明"的系统，用于验证 logs-unknown 治理通道
+      # 一小部分日志模拟"归属不明"的系统：现在这类记录会被网关直接拒收并给原因
+      # （平台不再有 logs-unknown 兜底桶），保留开关用于验证拒收链路。
       UNASSIGNED_RATE: "0.05"
     volumes:
       - app_logs:/var/log/app
     depends_on: [fluentbit]
     networks: [log_net]
 
-  # ===================== 系统日志源（唯一保留的模拟容器） =====================
-  # 为什么只剩它：容器共享宿主内核，读不到宿主机的 syslog/journald，kernel/auth/cron
-  # 这类真实系统事件无法从任何业务容器"顺带"获得。alpine + busybox syslogd
-  # 常驻内存约 1MB、无额外磁盘占用，是验证 system 类采集的最小代价。
-  #
-  # 其余三类改为采**平台自身组件**（真实进程、真实格式，不再另起模拟容器）：
+  # ===================== 系统日志源（已迁移到 K8s，服务已移除） =====================
+  # 采集对象上 K8s 后，system 类日志改由 i6000-sys（deploy/k8s/i6000-demo）产出，
+  # 经 DaemonSet 采集器按 namespace 归属到租户。docker-compose 侧不再模拟系统日志：
+  #   - sys-sim 容器已删除（同时 fluentbit 的 20-system.conf 已停用），
+  #     否则会出现两个来源同时写 system 类、归属还分别落在不同租户的分裂局面；
+  #   - 该容器的脚本 tools/log-sim/sys-sim.sh 保留，供「只起 compose、无 K8s」的
+  #     纯本地环境临时验证解析器使用（恢复时同步启回 20-system.conf）。
+  # 平台自身组件仍按真实进程采集：
   #   middleware ← web(nginx access/error) / redis / kafka
   #   database   ← postgres
-  #   business   ← log-generator
-  sys-sim:
-    image: alpine:3.20
-    restart: unless-stopped
-    hostname: sys-sim
-    environment:
-      <<: *tz
-    # sys-sim.sh 内部自带 mkdir -p，且日志直接写卷根目录（/var/log/ruilog/syslog）
-    command: ["sh", "/sim/sys-sim.sh"]
-    volumes:
-      - ruilog_logs:/var/log/ruilog
-      - ./tools/log-sim:/sim:ro
-    networks: [log_net]
+  #   business   ← 已迁至 K8s（i6000-order），docker 侧无业务日志来源
 
 volumes:
   fluentbit_db:

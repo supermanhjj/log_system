@@ -170,10 +170,19 @@ def upsert_collector(code: str, name: str, tenant_allow: List[str],
 
 
 def seed_defaults() -> None:
-    """播种一条 Java logback 示例规则（SG-I6000 2.0 业务日志的常见格式）。
+    """播种 K8s 两类容器日志的内置规则：Java logback（业务）+ RFC3164（系统）。
 
-    只在首次部署插入，之后不覆盖用户在界面上的修改，否则一重启就把现场
-    调好的规则冲掉了。默认走 shadow 模式，播种规则不会改动主字段。
+    两条规则对应「采集器只搬原文、服务端解析」的边界：K8s 采集端只做 CRI 拆包
+    与多行分帧，正文落在 log 字段；这里把正文抽成 level/source/host/message。
+
+    时间字段的取舍（踩过坑，勿改）：
+        @timestamp 一律不映射。K8s 容器日志的 CRI 时间带时区，是绝对时刻的
+        唯一可信来源；正文里的时间戳没有时区（甚至 RFC3164 连年份都没有），
+        映射进去会把正确时间改成错的（naive 时间被当 UTC，整体偏 8 小时）。
+        正文时间只作为 attrs.body_ts 保留，供排障时对照。
+
+    只插不改（ON CONFLICT DO NOTHING），避免一重启就冲掉现场调好的规则；
+    唯一的例外是下面那条针对早期种子 mapping 的定点迁移。
     """
     pg_exec("""
         INSERT INTO log_parsers (code, name, ptype, definition, description)
@@ -203,12 +212,72 @@ def seed_defaults() -> None:
         100,
         json.dumps({"log_class": "business", "source_type": "app"}, ensure_ascii=False),
         json.dumps({
-            "@timestamp": "ts",
             "level": "level",
             "source": "logger",
             "attrs.thread": "thread",
+            "attrs.body_ts": "ts",
             "message": "message",
         }, ensure_ascii=False),
         "",
         "java-logback",
+    ))
+
+    # ---- 系统日志：RFC3164（K8s 容器内的 syslog 与主机 /var/log/syslog 同构）----
+    #   Nov 20 02:41:37 i6000-node-01 authpriv.warn sshd: Failed password for ...
+    pg_exec("""
+        INSERT INTO log_parsers (code, name, ptype, definition, description)
+        VALUES (%s, %s, %s, %s::jsonb, %s)
+        ON CONFLICT (code) DO NOTHING
+    """, (
+        "syslog-rfc3164",
+        "RFC3164 系统日志",
+        "grok",
+        json.dumps({
+            "type": "grok",
+            "pattern": (r"%{SYSLOGTIMESTAMP:body_ts}\s+%{HOSTNAME:host}\s+"
+                        r"%{WORD:facility}\.%{WORD:severity_name}\s+"
+                        r"(?P<source>[^\s:]+):?\s+%{GREEDYDATA:message}"),
+        }, ensure_ascii=False),
+        "syslogd/rsyslog 标准输出；level 由 facility.severity 归一（authpriv.warn → WARN）",
+    ))
+    pg_exec("""
+        INSERT INTO log_pipelines
+            (code, name, priority, match, parser_id, mapping, tenant_code)
+        SELECT %s, %s, %s, %s::jsonb, p.id, %s::jsonb, %s
+        FROM log_parsers p WHERE p.code=%s
+        ON CONFLICT (code) DO NOTHING
+    """, (
+        "syslog-system",
+        "系统日志 RFC3164",
+        100,
+        json.dumps({"log_class": "system", "source_type": "syslog"}, ensure_ascii=False),
+        json.dumps({
+            "level": "severity_name",
+            "source": "source",
+            "host": "host",
+            "attrs.facility": "facility",
+            "attrs.severity_name": "severity_name",
+            "attrs.body_ts": "body_ts",
+            "message": "message",
+        }, ensure_ascii=False),
+        "",
+        "syslog-rfc3164",
+    ))
+
+    # ---- 定点迁移：早期 java-logback 种子把 @timestamp 映射到正文时间 ----
+    # 只改「mapping 仍等于旧种子」的行：现场自己调过的规则（mapping 已变）不动。
+    pg_exec("""
+        UPDATE log_pipelines
+           SET mapping = %s::jsonb
+         WHERE code = %s
+           AND mapping->>'@timestamp' = 'ts'
+    """, (
+        json.dumps({
+            "level": "level",
+            "source": "logger",
+            "attrs.thread": "thread",
+            "attrs.body_ts": "ts",
+            "message": "message",
+        }, ensure_ascii=False),
+        "java-logback-business",
     ))

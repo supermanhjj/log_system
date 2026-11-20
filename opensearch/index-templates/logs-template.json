@@ -1,5 +1,7 @@
 {
-  "index_patterns": ["logs-*-*"],
+  "index_patterns": [
+    "logs-*-*"
+  ],
   "priority": 200,
   "template": {
     "settings": {
@@ -12,28 +14,81 @@
     "mappings": {
       "dynamic": false,
       "properties": {
-        "@timestamp": { "type": "date" },
-        "tenant_id": { "type": "keyword" },
-        "log_class": { "type": "keyword" },
-        "source_type": { "type": "keyword" },
-        "app": { "type": "keyword" },
-        "instance": { "type": "keyword" },
-        "host": { "type": "keyword" },
-        "level": { "type": "keyword" },
-        "severity": { "type": "integer" },
-        "facility": { "type": "keyword" },
-        "pid": { "type": "integer" },
-        "source": { "type": "keyword" },
-        "traceId": { "type": "keyword" },
-        "status": { "type": "integer" },
-        "message": { "type": "text" },
-        "raw": { "type": "text" },
-        "attrs": { "type": "flat_object" },
-        "src_file": { "type": "keyword" },
-        "collector_id": { "type": "keyword" },
-        "env": { "type": "keyword" },
-        "ingested_at": { "type": "date" },
-        "parse_status": { "type": "keyword" }
+        "@timestamp": {
+          "type": "date"
+        },
+        "tenant_id": {
+          "type": "keyword"
+        },
+        "log_class": {
+          "type": "keyword"
+        },
+        "source_type": {
+          "type": "keyword"
+        },
+        "app": {
+          "type": "keyword"
+        },
+        "instance": {
+          "type": "keyword"
+        },
+        "host": {
+          "type": "keyword"
+        },
+        "level": {
+          "type": "keyword"
+        },
+        "severity": {
+          "type": "integer"
+        },
+        "facility": {
+          "type": "keyword"
+        },
+        "pid": {
+          "type": "integer"
+        },
+        "source": {
+          "type": "keyword"
+        },
+        "traceId": {
+          "type": "keyword"
+        },
+        "status": {
+          "type": "integer"
+        },
+        "message": {
+          "type": "text"
+        },
+        "raw": {
+          "type": "text"
+        },
+        "log": {
+          "type": "text"
+        },
+        "stream": {
+          "type": "keyword"
+        },
+        "logtag": {
+          "type": "keyword"
+        },
+        "attrs": {
+          "type": "flat_object"
+        },
+        "src_file": {
+          "type": "keyword"
+        },
+        "collector_id": {
+          "type": "keyword"
+        },
+        "env": {
+          "type": "keyword"
+        },
+        "ingested_at": {
+          "type": "date"
+        },
+        "parse_status": {
+          "type": "keyword"
+        }
       }
     }
   }

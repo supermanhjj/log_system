@@ -127,6 +127,12 @@ data:
         Rule          "cont"         "/^\s+at .*/"        "cont"
         Rule          "cont"         "/^\s*Caused by:.*/"  "cont"
         Rule          "cont"         "/^\s*\.\.\. .*/"    "cont"
+        # 异常类首行（无缩进，如 java.lang.NullPointerException: ...）：
+        # 它既不匹配 start_state（不带时间戳）也不匹配上面的续行规则，
+        # 于是被当作新事件的开头，导致「ERROR 头行」与「异常栈」拆成两条记录，
+        # 检索页一半 ERROR 是没有消息头的裸堆栈。这里按「以字母/下划线/$ 开头」
+        # 收进续行即可；时间戳行以数字开头，不会被误吞。
+        Rule          "cont"         "/^[A-Za-z_$].*/"    "cont"
 
     [MULTILINE_PARSER]
         Name          python

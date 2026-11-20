@@ -202,14 +202,27 @@ def extract_attrs(doc: Dict[str, Any]) -> Dict[str, str]:
 
 
 def build_message(doc: Dict[str, Any]) -> str:
-    """保证 message 可读：nginx access 没有正文，用 "方法 路径 状态" 合成。"""
+    """保证 message 可读，且任何一条日志都不能出现"空正文"。
+
+    取值顺序按「原文保真度」排列：
+      1. message —— 采集端/解析器已抽好的正文
+      2. request —— nginx access 没有正文，用 "方法 路径 状态" 合成
+      3. raw     —— 非 K8s 来源（Fluent Bit 文本解析器整体捕获的原始行）
+      4. log     —— K8s 容器日志：CRI parser 把正文拆到 log，raw/message 都可能为空。
+                    这是上 K8s 后「检索页内容列全空」的直接原因，必须兜到这一层。
+    绝不返回空串：空正文让现场无法判断"是没数据还是解析没生效"。
+    """
     msg = str(doc.get("message") or "").strip()
     if msg:
         return msg
     request = doc.get("request")
     if request:
-        return request
-    return str(doc.get("raw") or "")
+        return str(request)
+    for key in ("raw", "log"):
+        val = str(doc.get(key) or "").strip()
+        if val:
+            return val
+    return ""
 
 
 def normalize(doc: Dict[str, Any]) -> Dict[str, Any]:
