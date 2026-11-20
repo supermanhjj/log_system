@@ -23,7 +23,7 @@
 | **平台管理 · 租户管理** | `/settings/tenants` | 租户 CRUD（编码不可改、保留字禁用）+ 配额 + 启停 + 删除保护（有用户/有日志/当前登录租户均拒绝）；新建自动建 `logs-<code>` 索引、删除连带 drop |
 
 架构：Vue3 + Element Plus + ECharts → nginx（`/api/*` 反代，运行期 DNS 解析）→ FastAPI 微服务 → OpenSearch / PostgreSQL / Redis。
-采集侧：`log-generator`（按租户分文件）→ Fluent Bit（tail + 来源文件名解析 + DB 断点）→ HTTP `POST /ingest/collector` → 服务端判定租户 → `logs-<tenant>`；无法归属落 `logs-unknown`。
+采集侧为**两层平面**：K8s（`i6000` 命名空间里的 `i6000-order` / `i6000-sys` → DaemonSet 采集器，采 CRI 容器日志）与 Docker Compose（平台自身 web/redis/kafka/postgres → Fluent Bit），统一 HTTP `POST /ingest/collector` → 服务端归一 + 解析管线 + 租户裁决 → `logs-<tenant>`；**判不出归属直接拒收并返回原因，不再落 `logs-unknown`**。写入侧经 Kafka + Flink 落 ClickHouse（聚合）/ OpenSearch（明细检索）。当前形态详见 [current-architecture-2026-11-20.md](docs/current-architecture-2026-11-20.md)。
 
 **多租户模型**：租户是「日志从哪来」的部署元数据，由采集端注入来源信息（容器日志用 K8s namespace/label、系统日志用实例 tag→CMDB、App 直报用 Token），服务端 `derive_tenant()` 统一裁决，**不从日志正文探测，不静默归 default**。查询侧所有业务端点按 JWT 声明强制解析租户，前端传值仅作意图。
 
@@ -31,6 +31,7 @@
 
 | 文档 | 内容 |
 |---|---|
+| [current-architecture-2026-11-20.md](docs/current-architecture-2026-11-20.md) | **当前架构与实现现状快照**：上 K8s 后的两层采集平面、字段契约、写入/查询分工、本轮调整清单、实测状态与遗留问题 |
 | [module-overview.md](docs/module-overview.md) | 运行总览：建设思路、已落地能力、接口与待办 |
 | [module-log-search.md](docs/module-log-search.md) | 日志分析：PPL 检索链路、安全闸门缺口、AI 生成端点接入现状 |
 | [module-dashboard.md](docs/module-dashboard.md) | 仪表盘：列表/详情/拖拽编辑器、配置存储与维度聚合口径、可配置维度字典 |
