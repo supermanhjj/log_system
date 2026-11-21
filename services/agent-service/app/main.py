@@ -20,10 +20,13 @@
 """
 import os
 import json
+import hashlib
+import secrets
 import time
 from datetime import datetime, timezone, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
+import httpx
 import psycopg2
 import psycopg2.extras
 import redis
@@ -33,13 +36,19 @@ from fastapi.responses import Response
 from opensearchpy import OpenSearch
 from pydantic import BaseModel, Field
 
-from .authz import current_identity, resolve_tenant
+from . import agent_package as pkg
+from .authz import current_identity, is_admin, resolve_tenant
 
 # ---------------------------------------------------------------------------
 # 连接（惰性；模块导入不触网）
 # ---------------------------------------------------------------------------
 OPENSEARCH_HOST = os.getenv("OPENSEARCH_HOST", "opensearch")
 OPENSEARCH_PORT = int(os.getenv("OPENSEARCH_PORT", "9200"))
+# 认证默认关闭；云上开安全插件时由环境变量打开，不设账号则保持原来的无认证行为。
+OPENSEARCH_SCHEME = os.getenv("OPENSEARCH_SCHEME", "http")
+OPENSEARCH_USER = os.getenv("OPENSEARCH_USER", "")
+OPENSEARCH_PASSWORD = os.getenv("OPENSEARCH_PASSWORD", "")
+OPENSEARCH_VERIFY_CERTS = os.getenv("OPENSEARCH_VERIFY_CERTS", "false").lower() == "true"
 REDIS_HOST = os.getenv("REDIS_HOST", "redis")
 REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
 PG_DSN = os.getenv(
@@ -51,11 +60,22 @@ PG_DSN = os.getenv(
     f"port={os.getenv('POSTGRES_PORT', '5432')}",
 )
 FLUENTBIT_VERSION_HINT = os.getenv("FLUENTBIT_IMAGE_VERSION", "5.2.0")
+# 接入包生成时要把目标主机写进 hosts 台账（ingest-service 持有该表）。
+# 走集群内 service DNS；部署到集群外时用环境变量覆盖。
+AGENT_INGEST_URL = os.getenv("AGENT_INGEST_URL", "http://ingest-service:8000").rstrip("/")
 
-os_client = OpenSearch(
-    hosts=[{"host": OPENSEARCH_HOST, "port": OPENSEARCH_PORT}],
-    http_auth=None, use_ssl=False, verify_certs=False,
-)
+def _opensearch_kwargs():
+    kw = {
+        "hosts": [{"host": OPENSEARCH_HOST, "port": OPENSEARCH_PORT}],
+        "use_ssl": OPENSEARCH_SCHEME == "https",
+        "verify_certs": OPENSEARCH_VERIFY_CERTS,
+    }
+    if OPENSEARCH_USER and OPENSEARCH_PASSWORD:
+        kw["http_auth"] = (OPENSEARCH_USER, OPENSEARCH_PASSWORD)
+    return kw
+
+
+os_client = OpenSearch(**_opensearch_kwargs())
 rds = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True,
                   socket_connect_timeout=2, socket_timeout=2)
 
@@ -185,6 +205,21 @@ def init_db() -> None:
         pg_exec("ALTER TABLE agents ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'i6000'")
         pg_exec("ALTER TABLE agent_commands ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'i6000'")
         pg_exec("ALTER TABLE agent_upgrade_tasks ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'i6000'")
+        # 采集器凭证台账由 ingest-service 持有；这里确保它存在，接入包签发凭证
+        # 不依赖 ingest-service 先启动（两边 DDL 必须保持一致，改表要同步）。
+        pg_exec(
+            """
+            CREATE TABLE IF NOT EXISTS log_collectors (
+                id           SERIAL PRIMARY KEY,
+                code         TEXT NOT NULL UNIQUE,
+                name         TEXT NOT NULL DEFAULT '',
+                tenant_allow JSONB NOT NULL DEFAULT '[]'::jsonb,
+                key_hash     TEXT NOT NULL DEFAULT '',
+                last_seen    TIMESTAMPTZ,
+                created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+            """
+        )
         # hostname 原来是全局唯一，多租户下必须放开；按约束定义匹配删除，避免硬编码约束名
         pg_exec(
             """
@@ -233,6 +268,80 @@ def row_to_agent(r: Dict[str, Any]) -> Dict[str, Any]:
         "createdAt": to_local(r.get("created_at")),
         "updatedAt": to_local(r.get("updated_at")),
     }
+
+
+# ---------------------------------------------------------------------------
+# 采集器凭证 + 主机台账（接入包生成时使用）
+# ---------------------------------------------------------------------------
+def issue_collector(hostname: str, tenant: str) -> Dict[str, str]:
+    """签发一把采集器凭证，落库时只存 hash。
+
+    返回的明文只在这里出现一次（随下载响应头回给前端），库里查不回来——
+    所以「撤销重发」是泄露后的唯一补救路径，不能靠"再查一次凭证"。
+    code 带随机后缀，重复给同一台主机下载不会覆盖掉别人正在用的凭证。
+    """
+    code = f"agent-{pkg.safe_name(hostname).lower()[:40]}-{secrets.token_hex(3)}"
+    key = "rk_" + secrets.token_urlsafe(24)
+    pg_exec(
+        """INSERT INTO log_collectors (code, name, tenant_allow, key_hash)
+           VALUES (%s, %s, %s::jsonb, %s)""",
+        (code, f"{hostname} 接入包", json.dumps([tenant], ensure_ascii=False),
+         hashlib.sha256(key.encode("utf-8")).hexdigest()),
+    )
+    return {"code": code, "key": key}
+
+
+def list_collectors() -> List[Dict[str, Any]]:
+    rows = pg_query(
+        """SELECT id, code, name, tenant_allow, last_seen, created_at
+             FROM log_collectors ORDER BY id DESC"""
+    )
+    return [
+        {
+            "id": r["id"], "code": r["code"], "name": r["name"],
+            "tenantAllow": r.get("tenant_allow") or [],
+            "lastSeen": to_local(r.get("last_seen")),
+            "createdAt": to_local(r.get("created_at")),
+        }
+        for r in rows
+    ]
+
+
+def revoke_collector(code: str) -> bool:
+    """删除凭证。用 code 而不是明文：明文本来就不该被记录。"""
+    rows = pg_query("SELECT 1 FROM log_collectors WHERE code=%s", (code,))
+    if not rows:
+        return False
+    pg_exec("DELETE FROM log_collectors WHERE code=%s", (code,))
+    return True
+
+
+def register_host_ledger(host: str, tenant: str, authorization: Optional[str]) -> str:
+    """把目标主机写进 ingest-service 的 hosts 台账。
+
+    返回值只用于 README 与响应头（ASCII）：ok / not_admin / failed / skipped。
+    台账是「采得到」到「落得进」之间最容易漏的一环：不登记，host 字段就归属
+    不出来，日志会在入口被拒收。
+    """
+    if not authorization:
+        return "failed"
+    try:
+        r = httpx.post(
+            f"{AGENT_INGEST_URL}/hosts",
+            json={"host": host, "tenant": tenant, "env": "prod",
+                  "note": "由 Agent 管理 · 下载接入配置自动登记"},
+            headers={"Authorization": authorization},
+            timeout=4.0,
+        )
+    except Exception as e:  # noqa: BLE001
+        print(f"[agent-service] hosts 台账登记失败: {e}", flush=True)
+        return "failed"
+    if r.status_code == 200:
+        return "ok"
+    if r.status_code == 403:
+        return "not_admin"
+    print(f"[agent-service] hosts 台账登记被拒: {r.status_code} {r.text[:120]}", flush=True)
+    return "failed"
 
 
 # ---------------------------------------------------------------------------
@@ -563,6 +672,32 @@ class AckIn(BaseModel):
     detail: Optional[str] = None
 
 
+class PackageIn(BaseModel):
+    """接入包生成参数。默认值即「集群内采集器」形态。"""
+
+    hostname: str = Field(..., min_length=1, max_length=64, pattern=r"^[A-Za-z0-9._-]+$")
+    variant: Literal["host", "container"] = "host"
+    ingest_host: str = "ingest-service"
+    ingest_port: int = Field(8000, ge=1, le=65535)
+    agent_host: str = "agent-service"
+    agent_port: int = Field(8000, ge=1, le=65535)
+    ingest_uri: str = "/ingest/collector"
+    # Record 值以空格分隔，应用名/集群 ID 里出现空白会把配置拆坏
+    app_name: str = Field("", max_length=64, pattern=r"^[^\s\"']*$")
+    cluster_id: str = Field("default", max_length=64, pattern=r"^[^\s\"']*$")
+    app_log_json: str = "/var/log/app/*.json"
+    app_log_text: str = "/var/log/app/*.log"
+    syslog_path: str = "/var/log/syslog"
+    nginx_access_path: str = "/var/log/nginx/access.log"
+    nginx_error_path: str = "/var/log/nginx/error.log"
+    container_log_glob: str = "/var/log/containers/*.log"
+    multiline: str = "ruilog-java"
+    credential: Literal["create", "existing", "none"] = "create"
+    collector_key: Optional[str] = None
+    register_host: bool = True
+    note: Optional[str] = None
+
+
 # ---------------------------------------------------------------------------
 # 端点
 # ---------------------------------------------------------------------------
@@ -575,7 +710,9 @@ def health():
 def root():
     return {"service": "agent-service", "docs": "/docs",
             "endpoints": ["/heartbeat", "/agents", "/agents/{hostname}",
-                          "/upgrade-tasks", "/commands/{id}/ack", "/install-config"]}
+                          "/upgrade-tasks", "/commands/{id}/ack",
+                          "/install-package", "/install-config",
+                          "/collector-credentials"]}
 
 
 @app.on_event("startup")
@@ -938,97 +1075,182 @@ def cancel_upgrade_task(
     return {"ok": True, "taskId": task_id, "status": "cancelled"}
 
 
+# ---------------------------------------------------------------------------
+# 接入包（v1 打包 / v2 双形态 / v3 凭证与台账）
+# ---------------------------------------------------------------------------
+def _endpoint_host(value: str, field: str) -> str:
+    """只接受主机名或 IP。
+
+    Fluent Bit 的 Host 字段放不下 ``http://`` 或路径：整段会被当成主机名，
+    症状是 DNS 解析失败且日志里看不出原因。这里前置拦掉，并给出人话提示。
+    """
+    host = (value or "").strip()
+    if not host or "://" in host or any(c in host for c in "/ \t"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"{field} 只填主机名或 IP（不要带 http:// 或路径）",
+        )
+    return host
+
+
+def _safe_credential(key: str) -> str:
+    """凭证只能由 ASCII 可见字符组成。
+
+    非 ASCII 的 header 会让网关直接报 500（上一版中文占位符踩过）；
+    换行则会破坏 agent.env 的一行一值结构。两者都必须前置拦掉。
+    """
+    key = (key or "").strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="使用已有凭证时 collector_key 不能为空")
+    if any(ord(c) < 33 or ord(c) > 126 for c in key):
+        raise HTTPException(status_code=400, detail="采集器凭证只能是 ASCII 可见字符")
+    return key
+
+
+def _build_params(payload: PackageIn, tenant: str, generated_at: str) -> pkg.PackageParams:
+    if payload.variant == "container" and payload.multiline not in (
+            "ruilog-java", "ruilog-go", "ruilog-python", "none"):
+        raise HTTPException(status_code=400, detail="multiline 只支持 ruilog-java / ruilog-go / ruilog-python / none")
+    uri = payload.ingest_uri.strip() or "/ingest/collector"
+    if not uri.startswith("/") or " " in uri:
+        raise HTTPException(status_code=400, detail="上报路径必须以 / 开头且不含空格")
+    return pkg.PackageParams(
+        hostname=payload.hostname.strip(),
+        tenant=tenant,
+        variant=payload.variant,
+        ingest_host=_endpoint_host(payload.ingest_host, "平台接入地址"),
+        ingest_port=payload.ingest_port,
+        agent_host=_endpoint_host(payload.agent_host, "管控心跳地址"),
+        agent_port=payload.agent_port,
+        ingest_uri=uri,
+        app_name=(payload.app_name or "").strip(),
+        cluster_id=(payload.cluster_id or "").strip() or "default",
+        app_log_json=(payload.app_log_json or "").strip() or "/var/log/app/*.json",
+        app_log_text=(payload.app_log_text or "").strip() or "/var/log/app/*.log",
+        syslog_path=(payload.syslog_path or "").strip() or "/var/log/syslog",
+        nginx_access_path=(payload.nginx_access_path or "").strip() or "/var/log/nginx/access.log",
+        nginx_error_path=(payload.nginx_error_path or "").strip() or "/var/log/nginx/error.log",
+        container_log_glob=(payload.container_log_glob or "").strip() or "/var/log/containers/*.log",
+        multiline=payload.multiline,
+        generated_at=generated_at,
+        version=FLUENTBIT_VERSION_HINT,
+    )
+
+
+@app.post("/install-package")
+def install_package(
+    payload: PackageIn,
+    request: Request,
+    tenant: Optional[str] = Query(None),
+    identity: Dict[str, Any] = Depends(current_identity),
+):
+    """生成可落地的接入包（tar.gz），并按需签发凭证、登记主机台账。
+
+    响应头里带本次生成结果（ASCII，前端读取后展示）：
+      X-Collector-Code   凭证编号（签发时才有）
+      X-Collector-Key    凭证明文（仅本次签发时返回，库里只有 hash）
+      X-Host-Ledger      ok / skipped / failed / not_admin
+    """
+    effective = resolve_tenant(identity, tenant)
+    if effective == "all":
+        raise HTTPException(status_code=400, detail="生成接入包需指定具体租户")
+
+    hostname = payload.hostname.strip()
+    if not hostname or any(c in hostname for c in "\"\\\n\r"):
+        raise HTTPException(status_code=400, detail="主机名不能为空，且不能包含引号或换行")
+
+    params = _build_params(payload, effective, to_local(now_ms()))
+    warnings: List[str] = []
+    code: Optional[str] = None
+    key: Optional[str] = None
+    issued = False
+
+    if payload.credential == "create":
+        cred = issue_collector(hostname, effective)
+        code, key, issued = cred["code"], cred["key"], True
+    elif payload.credential == "existing":
+        key = _safe_credential(payload.collector_key or "")
+    else:
+        key = "REPLACE_ME_WITH_COLLECTOR_KEY"
+        warnings.append("本包未携带有效凭证，必须替换 agent.env 里的 REPLACE_ME_WITH_COLLECTOR_KEY 才能上报")
+
+    ledger = "skipped"
+    if payload.variant == "host" and payload.register_host:
+        ledger = register_host_ledger(hostname, effective,
+                                      request.headers.get("authorization"))
+        if ledger == "failed":
+            warnings.append("主机台账登记失败：日志仍会被入口拒收，请管理员在数据源页补登记")
+        elif ledger == "not_admin":
+            warnings.append("当前账号无台账维护权限：请管理员登记该主机，否则日志会被拒收")
+    elif payload.variant == "host":
+        warnings.append("未登记主机台账：日志文件名必须为 <租户code>.log 才能归属")
+
+    params.collector_key = key or "REPLACE_ME_WITH_COLLECTOR_KEY"
+    params.collector_code = code
+    params.host_ledger = ledger
+    params.extra_warnings = warnings
+
+    try:
+        blob = pkg.build_package(params)
+    except Exception:
+        # 打包失败时把刚签发的凭证撤掉，避免留下没被任何采集器使用的孤儿凭证
+        if issued and code:
+            revoke_collector(code)
+        raise
+
+    headers = {
+        "Content-Disposition": f'attachment; filename="{pkg.package_name(params)}"',
+        "X-Host-Ledger": ledger,
+        "X-Package-Variant": params.variant,
+    }
+    if code:
+        headers["X-Collector-Code"] = code
+    if issued and key:
+        headers["X-Collector-Key"] = key
+    return Response(content=blob, media_type="application/gzip", headers=headers)
+
+
 @app.get("/install-config")
 def install_config(
     hostname: str = Query("new-host"),
     tenant: Optional[str] = Query(None),
     identity: Dict[str, Any] = Depends(current_identity),
 ):
-    """生成可直接落盘的 Fluent Bit 接入配置（真实可用，非占位安装包）。
+    """兼容旧调用：返回单文件 Fluent Bit 配置（不含凭证）。
 
-    与 fluentbit/fluent-bit.conf 当前跑通的链路一致：tail 采集 → rewrite_tag 按租户路由 →
-    OpenSearch；dummy + http 每 30s 上报心跳。含管控脚本 ack 端点说明。
+    新流程请用 ``POST /install-package``：单文件不携带 parsers.conf 与凭证，
+    在目标机上仍需手工补齐，只适合排障时快速看一版配置。
     """
     effective = resolve_tenant(identity, tenant)
     if effective == "all":
         raise HTTPException(status_code=400, detail="生成安装配置需指定具体租户")
-    text = f"""# ============================================================================
-# 统一日志分析平台 · 采集端接入配置（由 agent-service 实时生成）
-# 目标主机 : {hostname}
-# 目标租户 : {effective}
-# 生成时间 : {to_local(now_ms())} (Asia/Shanghai)
-# 说明    : 业务主机仅部署单一 Fluent Bit 进程；管控脚本随包分发，由 exec 插件调起。
-#           下方心跳段使用原生 dummy+http（适配 distroless 官方镜像无 exec 插件的情况）。
-# ============================================================================
-[SERVICE]
-    Flush        1
-    Daemon       off
-    Log_Level    info
-    HTTP_Server  On
-    HTTP_Port    2020
-    Parsers_File /fluent-bit/config/parsers.conf
+    params = _build_params(
+        PackageIn(hostname=hostname, variant="host", credential="none",
+                  register_host=False, app_name=""),
+        effective, to_local(now_ms()),
+    )
+    params.extra_warnings = ["单文件模式不含 parsers.conf 与凭证；正式接入请下载接入包"]
+    text = pkg.render_conf(params)
+    fname = f"fluent-bit-{pkg.safe_name(hostname)}.conf"
+    return Response(
+        content=text.encode("utf-8"),
+        media_type="text/plain; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
 
-# ---- 管控心跳：每 30s 上报 agent-service；服务端以接收时刻判定在线 ----
-[INPUT]
-    Name         dummy
-    Tag          agent.heartbeat
-    Dummy        {{"hostname":"{hostname}","tenant":"{effective}","version":"{FLUENTBIT_VERSION_HINT}","status":"online","ts":"{datetime.now(tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}"}}
-    Interval_Sec 30
 
-[OUTPUT]
-    Name         http
-    Match        agent.heartbeat
-    Host         agent-service
-    Port         8000
-    URI          /heartbeat
-    Format       json
-    Header       Content-Type application/json
+@app.get("/collector-credentials")
+def collector_credentials(identity: Dict[str, Any] = Depends(current_identity)):
+    """凭证台账（只列 hash 之外的信息，明文永远查不回来）。"""
+    if not is_admin(identity):
+        raise HTTPException(status_code=403, detail="仅平台管理员可查看采集器凭证台账")
+    return {"items": list_collectors()}
 
-# ---- 业务/系统日志采集（按实际日志路径修改 Path / Parser） ----
-# Path_Key 把来源文件名写进记录，作为"来源元数据"；DB 记录采集断点，重启不重读。
-[INPUT]
-    Name         tail
-    Tag          src.*
-    Path         /var/log/app/*.log
-    Parser       app_log
-    Path_Key     src_file
-    Read_from_head On
-    DB           /fluent-bit/db/tail.db
-    Buffer_Chunk_Size 1M
-    Buffer_Max_Size 20M
-    Mem_Buf_Limit 50M
 
-# ---- 租户注入：本机属于哪个租户，在采集端确定 ----
-# 一台主机/一个采集器归属一个租户是系统日志的唯一答案（日志正文通常没有租户字段）。
-# 容器环境改为按 Pod 的 namespace/label 逐条注入，一个采集器即可跨多租户。
-[FILTER]
-    Name    record_modifier
-    Match   src.*
-    Record  tenant_id {effective}
-
-# ---- 统一写入：交给接入网关，不在采集端直连 OpenSearch ----
-# 好处：租户合法性校验、无法归属→入口拒收、脱敏/采样/限流都在网关一处扩展；
-# 采集端也无需因新增租户而改配置或多个 output。
-[OUTPUT]
-    Name    http
-    Match   src.*
-    Host    ingest-service
-    Port    8000
-    URI     /ingest/collector
-    Format  json
-    Header  Content-Type application/json
-    Header  X-Collector-Key <由平台下发的采集器凭证>
-
-# ============================================================================
-# 管控脚本接入要点（上线后启用，开发期采集端尚未回传 ack）：
-#  1) 心跳响应体含 commands[]，逐条执行后调用：
-#     POST http://agent-service:8000/commands/{{id}}/ack
-#     body: {{"status":"acked","detail":"..."}}（失败传 "failed"）
-#  2) 配置热重载：Fluent Bit v2.1+ 支持 SIGHUP 或 POST /api/v2/reload，无需重启进程。
-#  3) 升级指令 payload.version 指定目标版本，滚动调度由 agent-service 编排，
-#     下载走 HTTP Range 断点续传。
-# ============================================================================
-"""
-    fname = f"fluent-bit-{hostname}.conf"
-    return Response(content=text.encode("utf-8"), media_type="text/plain; charset=utf-8",
-                    headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+@app.delete("/collector-credentials/{code}")
+def remove_collector_credential(code: str, identity: Dict[str, Any] = Depends(current_identity)):
+    if not is_admin(identity):
+        raise HTTPException(status_code=403, detail="仅平台管理员可撤销采集器凭证")
+    if not revoke_collector(code):
+        raise HTTPException(status_code=404, detail="凭证不存在或已撤销")
+    return {"ok": True, "code": code, "message": "凭证已撤销，使用它的采集器会立即 401"}

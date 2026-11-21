@@ -1,11 +1,12 @@
 <script setup>
-import { ref, reactive, computed, watch, onMounted, onUnmounted } from 'vue'
+import { ref, reactive, watch, onMounted, onUnmounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh, Download, Upload, Setting } from '@element-plus/icons-vue'
 import { useAppStore } from '../stores/app'
 import {
   AGENT_STATUS_OPTIONS, listAgents, getAgent, updateAgent, sendCommand,
   setAgentStatus, listUpgradeTasks, createUpgradeTask, cancelUpgradeTask, installConfig,
+  installPackage, listCollectorCredentials, revokeCollectorCredential,
 } from '../api/agents'
 
 const app = useAppStore()
@@ -21,7 +22,6 @@ const selection = ref([])
 const stats = ref({})
 const versions = ref([])
 const regions = ref([])
-const fields = ref({})
 const timeoutDefault = ref(180)
 
 // 升级任务
@@ -37,10 +37,11 @@ const editVisible = ref(false)
 const editSaving = ref(false)
 const editHost = ref('')
 const editIpAuto = ref('')
+// 版本 / 操作系统随心跳自动更新，只读展示；采集范围、字段角色映射、状态覆盖
+// 已从表单下线（统一走自动探测 / 全量口径），保存时显式置空以回到默认行为。
 const editForm = reactive({
-  ip: '', version: '', region: '', os: '', status_override: '',
-  heartbeat_timeout_sec: 180, host_values: [], source_keys: [],
-  fieldMap: { time: '', source: '', host: '' }, tags: [], note: '',
+  ip: '', version: '', region: '', os: '',
+  heartbeat_timeout_sec: 180, tags: [], note: '',
 })
 
 // 批量升级
@@ -48,17 +49,109 @@ const upgradeVisible = ref(false)
 const upgradeSaving = ref(false)
 const upgradeForm = reactive({ target_version: '', concurrency: 1, skip_offline: true, note: '' })
 
-// 下载接入配置
+// 接入新主机：生成接入包（可同时签发凭证、登记台账）
 const installVisible = ref(false)
-const installHost = ref('new-host')
+const installSaving = ref(false)
+const installResult = ref(null)
+const gatewayHost = window.location.hostname || 'localhost'
+const gatewayPort = Number(window.location.port || (window.location.protocol === 'https:' ? 443 : 80))
+const installForm = reactive({
+  variant: 'host',
+  hostname: '',
+  app_name: '',
+  address: gatewayHost,
+  port: gatewayPort,
+  credential: 'create',
+  existingKey: '',
+  register_host: true,
+  cluster_id: 'default',
+  multiline: 'ruilog-java',
+})
 
-const allHostValues = computed(() => [...new Set(
-  tableData.value.flatMap((a) => Object.keys(a.coverageHosts || {})),
-)].sort())
-const allSourceKeys = computed(() => [...new Set(
-  tableData.value.flatMap((a) => Object.keys(a.coverageSources || {})),
-)].sort())
-const fieldNames = computed(() => Object.keys(fields.value).sort())
+function openInstall(hostname = '') {
+  installForm.hostname = hostname
+  installResult.value = null
+  installVisible.value = true
+}
+
+async function onInstall() {
+  const hostname = installForm.hostname.trim()
+  if (!hostname) return ElMessage.warning('请先填目标主机名')
+  installSaving.value = true
+  try {
+    installResult.value = await installPackage({
+      hostname,
+      variant: installForm.variant,
+      app_name: installForm.app_name.trim(),
+      ingest_host: installForm.address.trim(),
+      ingest_port: installForm.port,
+      agent_host: installForm.address.trim(),
+      agent_port: installForm.port,
+      cluster_id: installForm.cluster_id.trim() || 'default',
+      multiline: installForm.multiline,
+      credential: installForm.credential,
+      collector_key: installForm.credential === 'existing' ? installForm.existingKey.trim() : '',
+      register_host: installForm.variant === 'host' ? installForm.register_host : false,
+    })
+  } catch (e) {
+    ElMessage.error('生成失败：' + (e.response?.data?.detail || e.message))
+  } finally {
+    installSaving.value = false
+  }
+}
+
+async function copyCollectorKey() {
+  try {
+    await navigator.clipboard.writeText(installResult.value.key)
+    ElMessage.success('凭证已复制')
+  } catch { ElMessage.warning('复制失败，请手动选中复制') }
+}
+
+function ledgerText(v) {
+  return { ok: '已自动登记', skipped: '未登记', failed: '登记失败', not_admin: '无权限登记' }[v] || v || '—'
+}
+
+// 凭证台账
+const credVisible = ref(false)
+const credLoading = ref(false)
+const credError = ref('')
+const creds = ref([])
+
+async function openCreds() {
+  credVisible.value = true
+  await loadCreds()
+}
+async function loadCreds() {
+  credLoading.value = true
+  credError.value = ''
+  try {
+    const d = await listCollectorCredentials()
+    creds.value = d.items || []
+  } catch (e) {
+    credError.value = e.response?.data?.detail || e.message
+    creds.value = []
+  } finally { credLoading.value = false }
+}
+async function revokeCred(row) {
+  await ElMessageBox.confirm(`撤销凭证 ${row.code}？使用它的采集器会立即上报失败（401）。`, '撤销凭证',
+    { type: 'warning' })
+  try {
+    await revokeCollectorCredential(row.code)
+    ElMessage.success('已撤销')
+    loadCreds()
+  } catch (e) { ElMessage.error('撤销失败：' + (e.response?.data?.detail || e.message)) }
+}
+
+// 兼容旧入口：只下载单文件 conf（排障用）
+const legacyVisible = ref(false)
+const legacyHost = ref('new-host')
+async function onLegacyInstall() {
+  try {
+    const name = await installConfig(legacyHost.value.trim() || 'new-host', app.tenant)
+    ElMessage.success(`已下载单文件配置：${name}`)
+    legacyVisible.value = false
+  } catch (e) { ElMessage.error('下载失败：' + (e.response?.data?.detail || e.message)) }
+}
 
 function fmt(n) { return (n ?? 0).toLocaleString('zh-CN') }
 function statusTagType(s) {
@@ -85,7 +178,6 @@ async function load(showTip = false) {
     stats.value = d.stats || {}
     versions.value = d.versions || []
     regions.value = d.regions || []
-    fields.value = d.fields || {}
     timeoutDefault.value = d.timeoutDefault || 180
     if (showTip) ElMessage.success(`已刷新，共 ${d.total} 台 Agent`)
   } catch (e) {
@@ -129,16 +221,12 @@ function openEdit(row) {
   editHost.value = row.hostname
   // 自动观测值不预填，避免用户只是打开配置再保存就把它固化成人工登记值
   editIpAuto.value = (row.ipSource === '服务端观测' || row.ipSource === 'Agent 自报') ? row.ip : ''
-  const fm = row.fieldMap || {}
   Object.assign(editForm, {
     ip: editIpAuto.value ? '' : (row.ip === '—' ? '' : row.ip),
     version: row.version === '—' ? '' : row.version,
     region: row.region === '—' ? '' : row.region,
-    os: row.os || '', status_override: row.statusOverride || '',
+    os: row.os || '',
     heartbeat_timeout_sec: row.heartbeatTimeoutSec || timeoutDefault.value,
-    host_values: [...(row.hostValues || [])],
-    source_keys: [...(row.sourceKeys || [])],
-    fieldMap: { time: fm.time || '', source: fm.source || '', host: fm.host || '' },
     tags: [...(row.tags || [])], note: row.note || '',
   })
   editVisible.value = true
@@ -146,15 +234,14 @@ function openEdit(row) {
 async function saveEdit() {
   editSaving.value = true
   try {
-    const fm = {}
-    for (const k of ['time', 'source', 'host']) if (editForm.fieldMap[k]) fm[k] = editForm.fieldMap[k]
     await updateAgent(editHost.value, {
       ip: editForm.ip || null, version: editForm.version || null,
       region: editForm.region || null, os: editForm.os || null,
-      status_override: editForm.status_override || null,
       heartbeat_timeout_sec: Number(editForm.heartbeat_timeout_sec),
-      host_values: editForm.host_values, source_keys: editForm.source_keys,
-      field_map: fm, tags: editForm.tags, note: editForm.note || null,
+      tags: editForm.tags, note: editForm.note || null,
+      // 以下三项已从表单下线：显式置空，回到「按心跳自动判定状态 / 统计覆盖全部日志 /
+      // 字段角色自动探测」的默认行为，避免历史配置在页面上不可见却仍然生效。
+      status_override: null, host_values: [], source_keys: [], field_map: {},
       config: {}, extra: {},
     })
     ElMessage.success('Agent 元数据已更新')
@@ -223,14 +310,6 @@ async function onCancelTask() {
     loadTasks()
   } catch (e) { ElMessage.error('操作失败：' + (e.response?.data?.detail || e.message)) }
 }
-async function onInstall() {
-  try {
-    const name = await installConfig(installHost.value.trim() || 'new-host', app.tenant)
-    ElMessage.success(`接入配置已下载：${name}`)
-    installVisible.value = false
-  } catch (e) { ElMessage.error('下载失败：' + (e.response?.data?.detail || e.message)) }
-}
-
 let timer = null
 onMounted(() => {
   load(false); loadTasks()
@@ -254,8 +333,9 @@ onUnmounted(() => clearInterval(timer))
           <p class="desc">采集端安装后心跳自动注册；超过 {{ timeoutDefault / 60 }} 分钟无心跳标记离线</p>
         </div>
         <div class="head-actions">
-          <el-button :icon="Download" @click="installVisible = true">下载接入配置</el-button>
-          <el-button :icon="Upload" @click="openUpgrade">批量升级</el-button>
+          <el-button :icon="Download" type="primary" plain @click="openInstall()">接入新主机</el-button>
+          <el-button :icon="Setting" @click="openCreds">凭证台账</el-button>
+          <el-button :icon="Upload" disabled title="后续版本开放">批量升级</el-button>
           <el-button :icon="Refresh" @click="onRefresh">刷新</el-button>
         </div>
       </div>
@@ -342,8 +422,8 @@ onUnmounted(() => clearInterval(timer))
       <div class="batch-bar">
         <span>已选 <b>{{ selection.length }}</b> 项</span>
         <div>
-          <el-button link type="primary" size="small" @click="openUpgrade">批量升级</el-button>
-          <el-button link size="small" @click="onBatchRestart">批量重启</el-button>
+          <el-button link size="small" disabled title="后续版本开放">批量升级</el-button>
+          <el-button link size="small" disabled title="后续版本开放" @click="onBatchRestart">批量重启</el-button>
         </div>
       </div>
       <el-table :data="tableData" stripe @selection-change="(v) => (selection = v)" row-key="hostname">
@@ -396,15 +476,16 @@ onUnmounted(() => clearInterval(timer))
             <div class="op-actions">
               <el-button text size="small" @click="openDetail(row)">详情</el-button>
               <el-button text size="small" :icon="Setting" @click="openEdit(row)">配置</el-button>
-              <el-button text size="small" :disabled="row.status === '离线'" @click="onRestart(row)">重启</el-button>
-              <el-button text size="small" @click="onMaintain(row)">{{ row.statusOverride ? '结束维护' : '维护' }}</el-button>
+              <!-- 重启 / 维护：占位按钮，后续版本接入指令队列的消费端后再放开 -->
+              <el-button text size="small" disabled title="后续版本开放" @click="onRestart(row)">重启</el-button>
+              <el-button text size="small" disabled title="后续版本开放" @click="onMaintain(row)">维护</el-button>
             </div>
           </template>
         </el-table-column>
         <template #empty>
           <div class="empty-box">
             <p>暂无 Agent，采集端安装并上报心跳后会自动注册</p>
-            <el-button size="small" type="primary" @click="installVisible = true">下载接入配置</el-button>
+            <el-button size="small" type="primary" @click="openInstall()">接入新主机</el-button>
           </div>
         </template>
       </el-table>
@@ -473,11 +554,9 @@ onUnmounted(() => clearInterval(timer))
           </div>
 
           <div class="section">
-            <div class="section-title">采集配置</div>
-            <div class="kv"><span>负责 host 值</span><b>{{ detail.agent.hostValues?.join(', ') || '全部（不过滤）' }}</b></div>
-            <div class="kv"><span>负责来源</span><b>{{ detail.agent.sourceKeys?.join(', ') || '全部（不过滤）' }}</b></div>
-            <div class="kv"><span>字段角色覆盖</span><b>{{ Object.keys(detail.agent.fieldMap || {}).length ? JSON.stringify(detail.agent.fieldMap) : '自动探测' }}</b></div>
-            <div class="kv"><span>状态覆盖 / 备注</span><b>{{ detail.agent.statusOverride || '无' }} · {{ detail.agent.note || '—' }}</b></div>
+            <div class="section-title">标签与备注</div>
+            <div class="kv"><span>标签</span><b>{{ detail.agent.tags?.join('、') || '—' }}</b></div>
+            <div class="kv"><span>备注</span><b>{{ detail.agent.note || '—' }}</b></div>
           </div>
 
           <div class="section">
@@ -493,7 +572,7 @@ onUnmounted(() => clearInterval(timer))
       <template #footer>
         <el-button @click="detailVisible = false">关闭</el-button>
         <el-button :icon="Setting" @click="openEdit(detail.agent)">编辑配置</el-button>
-        <el-button type="primary" @click="onRestart(detail.agent)">下发重启指令</el-button>
+        <el-button type="primary" disabled title="后续版本开放" @click="onRestart(detail.agent)">下发重启指令</el-button>
       </template>
     </el-drawer>
 
@@ -501,37 +580,20 @@ onUnmounted(() => clearInterval(timer))
     <el-dialog v-model="editVisible" :title="`编辑 Agent · ${editHost}`" width="600px">
       <el-form label-width="140px">
         <el-form-item label="IP 地址"><el-input v-model="editForm.ip" :placeholder="editIpAuto ? `留空自动使用当前观测值 ${editIpAuto}` : '可手工登记，留空则自动获取'" /></el-form-item>
-        <el-form-item label="版本"><el-input v-model="editForm.version" placeholder="由心跳上报，可修正" /></el-form-item>
-        <el-form-item label="所属区域">
-          <el-select v-model="editForm.region" clearable filterable allow-create style="width:100%" placeholder="可输入自定义区域">
-            <el-option v-for="r in ['华北', '华东', '华南', '华中', '西南', '西北', '东北']" :key="r" :label="r" :value="r" />
-          </el-select>
+        <el-form-item label="版本">
+          <el-input :model-value="editForm.version || '—'" disabled />
+          <span class="form-hint-block">由心跳自动上报，仅查看</span>
         </el-form-item>
-        <el-form-item label="操作系统"><el-input v-model="editForm.os" /></el-form-item>
+        <el-form-item label="所属区域">
+          <el-input v-model="editForm.region" clearable maxlength="32"
+            placeholder="手工填写，如 华北 / 华东 / 自建机房-A" />
+        </el-form-item>
+        <el-form-item label="操作系统">
+          <el-input :model-value="editForm.os || '—'" disabled />
+          <span class="form-hint-block">由心跳自动上报，仅查看</span>
+        </el-form-item>
         <el-form-item label="心跳超时(秒)"><el-input-number v-model="editForm.heartbeat_timeout_sec" :min="30" :max="86400" style="width:180px" />
           <span class="form-hint">默认 {{ timeoutDefault }} 秒</span></el-form-item>
-        <el-form-item label="状态覆盖">
-          <el-select v-model="editForm.status_override" clearable placeholder="按心跳自动判定" style="width:100%">
-            <el-option label="维护中" value="维护中" />
-          </el-select>
-        </el-form-item>
-        <el-divider content-position="left">采集范围（用于反推速率，留空＝该采集端覆盖全部日志）</el-divider>
-        <el-form-item label="负责 host 值">
-          <el-select v-model="editForm.host_values" multiple filterable allow-create style="width:100%" placeholder="从真实日志 host 中选，或自定义">
-            <el-option v-for="h in allHostValues" :key="h" :label="h" :value="h" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="负责来源">
-          <el-select v-model="editForm.source_keys" multiple filterable allow-create style="width:100%" placeholder="从真实日志来源中选，或自定义">
-            <el-option v-for="s in allSourceKeys" :key="s" :label="s" :value="s" />
-          </el-select>
-        </el-form-item>
-        <el-divider content-position="left">字段角色映射（留空＝按真实 mapping 自动探测）</el-divider>
-        <el-form-item v-for="(label, key) in { time: '时间字段', source: '来源字段', host: '主机字段' }" :key="key" :label="label">
-          <el-select v-model="editForm.fieldMap[key]" clearable filterable style="width:100%" :placeholder="`自动探测`">
-            <el-option v-for="f in fieldNames" :key="f" :label="`${f} (${fields[f]})`" :value="f" />
-          </el-select>
-        </el-form-item>
         <el-form-item label="标签"><el-select v-model="editForm.tags" multiple filterable allow-create default-first-option style="width:100%" /></el-form-item>
         <el-form-item label="备注"><el-input v-model="editForm.note" type="textarea" :rows="2" /></el-form-item>
       </el-form>
@@ -558,17 +620,133 @@ onUnmounted(() => clearInterval(timer))
       </template>
     </el-dialog>
 
-    <!-- 下载接入配置 -->
-    <el-dialog v-model="installVisible" title="下载采集端接入配置" width="480px">
-      <el-alert type="info" :closable="false" style="margin-bottom:14px"
-        title="按当前环境实时生成可直接落盘的 Fluent Bit 配置：日志采集 + 租户路由 + 心跳上报，不是占位安装包。" />
-      <el-form label-width="100px">
-        <el-form-item label="目标主机名"><el-input v-model="installHost" placeholder="如 host-10-24-8-21" /></el-form-item>
-        <el-form-item label="目标租户"><span class="form-hint">{{ app.tenant }}</span></el-form-item>
+    <!-- 接入新主机 -->
+    <el-dialog v-model="installVisible" title="接入新主机" width="640px" :close-on-click-modal="false">
+      <template v-if="!installResult">
+        <el-alert type="info" :closable="false" show-icon style="margin-bottom:14px"
+          title="按参数生成可直接落地的接入包（tar.gz）：Fluent Bit 主配置 + parsers.conf + 安装脚本 + 采集器凭证，不是占位样例。" />
+
+        <el-form label-width="96px" label-position="left">
+          <el-form-item label="接入形态">
+            <el-radio-group v-model="installForm.variant">
+              <el-radio-button value="host">业务主机（集群外）</el-radio-button>
+              <el-radio-button value="container">集群内容器</el-radio-button>
+            </el-radio-group>
+          </el-form-item>
+          <el-form-item label="主机名" required>
+            <el-input v-model="installForm.hostname" placeholder="如 host-10-24-8-21 / order-node-1" />
+            <div class="form-tip">主机形态填机器名；容器形态填 K8s 节点名（用于 NODE_NAME 与归属）</div>
+          </el-form-item>
+          <el-form-item label="应用名">
+            <el-input v-model="installForm.app_name" placeholder="留空则用主机名" />
+            <div class="form-tip">只写入 app 字段做检索分组，不影响租户归属</div>
+          </el-form-item>
+          <el-form-item label="平台地址">
+            <div class="inline-row">
+              <el-input v-model="installForm.address" placeholder="平台对外地址或 IP" style="flex:1" />
+              <el-input-number v-model="installForm.port" :min="1" :max="65535" controls-position="right" style="width:120px" />
+            </div>
+            <div class="form-tip">已按当前浏览器地址预填；集群外主机必须能访问该地址下的 /heartbeat 与 /ingest/</div>
+          </el-form-item>
+          <template v-if="installForm.variant === 'container'">
+            <el-form-item label="集群 ID">
+              <el-input v-model="installForm.cluster_id" placeholder="default" />
+            </el-form-item>
+            <el-form-item label="多行合并">
+              <el-select v-model="installForm.multiline" style="width:100%">
+                <el-option label="Java 堆栈（ruilog-java）" value="ruilog-java" />
+                <el-option label="Go 堆栈（ruilog-go）" value="ruilog-go" />
+                <el-option label="Python traceback（ruilog-python）" value="ruilog-python" />
+                <el-option label="不合并（一行一条）" value="none" />
+              </el-select>
+            </el-form-item>
+          </template>
+          <el-form-item label="采集器凭证">
+            <el-radio-group v-model="installForm.credential">
+              <el-radio value="create">生成新凭证（推荐）</el-radio>
+              <el-radio value="existing">用已有凭证</el-radio>
+              <el-radio value="none">先不填</el-radio>
+            </el-radio-group>
+            <el-input v-if="installForm.credential === 'existing'" v-model="installForm.existingKey"
+              placeholder="rk_xxx" show-password style="margin-top:8px" />
+            <div class="form-tip">服务端只存 hash，明文仅在生成时返回一次；不填则包内为占位符，采集器会 401</div>
+          </el-form-item>
+          <el-form-item v-if="installForm.variant === 'host'" label="主机台账">
+            <el-checkbox v-model="installForm.register_host">自动登记到 hosts 台账（需要平台管理员）</el-checkbox>
+            <div class="form-tip">不登记则日志文件名必须是 &lt;租户&gt;.log，否则入口无法判定归属而拒收</div>
+          </el-form-item>
+        </el-form>
+      </template>
+
+      <template v-else>
+        <el-result icon="success" title="接入包已生成" :sub-title="installResult.name" style="padding:10px 0" />
+        <el-descriptions :column="1" border size="small">
+          <el-descriptions-item label="接入形态">
+            {{ installResult.variant === 'host' ? '业务主机（集群外）' : '集群内容器' }}
+          </el-descriptions-item>
+          <el-descriptions-item label="凭证编号">{{ installResult.code || '未签发' }}</el-descriptions-item>
+          <el-descriptions-item label="主机台账">{{ ledgerText(installResult.ledger) }}</el-descriptions-item>
+        </el-descriptions>
+        <div v-if="installResult.key" class="key-box">
+          <div class="key-head">
+            <span>凭证明文（只显示这一次，关闭后无法找回）</span>
+            <el-button size="small" type="primary" link @click="copyCollectorKey">复制</el-button>
+          </div>
+          <code class="key-value">{{ installResult.key }}</code>
+        </div>
+        <el-alert v-if="installResult.ledger === 'failed' || installResult.ledger === 'not_admin'"
+          type="warning" :closable="false" show-icon style="margin-top:12px"
+          :title="installResult.ledger === 'not_admin'
+            ? '当前账号无台账权限，请在数据源页由管理员登记该主机，否则日志会被拒收'
+            : '台账登记失败，请在数据源页补登记该主机，否则日志会被拒收'" />
+      </template>
+
+      <template #footer>
+        <el-button link size="small" style="float:left" @click="legacyVisible = true">排障：单文件 .conf</el-button>
+        <el-button v-if="!installResult" @click="installVisible = false">取消</el-button>
+        <el-button v-if="!installResult" type="primary" :loading="installSaving" :icon="Download" @click="onInstall">生成并下载</el-button>
+        <template v-else>
+          <el-button @click="installVisible = false">完成</el-button>
+          <el-button type="primary" @click="openInstall()">再接一台</el-button>
+        </template>
+      </template>
+    </el-dialog>
+
+    <!-- 凭证台账 -->
+    <el-dialog v-model="credVisible" title="采集器凭证台账" width="640px">
+      <el-alert type="info" :closable="false" show-icon style="margin-bottom:12px"
+        title="只展示凭证编号与使用情况，明文不落库、无法查看；撤销后该采集器立即上报失败。" />
+      <div v-if="credError" class="cred-error">{{ credError }}</div>
+      <el-table v-else :data="creds" v-loading="credLoading" size="small">
+        <el-table-column prop="code" label="凭证编号" min-width="200" />
+        <el-table-column prop="tenantAllow" label="允许租户" min-width="100" />
+        <el-table-column prop="lastSeen" label="最近使用" min-width="130">
+          <template #default="{ row }">{{ row.lastSeen || '未使用' }}</template>
+        </el-table-column>
+        <el-table-column prop="createdAt" label="签发时间" min-width="130" />
+        <el-table-column label="操作" width="80" fixed="right">
+          <template #default="{ row }">
+            <el-button text size="small" type="danger" @click="revokeCred(row)">撤销</el-button>
+          </template>
+        </el-table-column>
+        <template #empty><div class="empty-box"><p>暂无已签发凭证</p></div></template>
+      </el-table>
+      <template #footer>
+        <el-button @click="credVisible = false">关闭</el-button>
+        <el-button :icon="Refresh" @click="loadCreds">刷新</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 旧入口：单文件 conf（排障用） -->
+    <el-dialog v-model="legacyVisible" title="下载单文件 Fluent Bit 配置" width="480px">
+      <el-alert type="warning" :closable="false" show-icon style="margin-bottom:12px"
+        title="单文件不含 parsers.conf 与凭证，目标机仍需手工补齐；正式接入请用「接入新主机」。" />
+      <el-form label-width="90px">
+        <el-form-item label="主机名"><el-input v-model="legacyHost" /></el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="installVisible = false">取消</el-button>
-        <el-button type="primary" :icon="Download" @click="onInstall">下载 .conf</el-button>
+        <el-button @click="legacyVisible = false">取消</el-button>
+        <el-button @click="onLegacyInstall">下载 .conf</el-button>
       </template>
     </el-dialog>
   </div>
@@ -642,4 +820,11 @@ onUnmounted(() => clearInterval(timer))
 .kv b { font-weight: 500; color: var(--color-text-1); word-break: break-all; text-align: right; }
 .cmd-line { display: flex; align-items: center; gap: 10px; font-size: 13px; padding: 4px 0; }
 .form-hint { font-size: 12px; color: var(--color-text-3); margin-left: 10px; }
+.form-hint-block { display: block; font-size: 12px; color: var(--color-text-3); line-height: 1.6; margin-top: 2px; }
+.form-tip { font-size: 12px; color: var(--color-text-3); line-height: 1.6; margin-top: 2px; }
+.inline-row { display: flex; gap: 8px; width: 100%; align-items: center; }
+.key-box { margin-top: 14px; border: 1px solid #FAE3B5; background: #FFFBF2; border-radius: 4px; padding: 10px 12px; }
+.key-head { display: flex; justify-content: space-between; align-items: center; font-size: 12px; color: #8A6A1F; margin-bottom: 6px; }
+.key-value { display: block; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: #7A4E00; word-break: break-all; background: #fff; border: 1px solid #FAE3B5; border-radius: 3px; padding: 6px 8px; }
+.cred-error { padding: 16px 0; color: var(--color-text-3); font-size: 13px; }
 </style>

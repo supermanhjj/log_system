@@ -57,9 +57,13 @@ export async function installConfig(hostname, tenant = currentTenant()) {
   const resp = await client.get('/install-config', {
     params: { hostname, tenant }, responseType: 'blob',
   })
+  return downloadBlob(resp, `fluent-bit-${hostname}.conf`)
+}
+
+function downloadBlob(resp, fallback) {
   const disposition = resp.headers['content-disposition'] || ''
   const m = /filename="?([^"]+)"?/.exec(disposition)
-  const name = m ? m[1] : `fluent-bit-${hostname}.conf`
+  const name = m ? m[1] : fallback
   const url = URL.createObjectURL(resp.data)
   const a = document.createElement('a')
   a.href = url
@@ -67,4 +71,29 @@ export async function installConfig(hostname, tenant = currentTenant()) {
   a.click()
   URL.revokeObjectURL(url)
   return name
+}
+
+// 下载接入包（tar.gz）：可同时签发凭证、登记主机台账。
+// 凭证明文只出现在响应头里，且只有「本次签发」才会返回。
+export async function installPackage(payload, tenant = currentTenant()) {
+  const resp = await client.post('/install-package', payload, {
+    params: { tenant }, responseType: 'blob', timeout: 60000,
+  })
+  return {
+    name: downloadBlob(resp, `ruilog-agent-${payload.hostname}.tar.gz`),
+    code: resp.headers['x-collector-code'] || '',
+    key: resp.headers['x-collector-key'] || '',
+    ledger: resp.headers['x-host-ledger'] || 'skipped',
+    variant: resp.headers['x-package-variant'] || payload.variant,
+  }
+}
+
+export async function listCollectorCredentials() {
+  const { data } = await client.get('/collector-credentials')
+  return data
+}
+
+export async function revokeCollectorCredential(code) {
+  const { data } = await client.delete(`/collector-credentials/${encodeURIComponent(code)}`)
+  return data
 }

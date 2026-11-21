@@ -24,11 +24,20 @@ PG_DSN = os.getenv(
 
 
 def pg_query(sql: str, params: tuple = ()) -> List[Dict[str, Any]]:
+    """查询并提交。
+
+    这里同时承担 INSERT/UPDATE（upsert_parser / upsert_pipeline 走的就是它）。
+    psycopg2 默认不是 autocommit，只 execute 不 commit 会在 close 时回滚——
+    表现是接口返回 200、库里查不到，后续按 code 建规则就报「解析器不存在」。
+    SELECT 多一次 commit 没有副作用，统一提交最稳。
+    """
     conn = psycopg2.connect(PG_DSN)
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(sql, params)
-            return [dict(r) for r in cur.fetchall()]
+            rows = [dict(r) for r in cur.fetchall()]
+        conn.commit()
+        return rows
     finally:
         conn.close()
 

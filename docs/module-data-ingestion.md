@@ -57,7 +57,7 @@
 | Agent 列表 / 心跳状态 / 详情 / 配置编辑下发 | `AgentManagement.vue:75,107,128,146,168` | `GET /agents:618`、`GET /agents/{host}:649`、`PUT:683` | ✅ |
 | 重启 / 维护 / 批量重启 / 指令队列 ack | `AgentManagement.vue:175-200,284-288` | `POST /agents/{host}/command:705`、`/status:722`、`/commands/{id}/ack:729` | ⚠️ ack 端点已备，采集端未接入 |
 | 升级任务：创建 / 取消 / 进度 | `submitUpgrade():254-295` | `GET/POST /upgrade-tasks:773,784`、取消 `:818` | ✅ 真实任务表，非静态 76% |
-| 下载接入配置（实时生成 conf） | `onInstall():561-573` | `GET /install-config:825-903` | ✅ |
+| 接入新主机（生成接入包 / 签发凭证 / 登记台账） | `AgentManagement.vue` 接入向导 | `POST /install-package`、`GET/DELETE /collector-credentials`；旧 `GET /install-config` 保留为单文件排障入口 | ✅ |
 | 心跳自动注册与速率反推 | — | `POST /heartbeat:552-615`，速率由 OpenSearch 反推 `:320-371` | ⚠️ dummy 心跳 ts 为占位串 |
 
 ---
@@ -66,7 +66,7 @@
 
 **`ingest-service` 端点**（`services/ingest-service/app/main.py`）：`/health`、`/`、`GET /meta`、`GET/PUT /settings`、`GET/POST /sources`、`PUT/DELETE /sources/{key}`、`POST /sources/batch-status`、`GET /sources/{key}`、`POST /sources/test`、`GET /export`、**`POST /ingest`（通用日志写入）**、**`POST /ingest/collector`（采集器专线上报）**；`startup init_db()`。
 
-**`agent-service` 13 个端点**（`services/agent-service/app/main.py`）：`/health:535`、`/:540`、`POST /heartbeat:552`、`GET /agents:618`、`GET/PUT /agents/{host}:649,683`、`POST /agents/{host}/command:705`、`/status:722`、`POST /commands/{id}/ack:729`、`GET/POST /upgrade-tasks:773,784`、取消 `:818`、`GET /install-config:825`。
+**`agent-service` 13 个端点**（`services/agent-service/app/main.py`）：`/health:535`、`/:540`、`POST /heartbeat:552`、`GET /agents:618`、`GET/PUT /agents/{host}:649,683`、`POST /agents/{host}/command:705`、`/status:722`、`POST /commands/{id}/ack:729`、`GET/POST /upgrade-tasks:773,784`、取消 `:818`、`GET /install-config`（单文件兼容）、`POST /install-package`（tar 接入包，host/container 双形态）、`GET /collector-credentials`、`DELETE /collector-credentials/{code}`（管理员）。
 
 | 数据 | 定义 | 说明 |
 |---|---|---|
