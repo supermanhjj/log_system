@@ -231,6 +231,51 @@ def seed_defaults() -> None:
         "java-logback",
     ))
 
+    # ---- I6000 订单日志：带 HTTP 状态码的 logback 变体 ----
+    # 只匹配 i6000-order 容器日志；没有 status= 的旧格式仍由上面的通用规则解析。
+    pg_exec("""
+        INSERT INTO log_parsers (code, name, ptype, definition, description)
+        VALUES (%s, %s, %s, %s::jsonb, %s)
+        ON CONFLICT (code) DO NOTHING
+    """, (
+        "java-logback-http-status",
+        "Java logback + HTTP 状态码",
+        "grok",
+        json.dumps({
+            "type": "grok",
+            "pattern": (r"%{TIMESTAMP_ISO8601:ts}\s+\[%{JAVATHREAD:thread}\]\s+"
+                        r"%{LOGLEVEL:level}\s+%{JAVACLASS:logger}\s+-\s+"
+                        r"%{GREEDYDATA:message}\s+status=%{INT:status}"),
+        }, ensure_ascii=False),
+        "SpringBoot logback 行尾带 status=<HTTP 状态码>，用于 I6000 业务日志的状态码统计",
+    ))
+    pg_exec("""
+        INSERT INTO log_pipelines
+            (code, name, priority, match, parser_id, mapping, tenant_code)
+        SELECT %s, %s, %s, %s::jsonb, p.id, %s::jsonb, %s
+        FROM log_parsers p WHERE p.code=%s
+        ON CONFLICT (code) DO NOTHING
+    """, (
+        "java-logback-i6000-status",
+        "I6000 业务日志（含状态码）",
+        90,
+        json.dumps({
+            "log_class": "business",
+            "source_type": "app",
+            "path_glob": "*i6000-order*",
+        }, ensure_ascii=False),
+        json.dumps({
+            "level": "level",
+            "source": "logger",
+            "status": "status:int",
+            "attrs.thread": "thread",
+            "attrs.body_ts": "ts",
+            "message": "message",
+        }, ensure_ascii=False),
+        "i6000",
+        "java-logback-http-status",
+    ))
+
     # ---- 系统日志：RFC3164（K8s 容器内的 syslog 与主机 /var/log/syslog 同构）----
     #   Nov 20 02:41:37 i6000-node-01 authpriv.warn sshd: Failed password for ...
     pg_exec("""

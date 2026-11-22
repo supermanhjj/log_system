@@ -473,7 +473,7 @@ onBeforeUnmount(() => stopAutoRefresh())
 
         <div class="raw-section">
           <div class="raw-title">最近一条原始日志</div>
-          <pre class="raw-block">{{ currentEvent.sample?.raw || '（无原始日志）' }}</pre>
+          <pre class="raw-block">{{ currentEvent.sample?.raw || currentEvent.sample?.message || '（无原始日志）' }}</pre>
         </div>
       </template>
 

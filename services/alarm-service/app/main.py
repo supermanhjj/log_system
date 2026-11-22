@@ -440,7 +440,7 @@ def evaluate_rule(rule: Dict[str, Any], idx: str, now: int) -> Optional[Dict[str
         "query": query,
         "sort": [{"@timestamp": {"order": "desc"}}],
         "_source": ["@timestamp", "log_class", "source_type", "level", "source", "host",
-                    "traceId", "message", "status", "raw"],
+                    "traceId", "message", "status", "raw", "log"],
     }
     try:
         agg = os_client.search(index=idx, body=body)
@@ -488,7 +488,9 @@ def evaluate_rule(rule: Dict[str, Any], idx: str, now: int) -> Optional[Dict[str
             "traceId": src.get("traceId"),
             "status": src.get("status"),
             "message": src.get("message"),
-            "raw": src.get("raw") or "",
+            # 不同采集器的正文字段不同：syslog/文件采集写 log，业务日志写 raw。
+            # 原始日志优先取 raw，其次整行 log，最后退回解析后的 message。
+            "raw": src.get("raw") or src.get("log") or src.get("message") or "",
         },
     }
 

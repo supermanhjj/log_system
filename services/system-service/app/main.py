@@ -845,9 +845,20 @@ class ParamsIn(BaseModel):
     items: Dict[str, Any]
 
 
+# 迁移标记不是业务参数：例如 migration.retire_demo_tenants.v1 只用于控制
+# 「废止演示租户」一次性清理是否已经执行。它必须留在库里，但不能出现在系统设置页，
+# 更不能让用户改写——写成别的值会让下次启动重新执行清理，误删后来新建的同名租户。
+INTERNAL_PARAM_PREFIXES = ("migration.",)
+
+
+def is_internal_param(key: str) -> bool:
+    return str(key or "").startswith(INTERNAL_PARAM_PREFIXES)
+
+
 @app.get("/params")
 def get_params(user: Dict[str, Any] = Depends(require("param", "view"))):
-    rows = pg_query("SELECT * FROM system_params ORDER BY pkey")
+    rows = [r for r in pg_query("SELECT * FROM system_params ORDER BY pkey")
+            if not is_internal_param(r["pkey"])]
     return {
         "items": [
             {
@@ -870,7 +881,8 @@ def put_params(
 ):
     if not req.items:
         raise HTTPException(status_code=400, detail="没有需要保存的参数")
-    defs = {r["pkey"]: r for r in pg_query("SELECT * FROM system_params")}
+    defs = {r["pkey"]: r for r in pg_query("SELECT * FROM system_params")
+            if not is_internal_param(r["pkey"])}
     unknown = [k for k in req.items if k not in defs]
     if unknown:
         raise HTTPException(status_code=400, detail=f"未知参数：{', '.join(unknown)}")

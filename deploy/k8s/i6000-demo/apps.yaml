@@ -12,6 +12,7 @@ data:
     import sys, time
     from datetime import datetime
     LEVELS = ["INFO", "INFO", "INFO", "WARN", "ERROR"]
+    STATUS = {"INFO": 200, "WARN": 429, "ERROR": 500}
     MSG = [
         "order created orderId=ORD-20261120-%03d amount=%.2f status=SUCCESS",
         "payment callback received orderId=ORD-20261120-%03d channel=UNIONPAY",
@@ -35,7 +36,7 @@ data:
             n += 1
             level = LEVELS[n % len(LEVELS)]
             if level == "ERROR":
-                print("%s  [http-nio-8080-exec-%d] ERROR c.s.i.order.service.OrderService - failed to submit order orderId=ORD-20261120-%03d" % (ts(), n % 8, n), flush=True)
+                print("%s  [http-nio-8080-exec-%d] ERROR c.s.i.order.service.OrderService - failed to submit order orderId=ORD-20261120-%03d status=%d" % (ts(), n % 8, n, STATUS[level]), flush=True)
                 for line in STACK:
                     print(line, flush=True)
             else:
@@ -44,7 +45,7 @@ data:
                 elif idx == 1: body = MSG[idx] % n
                 elif idx == 2: body = MSG[idx] % (n, 30 + n)
                 else: body = MSG[idx] % n
-                print("%s  [http-nio-8080-exec-%d] %s c.s.i.order.service.OrderService - %s" % (ts(), n % 8, level, body), flush=True)
+                print("%s  [http-nio-8080-exec-%d] %s c.s.i.order.service.OrderService - %s status=%d" % (ts(), n % 8, level, body, STATUS[level]), flush=True)
             time.sleep(2)
     if __name__ == "__main__":
         main()

@@ -1,7 +1,7 @@
 <script setup>
 import { ref, reactive, computed, watch, onMounted, onUnmounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Refresh, Plus, Download, Setting, Connection } from '@element-plus/icons-vue'
+import { Refresh, Plus, Download, Setting, Connection, QuestionFilled } from '@element-plus/icons-vue'
 import { useAppStore } from '../stores/app'
 import {
   INGEST_TYPES, STATUS_OPTIONS, ROLE_LABELS,
@@ -67,6 +67,27 @@ const formRules = {
 }
 
 const roleOptions = computed(() => Object.keys(meta.value.fields || {}).sort())
+// 索引字段全集 vs 6 个语义角色：角色只描述平台需要的 6 个含义，
+// 其余字段不需要映射，写入后会原样保留（检索详情/PPL 可直接看到）。
+const allFields = computed(() => Object.keys(meta.value.fields || {}).sort())
+const roleFieldSet = computed(() => {
+  const used = new Set()
+  for (const k of Object.keys(ROLE_LABELS)) {
+    const manual = form.fieldMap?.[k]
+    if (manual) used.add(manual)
+    else if (meta.value.roles?.[k]?.field) used.add(meta.value.roles[k].field)
+  }
+  return used
+})
+const unusedFieldCount = computed(() => allFields.value.filter((f) => !roleFieldSet.value.has(f)).length)
+const ROLE_HINTS = {
+  source: '用于按服务/应用聚合、自动发现数据源；通常对应 source / app / service_name',
+  time: '检索时间范围、直方图和告警窗口都依赖它；必须是 date 类型',
+  level: '级别筛选、级别统计和告警判定使用',
+  host: '主机分布、上下文日志和离线判断使用',
+  tenant: '日志归属租户；缺失时平台会按命名空间、主机台账、索引名兜底推导',
+  message: '全文检索和原始日志正文展示使用',
+}
 const regionOptions = computed(() => [...new Set(tableData.value.map((x) => x.region).filter((r) => r && r !== '—'))])
 const typeOptions = computed(() => ['自动发现', ...INGEST_TYPES])
 const caps = computed(() => meta.value.capabilities || {})
@@ -594,9 +615,7 @@ onUnmounted(() => clearInterval(timer))
         </el-form-item>
         <el-form-item label="目标索引"><el-input v-model="form.targetIndex" placeholder="留空按租户推导 logs-&lt;tenant&gt;" /></el-form-item>
         <el-form-item label="所属区域">
-          <el-select v-model="form.region" clearable filterable allow-create style="width:100%" placeholder="可输入自定义区域">
-            <el-option v-for="r in ['华北', '华东', '华南', '华中', '西南', '西北', '东北']" :key="r" :label="r" :value="r" />
-          </el-select>
+          <el-input v-model="form.region" clearable placeholder="输入区域" />
         </el-form-item>
         <el-form-item label="标签">
           <el-select v-model="form.tags" multiple filterable allow-create default-first-option style="width:100%" placeholder="回车创建新标签" />
@@ -625,12 +644,44 @@ onUnmounted(() => clearInterval(timer))
         <el-form-item label="静默异常(分)"><el-input-number v-model="form.silenceOfflineMin" :min="1" :max="10080" placeholder="留空用全局" style="width:160px" /></el-form-item>
 
         <el-divider content-position="left">字段角色映射</el-divider>
-        <div class="form-hint block">上线后日志字段命名各不相同，这里可指定各角色对应的真实字段；留空则按索引 mapping 自动探测。当前索引共有 {{ Object.keys(meta.fields || {}).length }} 个字段。</div>
-        <el-form-item v-for="(label, key) in ROLE_LABELS" :key="key" :label="label">
+        <el-form-item v-for="(label, key) in ROLE_LABELS" :key="key">
+          <template #label>
+            <span class="role-label">
+              {{ label }}
+              <el-tooltip :content="ROLE_HINTS[key]" placement="top">
+                <el-icon class="role-help"><QuestionFilled /></el-icon>
+              </el-tooltip>
+            </span>
+          </template>
           <el-select v-model="form.fieldMap[key]" clearable filterable :placeholder="`自动探测：${meta.roles?.[key]?.field || '未探测到'}`" style="width:100%">
             <el-option v-for="f in roleOptions" :key="f" :label="`${f} (${meta.fields[f]})`" :value="f" />
           </el-select>
         </el-form-item>
+
+        <el-collapse class="field-pool">
+          <el-collapse-item name="fields">
+            <template #title>
+              <span class="field-pool-title">查看索引字段清单</span>
+              <span class="section-note">
+                共 {{ allFields.length }} 个 · 已用于角色 {{ roleFieldSet.size }} 个 · 自动保留 {{ unusedFieldCount }} 个
+              </span>
+            </template>
+            <div class="field-pool-tags">
+              <el-tag
+                v-for="f in allFields"
+                :key="f"
+                size="small"
+                effect="plain"
+                :type="roleFieldSet.has(f) ? 'success' : 'info'"
+              >
+                {{ f }}<span class="field-type">{{ meta.fields[f] }}</span>
+              </el-tag>
+            </div>
+            <div class="form-hint">
+              绿色为当前角色正在使用的字段；灰色字段不需要映射，日志写入后会保留在文档里。
+            </div>
+          </el-collapse-item>
+        </el-collapse>
 
         <el-divider content-position="left">扩展</el-divider>
         <el-form-item label="扩展属性"><el-input v-model="form.extraText" type="textarea" :rows="3" placeholder="任意 JSON，如 {&quot;ownerDept&quot;:&quot;运行处&quot;}" /></el-form-item>
@@ -748,8 +799,13 @@ onUnmounted(() => clearInterval(timer))
 .raw-line { font-family: Menlo, Consolas, monospace; font-size: 12px; background: #F7FAFA; padding: 6px 8px; border-radius: 3px; margin-bottom: 4px; word-break: break-all; }
 
 .form-hint { font-size: 12px; color: var(--color-text-3); line-height: 1.5; }
-.form-hint.block { margin: 0 0 12px 118px; }
 :deep(.el-form-item) .form-hint { margin-left: 0; }
+.role-label { display: inline-flex; align-items: center; gap: 4px; }
+.role-help { color: var(--color-text-3); cursor: help; }
+.field-pool { margin: 0 0 18px 118px; }
+.field-pool-title { font-size: 13px; font-weight: 600; color: var(--color-text-1); }
+.field-pool-tags { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 8px; }
+.field-type { margin-left: 5px; opacity: .65; font-family: 'SFMono-Regular', Consolas, Menlo, monospace; font-size: 11px; }
 .test-result { margin: 12px 0 0; padding: 10px 12px; border-radius: 4px; font-size: 13px; }
 .test-result.ok { background: #E8F7F3; border: 1px solid #B9E0DE; }
 .test-result.bad { background: #FDECEC; border: 1px solid #F5C6C6; }

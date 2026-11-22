@@ -134,16 +134,22 @@ const currentRow = ref(null)
 const ctxBefore = ref([])
 const ctxAfter = ref([])
 const ctxLoading = ref(false)
+// 上下文日志统一成可读单行：缺失的 source/host 不显示 null 占位。
+function composeLogLine(r) {
+  if (!r) return ''
+  const prefix = [r.time, r.level, r.source, r.host ? `[${r.host}]` : ''].filter(Boolean).join(' ')
+  return [prefix, r.message].filter(Boolean).join(' ')
+}
 const rawLog = computed(() => {
   const r = currentRow.value
   if (!r) return ''
   // 原封不动展示采集到的原文：K8s 容器日志在 log（CRI 原文，含多行堆栈），
-  // 传统 syslog/app_log 在 raw。两者都没有才退化为合成行。
-  return r.log || r.raw || `${r.time} ${r.level} ${r.source} [${r.host}] ${r.message}`
+  // 传统 syslog/app_log 在 raw。两者都没有才退化为正文/合成行。
+  return r.log || r.raw || r.message || composeLogLine(r)
 })
 // 上下文条目同样取采集原文
 function ctxLine(c) {
-  return c.log || c.raw || `${c.time} ${c.level} ${c.source} [${c.host}] ${c.message}`
+  return c.log || c.raw || composeLogLine(c)
 }
 
 // PQL（管道语法）结果
@@ -154,13 +160,39 @@ const pqlRows = ref([])
 // tenant 是平台虚拟维度（租户），值已由检索网关换回租户中文名，所以这里只需改列头。
 const PPL_COL_LABELS = {
   tenant: '租户', tenant_id: '租户', level: '级别', source: '来源', host: '主机',
-  status: '状态', traceId: 'traceId', message: '内容', raw: '原始日志',
+  status: '状态', traceId: 'traceId', message: '内容', raw: '原始日志', log: '日志原文',
   log_class: '日志类型', source_type: '来源类型', app: '应用', instance: '实例',
-  facility: '设施', severity: '严重度',
-  '@timestamp': '时间', 'count()': '条数',
+  facility: '设施', severity: '严重度', ingested_at: '入库时间', collector_id: '采集器',
+  '@timestamp': '时间', 'count()': '条数', 'count(*)': '条数',
 }
 const pplColLabel = (c) => PPL_COL_LABELS[c] || c
+// 长文本字段不截断：直接在单元格内换行展示，不再依赖悬浮提示。
+const PPL_LONG_COLS = new Set(['message', 'raw', 'log', 'content', 'body', 'msg', 'error', 'exception', 'stack'])
+function isPplLongCol(c) {
+  return PPL_LONG_COLS.has(String(c || '').toLowerCase())
+}
+function pplColMinWidth(c) {
+  if (isPplLongCol(c)) return 320
+  if (c === '@timestamp') return 180
+  if (c === 'traceId') return 150
+  if (String(c).startsWith('count')) return 80
+  return 110
+}
 const pqlLoading = ref(false)
+
+// PPL 结果的空列治理：某列在当前结果集里没有任何值时，表格与详情都不展示。
+// 数据并没有丢——「复制整行 JSON」仍然包含全部字段，便于排查字段缺失。
+function hasValue(v) {
+  if (v === null || v === undefined || v === '') return false
+  if (Array.isArray(v)) return v.length > 0
+  if (typeof v === 'object') return Object.keys(v).length > 0
+  return true
+}
+const pplVisibleCols = computed(() => {
+  if (!pqlRows.value.length) return pqlCols.value
+  return pqlCols.value.filter((c) => pqlRows.value.some((r) => hasValue(r[c])))
+})
+const pplHiddenCount = computed(() => pqlCols.value.length - pplVisibleCols.value.length)
 
 // 是否为 PPL 模式：输入含管道符 | 即走 OpenSearch /_plugins/_pql
 const isPql = computed(() => /\|/.test(splText.value))
@@ -282,6 +314,87 @@ async function runPql() {
 async function doSearch() {
   if (isPql.value) await runPql()
   else await runQuery()
+}
+
+// ---- PPL 结果单行详情 ----
+// PPL 返回的是 schema + datarows 的扁平结构，字段集合由查询语句决定（可能是原始日志行，
+// 也可能是 stats 聚合结果），所以详情按当前结果的列动态渲染，不套死日志字段模型。
+const pplDetailVisible = ref(false)
+const pplDetailRow = ref(null)
+const pplRawLog = computed(() => {
+  const r = pplDetailRow.value
+  if (!r) return ''
+  return r.log || r.raw || ''
+})
+// 原始日志缺失时（部分业务日志只有解析后的 message）退回正文，详情不留空
+const pplBodyText = computed(() => pplRawLog.value || pplDetailRow.value?.message || '')
+
+function fmtLocalTime(d) {
+  const p = (n, w = 2) => String(n).padStart(w, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} `
+    + `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${p(d.getMilliseconds(), 3)}`
+}
+// OpenSearch 的 @timestamp 是 UTC 文本（形如 2026-11-22 07:33:07.451，不带时区）。
+// 直接 new Date() 会按浏览器本地时区解释，导致比原始日志少 8 小时；这里统一按 UTC 解析。
+function parsePplTimestamp(v) {
+  if (typeof v === 'number') return v
+  if (v === null || v === undefined || v === '') return null
+  let s = String(v).trim()
+  if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(\.\d+)?$/.test(s)) {
+    s = s.replace(' ', 'T') + 'Z'
+  }
+  const ms = Date.parse(s)
+  return Number.isNaN(ms) ? null : ms
+}
+function fmtPplValue(key, v) {
+  if (v === null || v === undefined || v === '') return '—'
+  if (key === '@timestamp') {
+    const ms = parsePplTimestamp(v)
+    if (ms !== null) return `${fmtLocalTime(new Date(ms))}（本地）`
+  }
+  if (typeof v === 'object') return JSON.stringify(v)
+  return String(v)
+}
+const pplDetailEntries = computed(() => {
+  const r = pplDetailRow.value
+  if (!r) return []
+  return pplVisibleCols.value.map((k) => ({ key: k, label: pplColLabel(k), value: fmtPplValue(k, r[k]) }))
+})
+
+function openPplDetail(row) {
+  if (!row) return
+  // PPL 行只有 @timestamp，没有普通检索行里的 ts；转成 UTC ISO 后复用同一套上下文接口。
+  const ms = parsePplTimestamp(row.ts ?? row['@timestamp'] ?? row.time)
+  const anchor = {
+    ...row,
+    ts: ms === null ? null : new Date(ms).toISOString(),
+    time: row.time || (ms === null ? row['@timestamp'] : fmtLocalTime(new Date(ms))),
+  }
+  currentRow.value = anchor
+  pplDetailRow.value = anchor
+  pplDetailVisible.value = true
+  loadContext(anchor)
+}
+async function copyPplRow() {
+  const row = pplDetailRow.value
+  if (!row) return
+  const payload = {}
+  pqlCols.value.forEach((k) => { payload[k] = row[k] })
+  try {
+    await navigator.clipboard.writeText(JSON.stringify(payload, null, 2))
+    ElMessage.success('已复制整行 JSON')
+  } catch {
+    ElMessage.warning('复制失败，请手动选择字段')
+  }
+}
+async function copyPplRaw() {
+  if (!pplBodyText.value) return
+  try {
+    await navigator.clipboard.writeText(pplBodyText.value)
+    ElMessage.success('已复制原文')
+  } catch {
+    ElMessage.warning('复制失败，请手动选择原文')
+  }
 }
 
 function onChip(text) {
@@ -471,7 +584,7 @@ const moreAfterEnd = ref(false)
 const moreSameSource = ref(false)
 
 function moreLine(c) {
-  return c.log || c.raw || `${c.time} ${c.level} ${c.source} [${c.host}] ${c.message}`
+  return c.log || c.raw || composeLogLine(c)
 }
 
 async function fetchMoreLines() {
@@ -813,9 +926,36 @@ watch(
           </div>
           <div class="batch-bar">
             <span><el-tag size="small" type="warning" effect="plain">PQL 分析模式</el-tag> 管道语法结果</span>
+            <span v-if="pplHiddenCount" class="hint">已隐藏 {{ pplHiddenCount }} 个空列</span>
           </div>
-          <el-table v-if="pqlResult" :data="pqlRows" size="small" stripe max-height="480" v-loading="pqlLoading">
-            <el-table-column v-for="c in pqlCols" :key="c" :prop="c" :label="pplColLabel(c)" show-overflow-tooltip />
+          <el-table
+            v-if="pqlResult"
+            :data="pqlRows"
+            size="small"
+            stripe
+            max-height="480"
+            v-loading="pqlLoading"
+            style="cursor: pointer"
+            @row-click="openPplDetail"
+          >
+            <el-table-column
+              v-for="c in pplVisibleCols"
+              :key="c"
+              :prop="c"
+              :label="pplColLabel(c)"
+              :min-width="pplColMinWidth(c)"
+              :show-overflow-tooltip="!isPplLongCol(c)"
+            >
+              <template #default="{ row }">
+                <span v-if="isPplLongCol(c)" class="ppl-wrap-cell">{{ fmtPplValue(c, row[c]) }}</span>
+                <span v-else>{{ row[c] }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="操作" width="72" fixed="right">
+              <template #default="{ row }">
+                <el-button link type="primary" size="small" @click.stop="openPplDetail(row)">详情</el-button>
+              </template>
+            </el-table-column>
           </el-table>
           <el-empty v-else description="输入含 | 的 PPL 语句后执行，例如 source=logs-i6000 | stats count() by level" />
         </template>
@@ -864,7 +1004,11 @@ watch(
             <el-table-column v-if="isVisible('traceId')" prop="traceId" label="traceId" width="170" />
             <el-table-column v-if="isVisible('status')" prop="status" label="状态" width="80" />
             <el-table-column v-if="isVisible('tenant')" prop="tenant" label="租户" width="100" />
-            <el-table-column v-if="isVisible('message')" prop="message" label="内容" show-overflow-tooltip />
+            <el-table-column v-if="isVisible('message')" label="内容" min-width="280">
+              <template #default="{ row }">
+                <span class="message-cell">{{ row.message || row.raw || '—' }}</span>
+              </template>
+            </el-table-column>
             <el-table-column v-if="isVisible('raw')" label="原始日志" min-width="320">
               <template #default="{ row }">
                 <span class="raw-cell">{{ row.log || row.raw || row.message }}</span>
@@ -974,6 +1118,64 @@ watch(
       </template>
     </el-drawer>
 
+    <!-- PPL 结果详情：字段随查询结果动态渲染，兼容原始日志行与 stats 聚合行 -->
+    <el-drawer v-model="pplDetailVisible" title="PPL 结果详情" size="520px">
+      <template v-if="pplDetailRow">
+        <div class="ppl-detail-hint">
+          来自当前 PPL 结果集：{{ pplVisibleCols.length }} 个字段<template v-if="pplHiddenCount">（已隐藏 {{ pplHiddenCount }} 个全空列）</template>；「复制整行 JSON」仍包含全部 {{ pqlCols.length }} 个字段。
+        </div>
+        <el-descriptions :column="1" border>
+          <el-descriptions-item v-for="e in pplDetailEntries" :key="e.key" :label="e.label">
+            <span class="ppl-detail-val">{{ e.value }}</span>
+          </el-descriptions-item>
+        </el-descriptions>
+
+        <!-- 上下文：前 2 条（仅日志行有 @timestamp 时展示） -->
+        <div v-if="pplDetailRow.ts" class="ctx-section">
+          <div class="ctx-title-row">
+            <div class="ctx-title">上下文日志（前 2 条）</div>
+            <el-button link type="primary" size="small" @click="openMore">更多 ›</el-button>
+          </div>
+          <div v-if="ctxLoading" class="ctx-loading">加载中…</div>
+          <template v-else>
+            <div v-if="!ctxBefore.length" class="ctx-empty">无更早日志</div>
+            <div
+              v-for="(c, i) in ctxBefore"
+              :key="'pplb' + i"
+              class="ctx-line"
+              @click="openPplDetail(c)"
+            >{{ ctxLine(c) }}</div>
+          </template>
+        </div>
+
+        <div class="raw-section">
+          <div class="raw-title">{{ pplRawLog ? '原始日志' : '日志内容' }}</div>
+          <pre v-if="pplBodyText" class="raw-block"><span class="more-anchor-tag">当前日志</span>{{ pplBodyText }}</pre>
+          <div v-else class="ctx-empty">该行是统计/聚合结果，没有原始日志正文；上方字段就是完整结果。</div>
+        </div>
+
+        <!-- 上下文：后 2 条 -->
+        <div v-if="pplDetailRow.ts" class="ctx-section">
+          <div class="ctx-title">上下文日志（后 2 条）</div>
+          <div v-if="ctxLoading" class="ctx-loading">加载中…</div>
+          <template v-else>
+            <div v-if="!ctxAfter.length" class="ctx-empty">无更晚日志</div>
+            <div
+              v-for="(c, i) in ctxAfter"
+              :key="'ppla' + i"
+              class="ctx-line"
+              @click="openPplDetail(c)"
+            >{{ ctxLine(c) }}</div>
+          </template>
+        </div>
+      </template>
+      <template #footer>
+        <el-button @click="pplDetailVisible = false">关闭</el-button>
+        <el-button v-if="pplBodyText" @click="copyPplRaw">复制原文</el-button>
+        <el-button type="primary" @click="copyPplRow">复制整行 JSON</el-button>
+      </template>
+    </el-drawer>
+
     <!-- 更多上下文日志框：当前日志高亮，向上/向下滚动按需加载更多 -->
     <el-dialog
       v-model="moreVisible"
@@ -984,8 +1186,8 @@ watch(
       @opened="scrollToAnchor"
     >
       <div class="more-toolbar">
-        <el-checkbox v-model="moreSameSource" @change="onSameSourceChange">
-          仅同来源（{{ currentRow && (currentRow.sourceName || currentRow.source) || '-' }}）
+        <el-checkbox v-if="currentRow && currentRow.source" v-model="moreSameSource" @change="onSameSourceChange">
+          仅同来源（{{ currentRow.sourceName || currentRow.source }}）
         </el-checkbox>
         <div class="more-toolbar-right">
           <span class="more-tip">高亮行为当前日志 · 向上/向下滚动加载更多</span>
@@ -1106,11 +1308,16 @@ watch(
 .ctx-loading, .ctx-empty { font-size: 12px; color: var(--color-text-3); padding: 6px 0; }
 .ctx-line { font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace; font-size: 12px; line-height: 1.6; color: var(--color-text-1); background: #f5f7fa; border: 1px solid var(--color-border-1); border-radius: 4px; padding: 8px 10px; margin-bottom: 6px; cursor: pointer; white-space: pre-wrap; word-break: break-all; transition: background .15s; }
 .ctx-line:hover { background: var(--el-color-primary-light-9); border-color: var(--el-color-primary-light-7); }
+/* 列表里的内容列：直接换行展示，不截断、不靠悬浮提示 */
+.message-cell { display: block; white-space: pre-wrap; word-break: break-word; line-height: 1.55; font-size: 12px; color: var(--color-text-2); }
+.ppl-wrap-cell { display: block; white-space: pre-wrap; word-break: break-word; line-height: 1.5; font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace; font-size: 12px; }
 /* 列表里的原始日志列：保留换行，最多展示 4 行，完整内容进详情抽屉看 */
 .raw-cell { display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; white-space: pre-wrap; font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace; font-size: 12px; line-height: 1.5; }
 .raw-section { margin-top: 16px; }
 .raw-title { font-size: 13px; font-weight: 600; color: var(--color-text-1); margin-bottom: 8px; }
 .raw-block { background: #E6FCF8; border: 1px solid #03857E; border-radius: 4px; box-shadow: inset 3px 0 0 #03857E; padding: 12px 12px 12px 15px; font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace; font-size: 12px; line-height: 1.6; color: #1f2d3d; white-space: pre-wrap; word-break: break-all; margin: 0; }
+.ppl-detail-hint { font-size: 12px; color: var(--color-text-3); margin-bottom: 12px; line-height: 1.6; }
+.ppl-detail-val { font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace; font-size: 12px; line-height: 1.6; white-space: pre-wrap; word-break: break-all; }
 
 /* 更多上下文日志框 */
 .more-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
