@@ -31,7 +31,10 @@ const isLoginPage = computed(() => route.path === '/login')
 const groups = [
   {
     title: '概览',
-    items: [{ path: '/overview', title: '运行总览', icon: Odometer, resources: ['overview'] }],
+    items: [
+      { path: '/overview', title: '运行总览', icon: Odometer, resources: ['overview'] },
+      { path: '/monitor', title: '自监测管理', icon: Monitor, resources: ['monitor'] },
+    ],
   },
   {
     title: '日志分析',
@@ -102,7 +105,7 @@ const settingsLandingPath = computed(() => {
   return '/settings/storage'
 })
 const topTabs = computed(() => ([
-  { key: 'overview', label: '概览', path: '/overview', resources: ['overview'] },
+  { key: 'overview', label: '概览', path: '/overview', resources: ['overview', 'monitor'] },
   { key: 'search', label: '日志分析', path: '/search', resources: ['search'] },
   { key: 'alarms', label: '告警中心', path: '/alarms/events', resources: ['alarms'] },
   { key: 'data-sources', label: '数据接入', path: '/data-sources', resources: ['data'] },
@@ -115,7 +118,7 @@ const topTabs = computed(() => ([
 const visibleTopTabs = computed(() => topTabs.value.filter((t) => t.resources.some((r) => auth.has(r, 'view'))))
 
 function topKeyOf(path) {
-  if (path === '/overview') return 'overview'
+  if (path === '/overview' || path.startsWith('/monitor')) return 'overview'
   if (path.startsWith('/search') || path.startsWith('/dashboards')) return 'search'
   if (path.startsWith('/alarms')) return 'alarms'
   if (path.startsWith('/data-sources') || path.startsWith('/agents')) return 'data-sources'

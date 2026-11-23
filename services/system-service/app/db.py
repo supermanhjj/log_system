@@ -34,6 +34,7 @@ CST = timezone(timedelta(hours=8))
 # 权限资源与动作：前端菜单过滤、角色权限矩阵共用同一份定义
 PERMISSION_TREE: List[Dict[str, Any]] = [
     {"resource": "overview", "label": "运行总览", "actions": ["view"]},
+    {"resource": "monitor", "label": "自监测管理", "actions": ["view", "diagnose"]},
     {"resource": "search", "label": "日志检索", "actions": ["view", "export"]},
     {"resource": "dashboards", "label": "仪表盘", "actions": ["view", "update"]},
     {"resource": "alarms", "label": "告警中心", "actions": ["view", "update"]},
@@ -68,7 +69,7 @@ ROLE_SEEDS = [
         "ops_duty",
         "运维值班",
         "检索 · 告警处置 · 仪表盘查看",
-        ["overview:view", "search:view", "search:export", "dashboards:view",
+        ["overview:view", "monitor:view", "monitor:diagnose", "search:view", "search:export", "dashboards:view",
          "alarms:view", "alarms:update", "data:view", "agents:view", "ai:view",
          "storage:view"],
         2,
@@ -77,7 +78,7 @@ ROLE_SEEDS = [
         "viewer",
         "只读用户",
         "检索查看 · 仪表盘查看（只读）",
-        ["overview:view", "search:view", "dashboards:view", "alarms:view",
+        ["overview:view", "monitor:view", "search:view", "dashboards:view", "alarms:view",
          "data:view", "agents:view"],
         3,
     ),

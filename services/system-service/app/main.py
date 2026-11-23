@@ -49,6 +49,7 @@ from .security import (
     perms_for_role,
     require,
 )
+from .monitor import router as monitor_router
 from .storage import router as storage_router
 
 app = FastAPI(title="system-service", version="0.3.0")
@@ -59,6 +60,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(storage_router)
+app.include_router(monitor_router)
 
 ACCOUNT_RULE = "账号由小写字母开头，可含小写字母、数字与下划线，长度 3-32"
 
@@ -127,7 +129,8 @@ def root():
         "version": "0.3.0",
         "scope": "平台管理：用户 / 角色权限 / 系统参数 / 审计日志 / 日志空间",
         "endpoints": ["/meta", "/users", "/tenants", "/roles", "/params", "/audit",
-                      "/storage/capacity", "/storage/config", "/storage/indexes", "/storage/quotas"],
+                      "/storage/capacity", "/storage/config", "/storage/indexes", "/storage/quotas",
+                      "/monitor/health", "/monitor/topology", "/monitor/collectors", "/monitor/diagnose"],
     }
 
 
