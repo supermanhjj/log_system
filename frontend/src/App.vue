@@ -304,7 +304,7 @@ async function onUserCommand(cmd) {
 </template>
 
 <style scoped>
-.layout { display: flex; flex-direction: column; height: 100%; }
+.layout { display: flex; flex-direction: column; height: 100%; min-height: 0; overflow: hidden; }
 .topbar {
   height: 56px;
   background: var(--nav-bg);
@@ -391,7 +391,7 @@ async function onUserCommand(cmd) {
 }
 .user-caret { font-size: 12px; opacity: 0.7; }
 
-.body { display: flex; flex: 1; min-height: 0; }
+.body { display: flex; flex: 1; min-height: 0; overflow: hidden; }
 
 /* 左侧菜单：深墨绿背景 + 分组 + 整行选中高亮（原型样式） */
 .sidebar {
@@ -401,6 +401,9 @@ async function onUserCommand(cmd) {
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 .sidebar__group { margin-bottom: 4px; }
 .sidebar__group-title {
