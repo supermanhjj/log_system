@@ -1,4 +1,4 @@
-// system-service 自监测管理：组件健康 / 采集链路诊断 / 全链路拓扑
+// system-service 自监测总览：组件健康 / 采集链路诊断 / 全链路拓扑
 import axios from 'axios'
 import { attachAuth } from './http'
 

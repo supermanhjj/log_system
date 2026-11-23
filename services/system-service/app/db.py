@@ -34,7 +34,7 @@ CST = timezone(timedelta(hours=8))
 # 权限资源与动作：前端菜单过滤、角色权限矩阵共用同一份定义
 PERMISSION_TREE: List[Dict[str, Any]] = [
     {"resource": "overview", "label": "运行总览", "actions": ["view"]},
-    {"resource": "monitor", "label": "自监测管理", "actions": ["view", "diagnose"]},
+    {"resource": "monitor", "label": "自监测总览", "actions": ["view", "diagnose"]},
     {"resource": "search", "label": "日志检索", "actions": ["view", "export"]},
     {"resource": "dashboards", "label": "仪表盘", "actions": ["view", "update"]},
     {"resource": "alarms", "label": "告警中心", "actions": ["view", "update"]},

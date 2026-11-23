@@ -31,7 +31,7 @@ const routes = [
   { path: '/', redirect: '/search' },
   { path: '/search', name: 'search', component: SearchView, meta: { title: '日志检索', perm: ['search', 'view'] } },
   { path: '/overview', name: 'overview', component: OverviewView, meta: { title: '运行总览', perm: ['overview', 'view'] } },
-  { path: '/monitor', name: 'monitor', component: SelfMonitor, meta: { title: '自监测管理', perm: ['monitor', 'view'] } },
+  { path: '/monitor', name: 'monitor', component: SelfMonitor, meta: { title: '自监测总览', perm: ['monitor', 'view'] } },
   { path: '/dashboards', name: 'dashboards', component: DashboardsView, meta: { title: '仪表盘', perm: ['dashboards', 'view'] } },
   { path: '/dashboards/:id', name: 'dashboard-detail', component: DashboardDetailView, meta: { title: '看板详情', perm: ['dashboards', 'view'] } },
   { path: '/alarms/events', name: 'alarm-events', component: AlarmEvents, meta: { title: '告警事件', perm: ['alarms', 'view'] } },

@@ -33,7 +33,7 @@ const groups = [
     title: '概览',
     items: [
       { path: '/overview', title: '运行总览', icon: Odometer, resources: ['overview'] },
-      { path: '/monitor', title: '自监测管理', icon: Monitor, resources: ['monitor'] },
+      { path: '/monitor', title: '自监测总览', icon: Monitor, resources: ['monitor'] },
     ],
   },
   {
