@@ -25,6 +25,9 @@ const diagTenant = ref('')
 const topoEl = ref(null)
 const topoBox = ref({ W: 1100, H: 420 })
 let topoRO = null
+const refreshInFlight = ref(false)
+let autoTimer = null
+const AUTO_REFRESH_MS = 30000
 
 const canDiagnose = computed(() => auth.has('monitor', 'diagnose'))
 const tenantLabel = computed(() => app.tenants.find((t) => t.value === app.tenant)?.label || app.tenant)
@@ -58,29 +61,51 @@ const healthText = computed(() => {
   return `正常 ${s.ok}/${s.total} · 警告 ${s.warn} · 异常 ${s.fail}`
 })
 
-async function loadHealth() {
+async function loadHealth(silent = false) {
   try {
     health.value = await getMonitorHealth()
   } catch (e) {
-    ElMessage.error(`组件健康加载失败：${e.response?.data?.detail || e.message}`)
+    if (!silent) ElMessage.error(`组件健康加载失败：${e.response?.data?.detail || e.message}`)
   }
 }
 
-async function loadTopology() {
+async function loadTopology(silent = false) {
   try {
     topology.value = await getMonitorTopology(app.tenant)
   } catch (e) {
-    ElMessage.error(`全链路状态加载失败：${e.response?.data?.detail || e.message}`)
+    if (!silent) ElMessage.error(`全链路状态加载失败：${e.response?.data?.detail || e.message}`)
   }
 }
 
-async function loadAll() {
-  loading.value = true
+async function loadAll(opts = {}) {
+  const silent = opts?.silent === true
+  if (refreshInFlight.value) return
+  refreshInFlight.value = true
+  if (!silent) loading.value = true
   try {
-    await Promise.all([loadHealth(), loadTopology()])
+    await Promise.all([loadHealth(silent), loadTopology(silent)])
   } finally {
-    loading.value = false
+    refreshInFlight.value = false
+    if (!silent) loading.value = false
   }
+}
+
+function stopAutoRefresh() {
+  if (autoTimer) {
+    clearInterval(autoTimer)
+    autoTimer = null
+  }
+}
+
+function startAutoRefresh() {
+  stopAutoRefresh()
+  autoTimer = setInterval(() => {
+    if (document.visibilityState === 'visible') loadAll({ silent: true })
+  }, AUTO_REFRESH_MS)
+}
+
+function onVisibilityChange() {
+  if (document.visibilityState === 'visible') loadAll({ silent: true })
 }
 
 async function loadDiagnoseCollectors() {
@@ -165,8 +190,12 @@ onMounted(async () => {
     topoRO = new ResizeObserver(syncTopoBox)
     topoRO.observe(topoEl.value)
   }
+  startAutoRefresh()
+  document.addEventListener('visibilitychange', onVisibilityChange)
 })
 onBeforeUnmount(() => {
+  stopAutoRefresh()
+  document.removeEventListener('visibilitychange', onVisibilityChange)
   topoRO?.disconnect()
   topoRO = null
 })
@@ -249,7 +278,7 @@ const topoLayout = computed(() => {
       <div class="head-bar">
         <div>
           <h1 class="title">自监测总览</h1>
-          <p class="desc">全链路状态与组件健康 · 当前：{{ tenantLabel }} · 更新于 {{ topology?.updatedAt || '—' }}</p>
+          <p class="desc">全链路状态与组件健康 · 当前：{{ tenantLabel }} · 更新于 {{ topology?.updatedAt || '—' }} · 每 30 秒自动刷新</p>
         </div>
         <div class="head-actions">
           <el-button :icon="Refresh" :loading="loading" @click="loadAll">刷新</el-button>
