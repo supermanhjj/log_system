@@ -26,6 +26,7 @@ const topoEl = ref(null)
 const topoBox = ref({ W: 1100, H: 420 })
 let topoRO = null
 const refreshInFlight = ref(false)
+const selectedNodeId = ref(null)
 let autoTimer = null
 const AUTO_REFRESH_MS = 30000
 
@@ -180,7 +181,10 @@ watch(diagTenant, async () => {
   diagnosis.value = null
   await loadDiagnoseCollectors()
 })
-watch(() => app.tenant, loadAll)
+watch(() => app.tenant, () => {
+  selectedNodeId.value = null
+  loadAll()
+})
 watch(topology, () => nextTick(syncTopoBox))
 onMounted(async () => {
   await loadAll()
@@ -254,6 +258,9 @@ const topoLayout = computed(() => {
     const len = Math.hypot(dx, dy) || 1
     return {
       ...e,
+      key: `${e.source}->${e.target}`,
+      forward: to.x >= from.x,
+      flowDelay: `${((Math.min(from.x, to.x) / W) * 1.8).toFixed(2)}s`,
       x1: from.x + (dx / len) * from.r,
       y1: from.y + (dy / len) * from.r,
       x2: to.x - (dx / len) * (to.r + 3),
@@ -267,6 +274,31 @@ const topoLayout = computed(() => {
     guides: topoLayerTitle.map((title, idx) => ({ title, x: left + idx * ((right - left) / 8) })),
   }
 })
+
+const selectedNode = computed(() =>
+  topoLayout.value?.nodes.find((n) => n.id === selectedNodeId.value) || null,
+)
+const relatedNodeIds = computed(() => {
+  const ids = new Set()
+  if (!selectedNodeId.value) return ids
+  ids.add(selectedNodeId.value)
+  ;(topology.value?.edges || []).forEach((e) => {
+    if (e.source === selectedNodeId.value) ids.add(e.target)
+    if (e.target === selectedNodeId.value) ids.add(e.source)
+  })
+  return ids
+})
+const relatedEdgeKeys = computed(() => {
+  const keys = new Set()
+  if (!selectedNodeId.value) return keys
+  ;(topology.value?.edges || []).forEach((e) => {
+    if (e.source === selectedNodeId.value || e.target === selectedNodeId.value) {
+      keys.add(`${e.source}->${e.target}`)
+    }
+  })
+  return keys
+})
+const selectedNeighborCount = computed(() => Math.max(0, relatedNodeIds.value.size - 1))
 </script>
 
 <template>
@@ -342,7 +374,10 @@ const topoLayout = computed(() => {
           <span><i class="legend-dot fail" />异常</span>
           <span><i class="legend-dot unknown" />未知</span>
         </div>
-        <span class="hint">节点颜色代表健康状态，连线颜色代表边界状态</span>
+        <span v-if="selectedNode" class="selected-hint">
+          已选 <b>{{ selectedNode.label }}</b> · 关联 {{ selectedNeighborCount }} 个节点 · 点击空白取消
+        </span>
+        <span v-else class="hint">节点颜色代表健康状态，点击节点查看关联；连线颜色代表边界状态</span>
       </div>
       <div v-if="attentionItems.length" class="attention-strip">
         <span class="attention-label">需关注</span>
@@ -355,7 +390,7 @@ const topoLayout = computed(() => {
         </div>
       </div>
       <div v-if="topoLayout" ref="topoEl" class="topo-scroll">
-        <svg class="topo-svg" :viewBox="`0 0 ${topoLayout.W} ${topoLayout.H}`" preserveAspectRatio="xMidYMid meet">
+        <svg class="topo-svg" :viewBox="`0 0 ${topoLayout.W} ${topoLayout.H}`" preserveAspectRatio="xMidYMid meet" @click="selectedNodeId = null">
           <defs>
             <marker id="topo-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
               <path d="M 0 0 L 10 5 L 0 10 z" fill="#7d97ae" opacity="0.8" />
@@ -368,12 +403,21 @@ const topoLayout = computed(() => {
           <g class="topo-edges">
             <line v-for="(e, i) in topoLayout.edges" :key="`${e.source}-${e.target}-${i}`"
                   :x1="e.x1" :y1="e.y1" :x2="e.x2" :y2="e.y2"
-                  :stroke="e.color" marker-end="url(#topo-arrow)" class="edge">
+                  :stroke="e.color" marker-end="url(#topo-arrow)" class="edge"
+                  :class="{ 'is-focus': selectedNodeId && relatedEdgeKeys.has(e.key), 'is-muted': selectedNodeId && !relatedEdgeKeys.has(e.key) }">
               <title>{{ e.title }}</title>
             </line>
+            <line v-for="(e, i) in topoLayout.edges" v-show="e.forward && (!selectedNodeId || relatedEdgeKeys.has(e.key))"
+                  :key="`flow-${e.source}-${e.target}-${i}`"
+                  :x1="e.x1" :y1="e.y1" :x2="e.x2" :y2="e.y2"
+                  pathLength="100" class="flow-line"
+                  :style="{ '--flow-delay': e.flowDelay, '--flow-color': e.color }" />
           </g>
           <g class="topo-nodes">
-            <g v-for="n in topoLayout.nodes" :key="n.id" :transform="`translate(${n.x}, ${n.y})`" class="node">
+            <g v-for="n in topoLayout.nodes" :key="n.id" :transform="`translate(${n.x}, ${n.y})`" class="node"
+               :class="{ 'is-active': selectedNodeId === n.id, 'is-related': selectedNodeId && selectedNodeId !== n.id && relatedNodeIds.has(n.id), 'is-dimmed': selectedNodeId && !relatedNodeIds.has(n.id) }"
+               @click.stop="selectedNodeId = selectedNodeId === n.id ? null : n.id">
+              <circle v-if="selectedNodeId === n.id" class="node-halo" :r="n.r + 7" fill="none" stroke="#03857E" stroke-width="2" />
               <circle :r="n.r" :fill="n.color" />
               <text :y="n.r + 14" text-anchor="middle">{{ n.label }}</text>
               <title>{{ n.title }}</title>
@@ -513,6 +557,8 @@ const topoLayout = computed(() => {
 .card-meta { display: flex; align-items: center; gap: 14px; font-size: 12px; color: var(--color-text-3); flex-wrap: wrap; }
 .card-meta b { color: var(--color-text-1); font-variant-numeric: tabular-nums; }
 .hint { font-size: 12px; color: var(--color-text-3); }
+.selected-hint { font-size: 12px; color: #0B5E63; background: #EAF7F5; border: 1px solid #CDE9E5; border-radius: 10px; padding: 2px 8px; }
+.selected-hint b { font-weight: 600; }
 .topo-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; flex-wrap: wrap; }
 .attention-strip { display: flex; align-items: flex-start; gap: 10px; padding: 8px 10px; margin-bottom: 8px; background: #FFFBF2; border: 1px solid #F1DDBA; border-radius: 4px; font-size: 12px; }
 .attention-label { flex: 0 0 auto; color: #8A5A12; font-weight: 600; }
@@ -530,11 +576,43 @@ const topoLayout = computed(() => {
 .topo-svg { display: block; width: 100%; height: 360px; }
 .topo-guides line { stroke: #BCCBDA; stroke-width: 1.2; stroke-dasharray: 5 5; }
 .topo-guides text { fill: #6F8499; font-size: 11px; }
-.edge { stroke-width: 1.5; opacity: .58; transition: opacity .15s ease, stroke-width .15s ease; }
+.edge { stroke-width: 1.5; opacity: .58; transition: opacity .18s ease, stroke-width .18s ease; }
 .edge:hover { opacity: 1; stroke-width: 3; }
-.node circle { stroke: #fff; stroke-width: 2.5; filter: drop-shadow(0 3px 4px rgba(15, 42, 74, .18)); }
+.edge.is-focus { opacity: 1; stroke-width: 2.6; }
+.edge.is-muted { opacity: .08; stroke-width: 1; }
+.flow-line {
+  stroke: rgba(255, 255, 255, .98);
+  stroke-width: 3;
+  stroke-dasharray: 10 90;
+  stroke-dashoffset: 0;
+  stroke-linecap: round;
+  opacity: 0;
+  pointer-events: none;
+  animation: flowDash 6s linear infinite;
+  animation-delay: var(--flow-delay);
+  filter: drop-shadow(0 0 3px var(--flow-color));
+}
+@keyframes flowDash {
+  0% { stroke-dashoffset: 0; opacity: 0; }
+  8% { opacity: .95; }
+  46% { stroke-dashoffset: -100; opacity: .95; }
+  54%, 100% { stroke-dashoffset: -100; opacity: 0; }
+}
+.node { cursor: pointer; transition: opacity .18s ease; }
+.node circle { stroke: #fff; stroke-width: 2.5; filter: drop-shadow(0 3px 4px rgba(15, 42, 74, .18)); transition: stroke .18s ease, stroke-width .18s ease, filter .18s ease; }
 .node:hover circle { stroke: #0B3B66; stroke-width: 3; }
-.node text { fill: #25435F; font-size: 10px; pointer-events: none; }
+.node text { fill: #25435F; font-size: 10px; pointer-events: none; transition: fill .18s ease, font-weight .18s ease; }
+.node.is-dimmed { opacity: .2; }
+.node.is-related { opacity: 1; }
+.node.is-related circle { stroke: #0B5E63; filter: drop-shadow(0 0 7px rgba(3, 133, 126, .4)); }
+.node.is-active { opacity: 1; }
+.node.is-active circle { stroke: #03857E; stroke-width: 3; filter: drop-shadow(0 0 10px rgba(3, 133, 126, .6)); }
+.node.is-active text { fill: #0B3B66; font-weight: 600; }
+.node .node-halo { stroke: #03857E; stroke-width: 2; filter: none; animation: haloPulse 1.6s ease-in-out infinite; }
+@keyframes haloPulse {
+  0%, 100% { opacity: .3; }
+  50% { opacity: 1; }
+}
 .chart-foot { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-top: 8px; font-size: 12px; color: var(--color-text-3); }
 .status-tag { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; padding: 2px 8px; border-radius: 10px; }
 .status-tag .dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
@@ -595,6 +673,10 @@ const topoLayout = computed(() => {
 .step-title { display: flex; align-items: center; gap: 8px; }
 .step-detail { margin-top: 4px; font-size: 12px; color: var(--color-text-2); line-height: 1.6; word-break: break-all; }
 .step-action { margin-top: 4px; font-size: 12px; color: #94651c; }
+@media (prefers-reduced-motion: reduce) {
+  .flow-line { animation: none; opacity: 0; }
+  .node .node-halo { animation: none; opacity: .8; }
+}
 @media (max-width: 1100px) {
   .page-head { padding: 12px 14px; }
   .head-bar { align-items: flex-start; }
