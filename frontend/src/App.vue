@@ -397,7 +397,7 @@ async function onUserCommand(cmd) {
 .sidebar {
   width: 210px;
   background: var(--nav-bg);
-  padding: 12px 0 0;
+  padding: 4px 0 0;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
@@ -407,7 +407,7 @@ async function onUserCommand(cmd) {
 }
 .sidebar__group { margin-bottom: 4px; }
 .sidebar__group-title {
-  padding: 16px 20px 8px;
+  padding: 16px 20px 6px;
   font-size: 12px;
   letter-spacing: 1px;
   color: rgba(255, 255, 255, 0.5);
@@ -416,7 +416,7 @@ async function onUserCommand(cmd) {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 11px 20px;
+  padding: 8px 20px;
   cursor: pointer;
   color: var(--nav-item-text);
   font-size: 14px;
@@ -441,4 +441,9 @@ async function onUserCommand(cmd) {
 
 /* 修改密码弹窗：标签「确认新密码」含必填星号较长，禁止换行避免错乱 */
 .pwd-form :deep(.el-form-item__label) { white-space: nowrap; }
+
+/* 低高度窗口压缩菜单行高，保证底部版本信息无需滚动即可看到 */
+@media (max-height: 880px) {
+  .sidebar__item { padding: 6px 20px; }
+}
 </style>
