@@ -108,13 +108,17 @@ def _service_item(item) -> Dict[str, Any]:
     return _item(key, name, group, status, detail, res["latencyMs"], kind)
 
 
-def _item(key, name, group, status, detail, latency, kind, **extra) -> Dict[str, Any]:
-    return {
+def _item(key, name, group, status, detail, latency, kind, reason=None, **extra) -> Dict[str, Any]:
+    data = {
         "id": key, "name": name, "group": group,
         "status": status, "statusText": STATUS_LABEL.get(status, status),
         "detail": detail, "latencyMs": latency, "kind": kind,
         **extra,
     }
+    if reason is None and status in ("warn", "fail"):
+        reason = detail
+    data["reason"] = reason or ""
+    return data
 
 
 def _data_item(key, name, group, status, detail, latency, **extra) -> Dict[str, Any]:
@@ -135,12 +139,46 @@ def _check_os() -> Dict[str, Any]:
     res = _http_json(f"{OPENSEARCH_URL}/_cluster/health", auth=_os_auth(), timeout=2.5)
     if not res["ok"]:
         return _data_item("os", "OpenSearch", "数据层", "fail",
-                          f"集群探活失败：{res['error'] or res['code']}", res["latencyMs"])
+                          f"集群探活失败：{res['error'] or res['code']}", res["latencyMs"],
+                          reason=f"集群探活失败：{res['error'] or res['code']}")
     payload = res["payload"] if isinstance(res["payload"], dict) else {}
     color = str(payload.get("status") or "").lower()
     status = {"green": "ok", "yellow": "warn", "red": "fail"}.get(color, "warn")
-    detail = f"集群 {color or '未知'}，节点 {payload.get('number_of_nodes', '—')}，主分片 {payload.get('active_primary_shards', '—')}"
-    return _data_item("os", "OpenSearch", "数据层", status, detail, res["latencyMs"], clusterStatus=color)
+    nodes = payload.get("number_of_nodes", "—")
+    primaries = payload.get("active_primary_shards", "—")
+    unassigned = int(payload.get("unassigned_shards") or 0)
+    reason = ""
+    if status == "warn":
+        explain = []
+        shards = _http_json(
+            f"{OPENSEARCH_URL}/_cat/shards?format=json&h=index,prirep,state,unassigned.reason",
+            auth=_os_auth(), timeout=2.5,
+        )
+        if shards["ok"] and isinstance(shards["payload"], list):
+            shard_reasons = {
+                str(x.get("unassigned.reason"))
+                for x in shards["payload"]
+                if str(x.get("state") or "").upper() == "UNASSIGNED" and x.get("unassigned.reason")
+            }
+            mapping = {
+                "CLUSTER_RECOVERED": "集群恢复后副本待重新分配",
+                "REPLICA_NOT_ASSIGNED": "副本没有可用节点承载",
+                "ALLOCATION_FAILED": "分片分配失败",
+                "NODE_LEFT": "节点离开导致副本待分配",
+            }
+            explain = [mapping.get(x, x) for x in sorted(shard_reasons)]
+        reason = f"{unassigned} 个副本分片未分配" if unassigned else "存在副本分片未分配"
+        if explain:
+            reason += f"（{'；'.join(explain)}）"
+        reason += f"；当前仅 {nodes} 个节点，没有额外节点承载副本，主分片 {primaries} 个正常"
+        detail = f"集群 yellow，主分片 {primaries} 个正常，读写不受影响"
+    elif status == "fail":
+        reason = "存在未分配的主分片，部分索引数据不完整"
+        detail = f"集群 red，节点 {nodes}，主分片 {primaries}，未分配分片 {unassigned}"
+    else:
+        detail = f"集群 green，节点 {nodes}，主分片 {primaries}"
+    return _data_item("os", "OpenSearch", "数据层", status, detail, res["latencyMs"],
+                      reason=reason, clusterStatus=color)
 
 
 def _check_kafka() -> Dict[str, Any]:
@@ -358,7 +396,8 @@ def build_topology(tenant: str) -> Dict[str, Any]:
     ):
         h = health_map.get(sid)
         if h:
-            add_node(sid, h["name"], layer, cat, h["status"], h["statusText"], {"detail": h["detail"]})
+            add_node(sid, h["name"], layer, cat, h["status"], h["statusText"],
+                     {"detail": h["detail"], "reason": h.get("reason", "")})
         else:
             add_node(sid, label, layer, cat, "unknown", "未探活", {})
 
@@ -398,7 +437,8 @@ def build_topology(tenant: str) -> Dict[str, Any]:
     if storage_mode == "kafka":
         edge("ingest", "kafka", "写入缓冲", f"近15分钟 {recent['total']} 条")
         edge("kafka", "flink", "流式解析")
-        edge("flink", "os", "写入索引")
+        edge("flink", "os", "写入索引", f"近15分钟 {recent['total']} 条")
+        edge("flink", "ch", "聚合写入", f"近15分钟 {recent['total']} 条")
     else:
         edge("ingest", "os", "直接写入", f"近15分钟 {recent['total']} 条")
     edge("ingest", "pg", "台账/审计")

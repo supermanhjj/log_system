@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Refresh, Link } from '@element-plus/icons-vue'
 import { useAppStore } from '../stores/app'
@@ -22,10 +22,16 @@ const diagnosis = ref(null)
 const selectedHost = ref('')
 const diagVisible = ref(false)
 const diagTenant = ref('')
+const topoEl = ref(null)
+const topoBox = ref({ W: 1100, H: 420 })
+let topoRO = null
 
 const canDiagnose = computed(() => auth.has('monitor', 'diagnose'))
 const tenantLabel = computed(() => app.tenants.find((t) => t.value === app.tenant)?.label || app.tenant)
 const realTenants = computed(() => app.tenants.filter((t) => t.value !== 'all'))
+const attentionItems = computed(() =>
+  (health.value?.items || []).filter((it) => it.status === 'warn' || it.status === 'fail'),
+)
 const healthGroups = computed(() => {
   if (!health.value) return []
   const groups = {}
@@ -138,12 +144,32 @@ async function openDiagnose() {
   await runDiagnose()
 }
 
+function syncTopoBox() {
+  const cw = topoEl.value?.clientWidth || 0
+  const ch = topoEl.value?.clientHeight || 360
+  if (!cw || !ch) return
+  topoBox.value = { W: Math.max(700, Math.round((420 * cw) / ch)), H: 420 }
+}
+
 watch(diagTenant, async () => {
   diagnosis.value = null
   await loadDiagnoseCollectors()
 })
 watch(() => app.tenant, loadAll)
-onMounted(loadAll)
+watch(topology, () => nextTick(syncTopoBox))
+onMounted(async () => {
+  await loadAll()
+  await nextTick()
+  syncTopoBox()
+  if (topoEl.value) {
+    topoRO = new ResizeObserver(syncTopoBox)
+    topoRO.observe(topoEl.value)
+  }
+})
+onBeforeUnmount(() => {
+  topoRO?.disconnect()
+  topoRO = null
+})
 
 const topoLayer = {
   collector: 0,
@@ -163,10 +189,10 @@ const topoColor = { ok: '#1f9d55', warn: '#d69e2e', fail: '#c53030', unknown: '#
 
 const topoLayout = computed(() => {
   if (!topology.value) return null
-  const W = 760
-  const H = 420
-  const left = 36
-  const right = 700
+  const W = topoBox.value.W
+  const H = topoBox.value.H
+  const left = 110
+  const right = W - 110
   const layers = {}
   topology.value.nodes.forEach((n) => {
     const idx = topoLayer[n.layer] ?? 9
@@ -182,7 +208,6 @@ const topoLayout = computed(() => {
       const r = n.layer === 'web' ? 24 : (n.layer === 'storage' ? 20 : (n.layer === 'collector' ? 14 : 17))
       nodes.push({
         ...n, x, y, r,
-        short: n.label.length > 9 ? n.label.slice(0, 8) + '…' : n.label,
         color: topoColor[n.status] || topoColor.unknown,
         title: `${n.label} · ${statusMeta[n.status]?.text || n.statusText}${Object.entries(n.meta || {})
           .filter(([, v]) => v !== null && v !== undefined && v !== '')
@@ -235,6 +260,41 @@ const topoLayout = computed(() => {
       </div>
     </div>
 
+    <div class="stat-grid">
+      <div class="stat-card">
+        <div class="stat-label">组件健康</div>
+        <div class="stat-value">
+          <b class="stat-num" :class="{ 'is-warn': health?.summary?.warn }">{{ health?.summary?.ok || 0 }}/{{ health?.summary?.total || 0 }}</b>
+          <span class="stat-unit">正常</span>
+        </div>
+        <div class="stat-foot">异常 {{ health?.summary?.fail || 0 }} · 警告 {{ health?.summary?.warn || 0 }}</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">采集器在线</div>
+        <div class="stat-value">
+          <b class="stat-num">{{ topology?.summary?.online || 0 }}/{{ topology?.summary?.collectors || 0 }}</b>
+          <span class="stat-unit">台</span>
+        </div>
+        <div class="stat-foot">离线 {{ topology?.summary?.offline || 0 }} 台</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">近 15 分钟写入</div>
+        <div class="stat-value">
+          <b class="stat-num">{{ (topology?.summary?.recent15m || 0).toLocaleString() }}</b>
+          <span class="stat-unit">条</span>
+        </div>
+        <div class="stat-foot">按 {{ tenantLabel }} 聚合</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">链路节点</div>
+        <div class="stat-value">
+          <b class="stat-num">{{ topology?.summary?.nodes || 0 }}</b>
+          <span class="stat-unit">个</span>
+        </div>
+        <div class="stat-foot">连接 {{ topology?.summary?.edges || 0 }} 条</div>
+      </div>
+    </div>
+
     <el-card shadow="never" class="card">
       <template #header>
         <div class="card-head">
@@ -255,7 +315,17 @@ const topoLayout = computed(() => {
         </div>
         <span class="hint">节点颜色代表健康状态，连线颜色代表边界状态</span>
       </div>
-      <div v-if="topoLayout" class="topo-scroll">
+      <div v-if="attentionItems.length" class="attention-strip">
+        <span class="attention-label">需关注</span>
+        <div class="attention-list">
+          <span v-for="it in attentionItems" :key="it.id" class="attention-item">
+            <i class="state-dot" :class="it.status" />
+            <b>{{ it.name }}</b>
+            <span>{{ it.reason || it.detail }}</span>
+          </span>
+        </div>
+      </div>
+      <div v-if="topoLayout" ref="topoEl" class="topo-scroll">
         <svg class="topo-svg" :viewBox="`0 0 ${topoLayout.W} ${topoLayout.H}`" preserveAspectRatio="xMidYMid meet">
           <defs>
             <marker id="topo-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
@@ -276,7 +346,7 @@ const topoLayout = computed(() => {
           <g class="topo-nodes">
             <g v-for="n in topoLayout.nodes" :key="n.id" :transform="`translate(${n.x}, ${n.y})`" class="node">
               <circle :r="n.r" :fill="n.color" />
-              <text :y="n.r + 14" text-anchor="middle">{{ n.short }}</text>
+              <text :y="n.r + 14" text-anchor="middle">{{ n.label }}</text>
               <title>{{ n.title }}</title>
             </g>
           </g>
@@ -315,6 +385,7 @@ const topoLayout = computed(() => {
                   <span class="state-dot" :class="it.status" />{{ it.name }}
                 </div>
                 <div class="health-detail">{{ it.detail }}</div>
+                <div v-if="it.status !== 'ok' && it.reason" class="health-reason">原因：{{ it.reason }}</div>
               </div>
               <div class="health-right">
                 <el-tag size="small" effect="light" :type="tagType(it.status)">{{ it.statusText }}</el-tag>
@@ -397,6 +468,14 @@ const topoLayout = computed(() => {
 .title { font-size: 18px; font-weight: 600; color: var(--color-text-1); margin: 0; }
 .desc { font-size: 13px; color: var(--color-text-3); margin: 4px 0 0; }
 .head-actions { display: flex; gap: 8px; }
+.stat-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.stat-card { background: #fff; border: 1px solid var(--color-border-1); border-radius: 4px; padding: 14px 18px; min-width: 0; }
+.stat-label { font-size: 13px; color: var(--color-text-3); }
+.stat-value { display: flex; align-items: baseline; gap: 6px; margin-top: 8px; }
+.stat-num { font-size: 26px; line-height: 1.1; font-weight: 600; color: #1F3A56; font-variant-numeric: tabular-nums; }
+.stat-num.is-warn { color: #C9861A; }
+.stat-unit { font-size: 13px; color: var(--color-text-3); }
+.stat-foot { margin-top: 6px; font-size: 12px; color: var(--color-text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .card { overflow: visible; }
 .card :deep(.el-card__header) { padding: 12px 16px; border-bottom: 1px solid var(--color-border-1); }
 .card :deep(.el-card__body) { padding: 12px 16px 14px; }
@@ -406,6 +485,11 @@ const topoLayout = computed(() => {
 .card-meta b { color: var(--color-text-1); font-variant-numeric: tabular-nums; }
 .hint { font-size: 12px; color: var(--color-text-3); }
 .topo-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; flex-wrap: wrap; }
+.attention-strip { display: flex; align-items: flex-start; gap: 10px; padding: 8px 10px; margin-bottom: 8px; background: #FFFBF2; border: 1px solid #F1DDBA; border-radius: 4px; font-size: 12px; }
+.attention-label { flex: 0 0 auto; color: #8A5A12; font-weight: 600; }
+.attention-list { display: flex; flex-wrap: wrap; gap: 6px 20px; min-width: 0; }
+.attention-item { display: inline-flex; align-items: center; gap: 5px; color: #7A5A1E; line-height: 1.5; }
+.attention-item b { color: #65470F; font-weight: 600; }
 .legend { display: flex; gap: 14px; font-size: 12px; color: var(--color-text-2); }
 .legend span { display: flex; align-items: center; gap: 5px; }
 .legend-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
@@ -415,8 +499,8 @@ const topoLayout = computed(() => {
 .legend-dot.unknown { background: #a0aec0; }
 .topo-scroll { width: 100%; background: #F7F9FB; border: 1px solid var(--color-border-1); border-radius: 4px; overflow: hidden; }
 .topo-svg { display: block; width: 100%; height: 360px; }
-.topo-guides line { stroke: #E5EDF5; stroke-width: 1; stroke-dasharray: 4 6; }
-.topo-guides text { fill: #8AA0B5; font-size: 11px; }
+.topo-guides line { stroke: #BCCBDA; stroke-width: 1.2; stroke-dasharray: 5 5; }
+.topo-guides text { fill: #6F8499; font-size: 11px; }
 .edge { stroke-width: 1.5; opacity: .58; transition: opacity .15s ease, stroke-width .15s ease; }
 .edge:hover { opacity: 1; stroke-width: 3; }
 .node circle { stroke: #fff; stroke-width: 2.5; filter: drop-shadow(0 3px 4px rgba(15, 42, 74, .18)); }
@@ -452,6 +536,7 @@ const topoLayout = computed(() => {
 .state-dot.fail { background: #c53030; }
 .state-dot.unknown, .state-dot.skip { background: #a0aec0; }
 .health-detail { margin-top: 3px; font-size: 12px; color: var(--color-text-3); line-height: 1.45; word-break: break-all; }
+.health-reason { margin-top: 4px; padding: 3px 7px; border-left: 2px solid #D69E2E; background: #FFFBF2; border-radius: 0 2px 2px 0; font-size: 12px; line-height: 1.5; color: #8A5A12; word-break: break-all; }
 .health-right { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; flex: 0 0 auto; }
 .latency { font-size: 11px; color: var(--color-text-3); font-variant-numeric: tabular-nums; }
 .diag-toolbar { display: flex; align-items: flex-end; gap: 14px; padding-bottom: 12px; border-bottom: 1px solid var(--color-border-1); margin-bottom: 12px; flex-wrap: wrap; }
@@ -485,6 +570,7 @@ const topoLayout = computed(() => {
   .page-head { padding: 12px 14px; }
   .head-bar { align-items: flex-start; }
   .card-meta { gap: 8px; }
+  .stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .topo-svg { height: 300px; }
 }
 </style>
