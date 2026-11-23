@@ -1,0 +1,10 @@
+# 本地 Docker Desktop / Apple Silicon 采集器覆盖值
+#
+# 用法：
+#   helm upgrade --install ruilog-collector ./deploy/k8s/collector \
+#     -n ruilog-system --create-namespace \
+#     -f deploy/k8s/collector/values-local.yaml
+#
+# 只覆盖镜像 tag；inputs / 租户 / ingestUrl 继续用 base values.yaml 的本地默认值。
+image:
+  tag: "5.2.0-arm64"

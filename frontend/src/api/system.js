@@ -47,6 +47,23 @@ export async function deleteTenant(code) {
   return data
 }
 
+// ---- namespace → tenant 归属映射 ----
+// 未登记映射的 namespace 会被 ingest 拒收；写操作需要 tenant:update 权限。
+export async function listNamespaceMappings() {
+  const { data } = await client.get('/namespace-mappings')
+  return data
+}
+
+export async function saveNamespaceMapping(payload) {
+  const { data } = await client.post('/namespace-mappings', payload)
+  return data
+}
+
+export async function deleteNamespaceMapping(namespace) {
+  const { data } = await client.delete(`/namespace-mappings/${encodeURIComponent(namespace)}`)
+  return data
+}
+
 export async function listUsers(params) {
   const { data } = await client.get('/users', { params: toQuery(params) })
   return data

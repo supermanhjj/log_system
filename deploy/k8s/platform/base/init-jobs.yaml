@@ -14,6 +14,9 @@ spec:
           command: ["sh", "/init/init-topics.sh"]
           env:
             - { name: KAFKA_BROKER, valueFrom: { configMapKeyRef: { name: ruilog-env, key: KAFKA_BROKER } } }
+            # 副本数/最小同步副本由 ConfigMap 驱动：本地默认 1/1，云上 3/2。
+            - { name: KAFKA_TOPIC_RF, valueFrom: { configMapKeyRef: { name: ruilog-env, key: KAFKA_TOPIC_RF } } }
+            - { name: KAFKA_MIN_INSYNC_REPLICAS, valueFrom: { configMapKeyRef: { name: ruilog-env, key: KAFKA_MIN_INSYNC_REPLICAS } } }
           volumeMounts: [{ name: script, mountPath: /init }]
       volumes:
         - name: script
@@ -35,6 +38,9 @@ spec:
             - { name: OPENSEARCH_URL, valueFrom: { configMapKeyRef: { name: ruilog-env, key: OPENSEARCH_URL } } }
             - { name: OPENSEARCH_SHARDS, valueFrom: { configMapKeyRef: { name: ruilog-env, key: OPENSEARCH_SHARDS } } }
             - { name: OPENSEARCH_REPLICAS, valueFrom: { configMapKeyRef: { name: ruilog-env, key: OPENSEARCH_REPLICAS } } }
+            # 云上开启安全插件时，在 ruilog-secret 里加这两个 key；没有则 optional 跳过。
+            - { name: OPENSEARCH_USER, valueFrom: { secretKeyRef: { name: ruilog-secret, key: OPENSEARCH_USER, optional: true } } }
+            - { name: OPENSEARCH_PASSWORD, valueFrom: { secretKeyRef: { name: ruilog-secret, key: OPENSEARCH_PASSWORD, optional: true } } }
             - { name: RUILOG_HOME, value: /opt/ruilog }
           volumeMounts:
             - { name: script, mountPath: /init }

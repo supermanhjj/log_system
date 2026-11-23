@@ -108,9 +108,12 @@ def parse(pattern: str, text: str) -> Optional[Dict[str, Any]]:
     for k, v in m.groupdict().items():
         if v is not None:
             out[k] = v
-    # 无名捕获组也保留（用 group1.. 命名），供纯模式匹配场景
+    # 无名捕获组也保留（用 group1.. 命名），供纯模式匹配场景；
+    # 有名字的组同样出现在 m.groups() 里，必须按 groupindex 反查下标跳过，
+    # 否则 %{LOGLEVEL:level} 会同时产出 level 和 group1（字段重复、下游映射混乱）。
+    named_indexes = set(rx.groupindex.values())
     for i, v in enumerate(m.groups(), 1):
-        if v is not None and m.re.groupindex.get(str(i)) is None:
+        if v is not None and i not in named_indexes:
             out.setdefault(f"group{i}", v)
     return out
 

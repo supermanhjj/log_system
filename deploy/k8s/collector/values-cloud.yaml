@@ -1,0 +1,49 @@
+# 云上测试环境采集器覆盖值
+#
+# 用法：
+#   helm upgrade --install ruilog-collector ./deploy/k8s/collector \
+#     -n ruilog-system --create-namespace \
+#     -f deploy/k8s/collector/values-cloud.yaml
+#
+# 部署前把下面 4 个 <...> 换成真实值：
+#   - collector.clusterId：集群标识，写进日志 attrs.cluster_id
+#   - collector.ingestUrl：平台接入地址（集群内走 Service DNS）
+#   - collector.collectorKey：平台「数据接入」里创建的采集器 key
+#   - agent.tenant：采集器心跳归属租户（必须已存在且 enabled）
+#
+# 云上如果拉了 Harbor 镜像，把 image.repository 改成你的地址；
+# 否则保持 fluent/fluent-bit:5.2.0 从 Docker Hub 拉取。
+image:
+  repository: fluent/fluent-bit
+  tag: "5.2.0"
+  pullPolicy: IfNotPresent
+
+collector:
+  clusterId: "<cluster-id>"
+  ingestUrl: http://ingest-service:8000/ingest/collector
+  # 推荐用 existingSecret，避免明文 key 进 values 文件：
+  # existingSecret: ruilog-collector-secret
+  existingSecret: ""
+  collectorKey: "<collector-key>"
+
+agent:
+  # 心跳租户；真实接入时改成业务系统租户 code（如 i6000）
+  tenant: "<tenant-code>"
+
+# 云上不继承 base 里的 i6000 示例 inputs，避免采集不存在的 namespace 导致启动告警。
+# 接入真实业务系统时按下面格式追加，namespace 换成业务实际 namespace：
+# inputs:
+#   - name: prod-order
+#     namespace: prod-order
+#     container: order
+#     multiline: ruilog-java
+#     labels:
+#       log_class: business
+#       source_type: app
+#       host: ${NODE_NAME}
+inputs: []
+
+# 云上节点多、日志量大时按节点规格上调；默认 1C/512Mi 适合测试。
+resources:
+  requests: { cpu: 100m, memory: 128Mi }
+  limits: { cpu: 1000m, memory: 512Mi }

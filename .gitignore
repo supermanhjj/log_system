@@ -46,7 +46,15 @@ frontend/vite.config.js.timestamp-*.mjs
 
 # ---- 产品说明书与截图（大体积交付物，不入库源码仓库）----
 docs/*.docx
+docs/**/*.docx
 docs/screenshots/
+
+# ---- 离线交付包与重打工作目录（镜像/压缩包体积过大，不入库）----
+deploy/k8s/offline-bundle/
+deploy/k8s/.rebundle_work/
+deploy/k8s/.manual_work/
+.tmp_ruilog_manual/
+.buildx/
 
 # ---- Java / Flink 构建产物（源码入库，jar 由 maven 构建）----
 flink-jobs/java/target/

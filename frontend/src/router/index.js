@@ -84,8 +84,9 @@ router.beforeEach(async (to) => {
   return true
 })
 
-router.afterEach((to) => {
-  document.title = to.meta?.title ? `${to.meta.title} · RuiLog 日志分析平台` : 'RuiLog 日志分析平台'
+// 系统名常驻：不随菜单变化拼前缀，浏览器标签页始终是平台名称
+router.afterEach(() => {
+  document.title = 'RuiLog 日志分析平台'
 })
 
 export default router

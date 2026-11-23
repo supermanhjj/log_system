@@ -61,12 +61,25 @@ spec:
       containers:
         - name: redis
           image: redis:7-alpine
-          args: ["redis-server", "--save", "", "--appendonly", "no"]
+          # 开 AOF：agent 心跳 / 在线计数 / 最近日志缓存不该在 Pod 重启后归零。
+          # 数据量很小（每 agent 几个 key + 定长 list），everysec 足够。
+          args: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
           ports: [{ containerPort: 6379 }]
+          volumeMounts: [{ name: data, mountPath: /data }]
           readinessProbe: { tcpSocket: { port: 6379 }, initialDelaySeconds: 3, periodSeconds: 10 }
           resources:
             requests: { cpu: 20m, memory: 32Mi }
             limits: { cpu: 200m, memory: 128Mi }
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: redis-data }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: { name: redis-data }
+spec:
+  accessModes: [ReadWriteOnce]
+  resources: { requests: { storage: 1Gi } }
 ---
 apiVersion: v1
 kind: Service

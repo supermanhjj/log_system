@@ -1,0 +1,31 @@
+# 云上 3 节点/3 副本生产形态 overlay
+#
+# 继承 overlays/cloud 的镜像、PVC、StorageClass、sysctl，再覆盖数据副本策略：
+#   - OpenSearch：3 分片 2 副本（至少 3 个 data 节点，单索引可承受 1 节点故障）
+#   - Kafka：RF3 / min.insync.replicas=2（至少 3 个 broker）
+#
+# 前提：Kafka 与 OpenSearch 已经按 3 节点扩起来；单节点不要直接套本 overlay，
+# 否则 topic 创建会因 broker 不足失败，OS 副本也会 unassigned（yellow）。
+#
+# 注意：本 overlay 不负责把 StatefulSet 从 1 副本变 3 副本。当前 base 的
+# Kafka/OpenSearch 仍是单 Pod 单卷；生产 3 副本需要独立的 StatefulSet 多副本
+# 模板或托管服务（见部署手册“生产差距”一节）。
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: ruilog-system
+
+resources:
+  - ../cloud
+
+patches:
+  - target: { kind: ConfigMap, name: ruilog-env }
+    patch: |-
+      - op: replace
+        path: /data/OPENSEARCH_REPLICAS
+        value: "2"
+      - op: replace
+        path: /data/KAFKA_TOPIC_RF
+        value: "3"
+      - op: replace
+        path: /data/KAFKA_MIN_INSYNC_REPLICAS
+        value: "2"

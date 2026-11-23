@@ -1,0 +1,59 @@
+# RuiLog 离线 K8s 采集器 values（Fluent Bit DaemonSet）
+#
+# 用法（在离线包根目录执行）：
+#   sh charts/prepare-collector-secret.sh dev-collector-key
+#   sh tools/helm upgrade --install ruilog-collector charts/ruilog-collector-0.1.0.tgz \
+#     -n ruilog-system --create-namespace \
+#     -f deploy/k8s/collector/values-offline.yaml
+#
+# 部署前按现场改 2 个值：
+#   - collector.clusterId：集群标识，写进日志 attrs.cluster_id
+#   - agent.tenant：采集器心跳归属租户（先填 log-system 验证）
+#
+# inputs 默认空，只上报心跳；接入业务 namespace 时再追加。
+image:
+  repository: fluent/fluent-bit
+  tag: "5.2.0"
+  pullPolicy: IfNotPresent
+
+collector:
+  clusterId: "offline-cluster"
+  ingestUrl: http://ingest-service:8000/ingest/collector
+  # 集群内采集器走 Service DNS:8000；主机 Agent 走 NodePort 30080。
+  ingestPort: 8000
+  existingSecret: ruilog-collector-secret
+  secretKey: collector-key
+  collectorKey: ""
+  memBufLimit: 64MB
+
+agent:
+  enabled: true
+  service: agent-service
+  port: 8000
+  uri: /heartbeat
+  tenant: "log-system"
+  intervalSec: 30
+
+# 接入真实业务时按下面格式追加；namespace 必须已建映射。
+# inputs:
+#   - name: prod-order
+#     namespace: prod-order
+#     container: order
+#     multiline: ruilog-java
+#     labels:
+#       log_class: business
+#       source_type: app
+#       host: ${NODE_NAME}
+inputs: []
+
+excludeNamespaces:
+  - kube-system
+  - ruilog-system
+  - monitoring
+
+resources:
+  requests: { cpu: 100m, memory: 128Mi }
+  limits: { cpu: 1000m, memory: 512Mi }
+
+hostLogPath: /var/log
+dbPath: /var/lib/ruilog

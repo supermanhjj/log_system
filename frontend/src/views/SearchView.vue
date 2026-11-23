@@ -29,7 +29,7 @@ const customRangeLabel = computed(() => {
   const f = (d) => {
     const dt = new Date(d)
     const p = (n) => String(n).padStart(2, '0')
-    return `${dt.getFullYear()}-${p(dt.getMonth() + 1)}-${p(dt.getDate())} ${p(dt.getHours())}:${p(dt.getMinutes())}`
+    return `${dt.getFullYear()}-${p(dt.getMonth() + 1)}-${p(dt.getDate())} ${p(dt.getHours())}:${p(dt.getMinutes())}:${p(dt.getSeconds())}`
   }
   return `${f(customRange.value[0])} ~ ${f(customRange.value[1])}`
 })
@@ -351,6 +351,17 @@ function fmtPplValue(key, v) {
   if (key === '@timestamp') {
     const ms = parsePplTimestamp(v)
     if (ms !== null) return `${fmtLocalTime(new Date(ms))}（本地）`
+  }
+  if (typeof v === 'object') return JSON.stringify(v)
+  return String(v)
+}
+// 表格单元格：@timestamp 统一按本地时区展示；OpenSearch 返回的是 UTC 文本，
+// 直接渲染会比时间选择器少 8 小时，看起来像超出了检索范围。
+function fmtPplCell(key, v) {
+  if (v === null || v === undefined || v === '') return '—'
+  if (key === '@timestamp') {
+    const ms = parsePplTimestamp(v)
+    if (ms !== null) return fmtLocalTime(new Date(ms))
   }
   if (typeof v === 'object') return JSON.stringify(v)
   return String(v)
@@ -832,7 +843,7 @@ watch(
             v-model="customStart"
             type="datetime"
             placeholder="开始时间"
-            format="YYYY-MM-DD HH:mm"
+            format="YYYY-MM-DD HH:mm:ss"
             size="default"
             class="custom-dt"
             @change="onCustomChange"
@@ -842,7 +853,7 @@ watch(
             v-model="customEnd"
             type="datetime"
             placeholder="结束时间"
-            format="YYYY-MM-DD HH:mm"
+            format="YYYY-MM-DD HH:mm:ss"
             size="default"
             class="custom-dt"
             @change="onCustomChange"
@@ -948,7 +959,7 @@ watch(
             >
               <template #default="{ row }">
                 <span v-if="isPplLongCol(c)" class="ppl-wrap-cell">{{ fmtPplValue(c, row[c]) }}</span>
-                <span v-else>{{ row[c] }}</span>
+                <span v-else>{{ fmtPplCell(c, row[c]) }}</span>
               </template>
             </el-table-column>
             <el-table-column label="操作" width="72" fixed="right">

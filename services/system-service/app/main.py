@@ -28,6 +28,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel
 
 from .audit import write_audit
+from . import db as db_mod
 from .db import (
     ACTION_LABELS,
     ALL_PERMS,
@@ -112,7 +113,11 @@ def tenant_code_exists(code: str) -> bool:
 # ---------------------------------------------------------------------------
 @app.get("/health")
 def health():
-    return {"status": "ok", "service": "system-service"}
+    # init_db 失败时服务仍会起来（方便其他服务先启动），但不能让健康检查假装没事：
+    # 把原因带出来，探活日志一眼能分清是"表没建成功"还是"服务真挂了"。
+    if db_mod.INIT_DB_ERROR:
+        return {"status": "degraded", "service": "system-service", "dbInit": db_mod.INIT_DB_ERROR}
+    return {"status": "ok", "service": "system-service", "dbInit": "ok"}
 
 
 @app.get("/")
@@ -492,6 +497,12 @@ class TenantEnabledIn(BaseModel):
     enabled: bool
 
 
+class NamespaceMappingIn(BaseModel):
+    namespace: str
+    tenant: str
+    note: Optional[str] = ""
+
+
 def tenant_code_valid(code: str) -> bool:
     if not (2 <= len(code) <= 32):
         return False
@@ -575,6 +586,92 @@ def list_tenants(
     }
 
 
+# ---------------------------------------------------------------------------
+# namespace → tenant 归属映射
+#
+# 采集端只上报 src_file / namespace，服务端按本表判定日志归哪个租户。
+# 以前只能手工改库，云上接入真实业务系统时必须能通过 API 维护，否则新 namespace
+# 的日志会被 ingest 直接拒收（derive_tenant 不做 logs-unknown 兜底）。
+# ---------------------------------------------------------------------------
+@app.get("/namespace-mappings")
+def list_namespace_mappings(
+    user: Dict[str, Any] = Depends(require("tenant", "view")),
+):
+    rows = pg_query(
+        """SELECT m.namespace, m.tenant, m.note, m.updated_at,
+                  t.name AS tenant_name, t.enabled AS tenant_enabled
+             FROM namespace_tenant m
+             LEFT JOIN tenants t ON t.code = m.tenant
+            ORDER BY m.namespace"""
+    )
+    return {
+        "items": [
+            {
+                "namespace": r["namespace"],
+                "tenant": r["tenant"],
+                "tenantName": r.get("tenant_name") or "",
+                "tenantEnabled": bool(r.get("tenant_enabled")),
+                "note": r.get("note") or "",
+                "updatedAt": to_cst_str(r.get("updated_at")),
+            }
+            for r in rows
+        ],
+        "note": "未命中映射的 namespace 会被 ingest 拒收；接入新业务系统时先在这里登记。",
+    }
+
+
+@app.post("/namespace-mappings")
+def upsert_namespace_mapping(
+    req: NamespaceMappingIn,
+    request: Request,
+    user: Dict[str, Any] = Depends(require("tenant", "update")),
+):
+    namespace = (req.namespace or "").strip()
+    tenant = (req.tenant or "").strip().lower()
+    if not namespace or not tenant:
+        raise HTTPException(status_code=400, detail="namespace 与 tenant 不能为空")
+    trows = pg_query("SELECT code, name, enabled FROM tenants WHERE code=%s", (tenant,))
+    if not trows:
+        raise HTTPException(status_code=404, detail=f"租户 {tenant} 不存在")
+    if not trows[0]["enabled"]:
+        raise HTTPException(status_code=400, detail=f"租户 {tenant} 已停用，不能接收日志")
+
+    pg_exec(
+        """INSERT INTO namespace_tenant (namespace, tenant, note, updated_at)
+           VALUES (%s, %s, %s, now())
+           ON CONFLICT (namespace) DO UPDATE
+              SET tenant=EXCLUDED.tenant, note=EXCLUDED.note, updated_at=now()""",
+        (namespace, tenant, (req.note or "").strip()),
+    )
+    write_audit(
+        user, "保存归属映射", f"{namespace} → {tenant}",
+        {"namespace": namespace, "tenant": tenant},
+        client_ip(request.headers.get("x-forwarded-for"),
+                  request.client.host if request.client else ""),
+    )
+    return {"ok": True, "namespace": namespace, "tenant": tenant,
+            "message": f"{namespace} 的日志将归属租户 {tenant}"}
+
+
+@app.delete("/namespace-mappings/{namespace}")
+def delete_namespace_mapping(
+    namespace: str,
+    request: Request,
+    user: Dict[str, Any] = Depends(require("tenant", "update")),
+):
+    rows = pg_query("SELECT namespace, tenant FROM namespace_tenant WHERE namespace=%s",
+                    (namespace,))
+    if not rows:
+        raise HTTPException(status_code=404, detail="映射不存在")
+    pg_exec("DELETE FROM namespace_tenant WHERE namespace=%s", (namespace,))
+    write_audit(
+        user, "删除归属映射", namespace, {"tenant": rows[0]["tenant"]},
+        client_ip(request.headers.get("x-forwarded-for"),
+                  request.client.host if request.client else ""),
+    )
+    return {"ok": True, "message": f"已删除 {namespace} 的归属映射"}
+
+
 @app.post("/tenants", status_code=201)
 def create_tenant(
     req: TenantIn,
@@ -651,8 +748,8 @@ def update_tenant(
     if req.enabled is False and code == user["tenant_code"]:
         raise HTTPException(status_code=400, detail="不能停用当前登录账号所属的租户")
 
-    pg_exec("UPDATE tenants SET name=%s, enabled=%s WHERE code=%s",
-            (name, cur["enabled"] if req.enabled is None else req.enabled, code))
+    enabled = cur["enabled"] if req.enabled is None else req.enabled
+    quota = None
     if req.quotaGB is not None:
         quota = int(req.quotaGB)
         if quota < 0:
@@ -667,6 +764,11 @@ def update_tenant(
                 detail=(f"其他租户已分配 {others} GB，本租户设 {quota} GB 后将超过平台总容量 "
                         f"{total} GB（剩余可分配 {max(total - others, 0)} GB）。"),
             )
+
+    # 所有校验都通过后才落库：配额超限直接 400 时不能留下「名字已改、配额没改」的半更新
+    pg_exec("UPDATE tenants SET name=%s, enabled=%s WHERE code=%s",
+            (name, enabled, code))
+    if quota is not None:
         pg_exec(
             """INSERT INTO tenant_quotas (tenant_code, quota_gb, updated_at)
                VALUES (%s, %s, now())

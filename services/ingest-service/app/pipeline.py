@@ -127,6 +127,21 @@ def _apply_mapping(fields: Dict[str, Any], mapping: Dict[str, Any]) -> Dict[str,
     return out
 
 
+def _priority(rule: Dict[str, Any]) -> int:
+    """读取规则优先级，缺省/空值/脏值都按默认 100 处理。
+
+    不能用 `r.get("priority") or 100`：0 是合法值（排在所有规则之前），
+    会被 or 当成 falsy 抹成 100，导致显式设 0 的规则反而不生效。
+    """
+    raw = rule.get("priority")
+    if raw is None or raw == "":
+        return 100
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return 100
+
+
 def execute_one(doc: Dict[str, Any],
                 rules: List[Dict[str, Any]],
                 pmap: Dict[int, Dict[str, Any]]) -> Dict[str, Any]:
@@ -135,7 +150,7 @@ def execute_one(doc: Dict[str, Any],
     # Fluent Bit CRI parser 拆帧后落在 log（此时 message 为空）。必须都认，
     # 否则 K8s 日志送到 grok 的是空串，解析全线 unmatched 但归属判定仍正确。
     raw = doc.get("raw") or doc.get("message") or doc.get("log") or ""
-    ordered = sorted(rules, key=lambda r: int(r.get("priority") or 100))
+    ordered = sorted(rules, key=_priority)
     for rule in ordered:
         if not matches(rule, doc):
             continue

@@ -29,7 +29,7 @@
 | 维度 | 设计稿 | 当前实现 |
 |---|---|---|
 | 判定引擎 | Flink Job 消费 Kafka 实时判定 | **请求触发的同步判定**：`GET /events` 时遍历 enabled 规则，用 OpenSearch DSL `count ≥ threshold` 实时算，结果缓存 15s（`services/alarm-service/app/main.py:279-349,354,368-405`）；前端 60s 轮询（`AlarmEvents.vue:265`） |
-| 事件持久化 | PG 事件主表 + 状态流转 | **不落事件表**：事件按规则实时生成，`event_id = rule:{id}`，每规则仅一条；只把人工状态（关闭/维护）写 PG `alarm_event_states` 覆盖（`main.py:387,389-401,408-420`） |
+| 事件持久化 | PG 事件主表 + 状态流转 | **不落事件表**：事件按规则实时生成，`event_id = rule:{id}`，每规则仅一条；只把人工状态（关闭/维护）写 PG `alarm_event_states` 覆盖。关闭后若 OpenSearch 又出现晚于 `updated_at` 的新命中，自动回到「告警中」并清除上一位处理人，避免已关闭事件与持续产生的日志矛盾（`main.py` 的 `_closed_event_has_new_hit`）。 |
 | 通知 | `notify` 渠道发送 | 字段仅存储/展示，无发送代码（`main.py:58,158,233`） |
 | Kafka / Flink | 核心链路 | 容器在编排中运行，但本服务代码不连 Kafka、无 Flink Job（`flink-jobs/README.md:1,10,14` 明确「占位，真实 Job 包待实现」）；`docs/container-deployment.md:70` 记「当前无 topic」 |
 
@@ -102,7 +102,7 @@
 
 **占位 / 需知悉的简化**：
 
-1. 事件不落库、无历史、无去重合并；「告警中/已恢复/维护中」是 PG 状态覆盖的结果，无「确认」端点、无自动恢复。
+1. 事件不落库、无历史、无去重合并；「告警中/已恢复/维护中」是 PG 状态覆盖的结果，无「确认」端点、无按时间窗自动恢复。关闭后若又出现新日志，会按 `updated_at` 与最新命中时间自动重回「告警中」。
 2. `notify` 仅存储展示；前端「恢复通知已发送」是提示文案（`AlarmEvents.vue:165`），无真实发送。
 3. Flink / Kafka 实时判定为设计稿，`flink-jobs/` 仍是占位（`docs/tech-stack-selection.md:103,201,229`）。
 4. 原型里的 `data-toast` 假交互已被真实接口替换，但 `/api/alarms/` 之外仍有通用占位页 `Placeholder.vue`（非告警路由组件）。

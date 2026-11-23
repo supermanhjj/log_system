@@ -52,13 +52,9 @@
 
 | 账号 | 姓名 | 角色 | 租户 | 初始密码 |
 |---|---|---|---|---|
-| `admin` | 系统管理员 | 平台管理员 | 总部生产 | `Admin@123`（`AUTH_SEED_ADMIN_PASSWORD` 可覆盖） |
-| `ops_chenli` | 陈立 | 平台管理员 | 总部生产 | `Ops@12345`（`AUTH_SEED_DEMO_PASSWORD`） |
-| `ops_zhouhang` | 周航 | 运维值班 | 总部生产 | `Ops@12345` |
-| `ops_gaoyuan` | 高远 | 只读用户 | 省侧运维 | `Ops@12345` |
-| `huangjinjin_test` | 黄金金（测试） | 运维值班 | 省侧运维 | `Ops@12345` |
-| `audit_linjing` | 林静 | 审计员 | 总部生产 | `Ops@12345` |
-| `ops_zhaolei` | 赵磊 | 运维值班 | 总部生产（**停用**，用于验证停用后登录被拒） | `Ops@12345` |
+| `admin` | 系统管理员 | 平台管理员 | 日志平台 | `Admin@123`（`AUTH_SEED_ADMIN_PASSWORD` 可覆盖） |
+
+> 初始部署只预置 `admin`。历史演示账号已由 `migration.remove_demo_users.v1` 一次性清理；现场自建账号（如 `huangjinjin`）保留。
 
 > 实际账号清单以 PG `users` 表为准（`select account, role_key, tenant_id from users`），上表为种子基线。
 
@@ -145,7 +141,7 @@ CSV 均带 UTF-8 BOM（Excel 直开不乱码）；临时密码只在创建/重�
 
 1. `system-service` 启动时 `init_db()` 建表 + 种子（PG 不可用则降级启动并打印 `init_db skipped`，不会挂进程）。
 2. 两服务必须共用 `.env` 中的 `JWT_SECRET` / `JWT_ALGORITHM`；`ACCESS_TOKEN_EXPIRE_MINUTES` 默认 1440（24h）。
-3. `.env.example` 已补 `AUTH_SEED_ADMIN_PASSWORD` / `AUTH_SEED_DEMO_PASSWORD`（可选，覆盖种子密码；**生产必须先改**）。
+3. `.env.example` 已补 `AUTH_SEED_ADMIN_PASSWORD`（可选，覆盖 admin 初始密码；**生产必须先改**）；其他账号在「用户管理」中创建，不再预置。
 4. 首次部署建议先起 `system-service` 再起 `auth-service`（表还不存在时登录会返回明确错误，而不是假装成功）。
 5. 忘记管理员密码：`docker compose restart system-service` 不会重置（种子只在账号不存在时插入），需在 PG 内改哈希或用其他管理员重置。
 

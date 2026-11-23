@@ -3,7 +3,7 @@ name: ruilog-collector
 description: RuiLog 容器日志采集器（Fluent Bit DaemonSet）——只做分帧与搬运，解析在服务端
 type: application
 version: 0.1.0
-appVersion: "2.2.0"
+appVersion: "5.2.0"
 keywords:
   - logging
   - fluent-bit

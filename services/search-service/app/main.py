@@ -28,14 +28,26 @@ from .authz import _conn, current_identity, resolve_tenant, tenant_directory
 
 OPENSEARCH_HOST = os.getenv("OPENSEARCH_HOST", "opensearch")
 OPENSEARCH_PORT = int(os.getenv("OPENSEARCH_PORT", "9200"))
+# 认证默认关闭；云上开安全插件时由环境变量打开，不设账号则保持原来的无认证行为。
+OPENSEARCH_SCHEME = os.getenv("OPENSEARCH_SCHEME", "http")
+OPENSEARCH_USER = os.getenv("OPENSEARCH_USER", "")
+OPENSEARCH_PASSWORD = os.getenv("OPENSEARCH_PASSWORD", "")
+OPENSEARCH_VERIFY_CERTS = os.getenv("OPENSEARCH_VERIFY_CERTS", "false").lower() == "true"
+
+
+def _opensearch_kwargs():
+    kw = {
+        "hosts": [{"host": OPENSEARCH_HOST, "port": OPENSEARCH_PORT}],
+        "use_ssl": OPENSEARCH_SCHEME == "https",
+        "verify_certs": OPENSEARCH_VERIFY_CERTS,
+    }
+    if OPENSEARCH_USER and OPENSEARCH_PASSWORD:
+        kw["http_auth"] = (OPENSEARCH_USER, OPENSEARCH_PASSWORD)
+    return kw
+
 
 # 开发期安全插件关闭，无 auth；连接惰性建立，模块导入不触发网络。
-client = OpenSearch(
-    hosts=[{"host": OPENSEARCH_HOST, "port": OPENSEARCH_PORT}],
-    http_auth=None,
-    use_ssl=False,
-    verify_certs=False,
-)
+client = OpenSearch(**_opensearch_kwargs())
 
 app = FastAPI(title="search-service", version="0.3.0")
 app.add_middleware(
@@ -184,6 +196,13 @@ def _map_outside_literals(text: str, fn) -> str:
     """只改代码段、跳过字符串字面量，避免误改 message like '%tenant%' 这类正文条件。"""
     segs = _LITERAL_SPLIT.split(text or "")
     return "".join(fn(s) if i % 2 == 0 else s for i, s in enumerate(segs))
+
+
+def _strip_literals(text: str) -> str:
+    """把字符串字面量替换成空串占位，只留代码段判断是否含写操作关键字。"""
+    segs = _LITERAL_SPLIT.split(text or "")
+    # split 带捕获组：偶数下标是代码段，奇数下标是字面量
+    return "".join(s if i % 2 == 0 else "''" for i, s in enumerate(segs))
 
 
 def rewrite_tenant_dimension(stmt: str, directory: List[Dict[str, str]]) -> str:
@@ -483,7 +502,10 @@ def pql(req: PqlReq, identity: Dict[str, Any] = Depends(current_identity)):
     stmt = (req.pql or "").strip()
     if not stmt:
         raise HTTPException(status_code=400, detail="pql 不能为空")
-    if re.search(r"\b(drop|delete|update|insert|create|alter|grant)\b", stmt, re.I):
+    # 写操作扫描必须在「剥掉字符串字面量」之后：检索 message = 'delete failed'
+    # 这种正文含关键字的查询是正常需求，不能因为字面量里出现 delete 就 400。
+    if re.search(r"\b(drop|delete|update|insert|create|alter|grant)\b",
+                 _strip_literals(stmt), re.I):
         raise HTTPException(status_code=400, detail="PPL 含不允许的写操作关键字")
 
     directory = tenant_directory()

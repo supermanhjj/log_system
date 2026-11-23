@@ -2,6 +2,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: {{ include "ruilog-collector.fullname" . }}-config
+  namespace: {{ .Release.Namespace }}
   labels:
     app: {{ include "ruilog-collector.fullname" . }}
 data:
@@ -101,6 +102,29 @@ data:
         Header            Content-Type application/json
         Header            X-Collector-Key ${COLLECTOR_KEY}
         Retry_Limit       False
+
+    {{- if .Values.agent.enabled }}
+    # =========================================================================
+    # Agent 心跳：采集器就是每个节点上的采集端，必须主动注册，否则「Agent 管理」
+    # 页永远是空的（此前只有手工安装接入配置的主机会心跳）。
+    # 主机名取 DOWNWARD API 注入的 NODE_NAME，与日志里的 host 字段一致，便于对照。
+    # =========================================================================
+    [INPUT]
+        Name         dummy
+        Tag          agent.heartbeat
+        Dummy        {"hostname":"${NODE_NAME}","tenant":"{{ .Values.agent.tenant }}","version":"{{ .Values.image.tag }}","os":"linux","status":"online"}
+        Interval_Sec {{ .Values.agent.intervalSec }}
+
+    [OUTPUT]
+        Name         http
+        Match        agent.heartbeat
+        Host         {{ .Values.agent.service }}
+        Port         {{ .Values.agent.port }}
+        URI          {{ .Values.agent.uri }}
+        Format       json
+        Header       Content-Type application/json
+        Retry_Limit  False
+    {{- end }}
 
   parsers.conf: |
     # CRI 格式：time stream logtag log。不配这个 parser，整行会进 message，

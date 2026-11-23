@@ -23,7 +23,6 @@ export const REAL_SOURCES = [
 export const LEVELS = ['严重', '警告', '提示']
 export const STATUS_OPTIONS = ['告警中', '已恢复', '维护中']
 export const NOTIFY_OPTIONS = [
-  { value: 'wecom', label: '企业微信' },
   { value: 'sms', label: '短信' },
   { value: 'email', label: '邮件' },
 ]
@@ -102,5 +101,17 @@ export async function deleteRule(id) {
 
 export async function toggleRule(id, enabled) {
   const { data } = await client.post(`/rules/${id}/toggle`, { enabled })
+  return data
+}
+
+// ------------------------------- 规则模板 -------------------------------
+// 模板是平台共享定义，不参与告警判定；租户拉取后才生成自己的 alarm_rules。
+export async function listTemplates(params = {}) {
+  const { data } = await client.get('/templates', { params })
+  return data
+}
+
+export async function applyTemplate(id, tenant = currentTenant()) {
+  const { data } = await client.post(`/templates/${id}/apply`, null, { params: { tenant } })
   return data
 }

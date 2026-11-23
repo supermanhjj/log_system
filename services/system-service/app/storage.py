@@ -71,6 +71,8 @@ def os_client():
                 "host": os.getenv("OPENSEARCH_HOST", "opensearch"),
                 "port": int(os.getenv("OPENSEARCH_PORT", "9200")),
             }],
+            "use_ssl": os.getenv("OPENSEARCH_SCHEME", "http") == "https",
+            "verify_certs": os.getenv("OPENSEARCH_VERIFY_CERTS", "false").lower() == "true",
             "timeout": 15,
             "max_retries": 1,
             "retry_on_timeout": False,

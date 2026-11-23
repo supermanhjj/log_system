@@ -54,6 +54,11 @@ from . import pipeline_store
 # ---------------------------------------------------------------------------
 OPENSEARCH_HOST = os.getenv("OPENSEARCH_HOST", "opensearch")
 OPENSEARCH_PORT = int(os.getenv("OPENSEARCH_PORT", "9200"))
+# 认证默认关闭；云上开安全插件时由环境变量打开，不设账号则保持原来的无认证行为。
+OPENSEARCH_SCHEME = os.getenv("OPENSEARCH_SCHEME", "http")
+OPENSEARCH_USER = os.getenv("OPENSEARCH_USER", "")
+OPENSEARCH_PASSWORD = os.getenv("OPENSEARCH_PASSWORD", "")
+OPENSEARCH_VERIFY_CERTS = os.getenv("OPENSEARCH_VERIFY_CERTS", "false").lower() == "true"
 PG_DSN = os.getenv(
     "INGEST_PG_DSN",
     f"dbname={os.getenv('POSTGRES_DB', 'logdb')} "
@@ -65,12 +70,19 @@ PG_DSN = os.getenv(
 KAFKA_BROKER = os.getenv("KAFKA_BROKER", "kafka:9092")
 AGENT_SERVICE = os.getenv("AGENT_SERVICE_URL", "http://agent-service:8000")
 
-os_client = OpenSearch(
-    hosts=[{"host": OPENSEARCH_HOST, "port": OPENSEARCH_PORT}],
-    http_auth=None,
-    use_ssl=False,
-    verify_certs=False,
-)
+
+def _opensearch_kwargs():
+    kw = {
+        "hosts": [{"host": OPENSEARCH_HOST, "port": OPENSEARCH_PORT}],
+        "use_ssl": OPENSEARCH_SCHEME == "https",
+        "verify_certs": OPENSEARCH_VERIFY_CERTS,
+    }
+    if OPENSEARCH_USER and OPENSEARCH_PASSWORD:
+        kw["http_auth"] = (OPENSEARCH_USER, OPENSEARCH_PASSWORD)
+    return kw
+
+
+os_client = OpenSearch(**_opensearch_kwargs())
 
 CST = timezone(timedelta(hours=8))
 INGEST_TYPES = ["Agent", "Syslog", "HTTP", "Kafka", "自定义"]
@@ -712,6 +724,15 @@ class SourceIn(BaseModel):
     note: Optional[str] = None
 
 
+class HostIn(BaseModel):
+    """主机台账：系统/中间件日志没有业务租户字段，只能按「这台机器属于谁」判定。"""
+    host: str = Field(..., min_length=1, max_length=253)
+    tenant: str = Field(..., min_length=1, max_length=32)
+    env: str = Field("prod", max_length=16)
+    role: Optional[str] = Field(None, max_length=64)
+    note: Optional[str] = None
+
+
 def _upsert_sql(p: SourceIn) -> Tuple[str, Dict[str, Any]]:
     vals = {
         "tenant": p.tenant, "source_key": p.source_key.strip(),
@@ -1104,6 +1125,95 @@ def list_sources(
         "settings": settings, "discovery": data["discovery"],
         "capabilities": data["capabilities"], "updatedAt": data["updatedAt"],
     }
+
+
+@app.get("/hosts")
+def list_hosts(
+    tenant: Optional[str] = Query(None),
+    keyword: str = Query(""),
+    identity: Dict[str, Any] = Depends(current_identity),
+):
+    """主机台账查询。
+
+    平台管理员看全部；普通账号只看自己租户，避免通过台账探测其他业务系统主机。
+    """
+    where = ["1=1"]
+    params: List[Any] = []
+    if tenant:
+        if not is_admin(identity) and tenant != identity["tenant_code"]:
+            raise HTTPException(status_code=403, detail="无权访问其他租户的主机台账")
+        where.append("h.tenant=%s")
+        params.append(tenant)
+    elif not is_admin(identity):
+        where.append("h.tenant=%s")
+        params.append(identity["tenant_code"])
+    if keyword.strip():
+        where.append("(h.host ILIKE %s OR h.role ILIKE %s OR h.note ILIKE %s)")
+        kw = f"%{keyword.strip()}%"
+        params += [kw, kw, kw]
+    rows = pg_query(
+        f"""SELECT h.host, h.tenant, h.env, h.role, h.note, h.updated_at,
+                   t.name AS tenant_name, t.enabled AS tenant_enabled
+              FROM hosts h
+              LEFT JOIN tenants t ON t.code = h.tenant
+             WHERE {' AND '.join(where)}
+             ORDER BY h.host""",
+        tuple(params),
+    )
+    return {
+        "items": [
+            {
+                "host": r["host"],
+                "tenant": r["tenant"],
+                "tenantName": r.get("tenant_name") or "",
+                "tenantEnabled": bool(r.get("tenant_enabled")),
+                "env": r.get("env") or "",
+                "role": r.get("role") or "",
+                "note": r.get("note") or "",
+                "updatedAt": r.get("updated_at").isoformat() if r.get("updated_at") else "",
+            }
+            for r in rows
+        ],
+        "note": "hosts 台账只用于没有业务租户字段的系统/中间件日志；业务容器日志优先按 namespace_tenant 判定。",
+    }
+
+
+@app.post("/hosts")
+def upsert_host(payload: HostIn, identity: Dict[str, Any] = Depends(current_identity)):
+    """新增/更新主机归属（管理员）。host 是主键，重复提交即覆盖。"""
+    if not is_admin(identity):
+        raise HTTPException(status_code=403, detail="仅平台管理员可维护主机台账")
+    host = payload.host.strip()
+    tenant = payload.tenant.strip().lower()
+    if not host or not tenant:
+        raise HTTPException(status_code=400, detail="host 与 tenant 不能为空")
+    if not tenant_enabled(tenant):
+        raise HTTPException(status_code=400, detail=f"租户 {tenant} 不存在或已停用")
+    pg_exec(
+        """INSERT INTO hosts (host, tenant, env, role, note, updated_at)
+           VALUES (%s, %s, %s, %s, %s, now())
+           ON CONFLICT (host) DO UPDATE
+              SET tenant=EXCLUDED.tenant, env=EXCLUDED.env,
+                  role=EXCLUDED.role, note=EXCLUDED.note, updated_at=now()""",
+        (host, tenant, (payload.env or "prod").strip(),
+         (payload.role or "").strip() or None, (payload.note or "").strip() or None),
+    )
+    # hosts 台账有 30s 缓存（derive_tenant 用），立即失效避免新映射等半分钟。
+    _HOST_CACHE["ts"] = 0.0
+    return {"ok": True, "host": host, "tenant": tenant,
+            "message": f"{host} 的系统日志将归属租户 {tenant}"}
+
+
+@app.delete("/hosts/{host}")
+def delete_host(host: str, identity: Dict[str, Any] = Depends(current_identity)):
+    if not is_admin(identity):
+        raise HTTPException(status_code=403, detail="仅平台管理员可维护主机台账")
+    rows = pg_query("SELECT host, tenant FROM hosts WHERE host=%s", (host,))
+    if not rows:
+        raise HTTPException(status_code=404, detail="主机台账记录不存在")
+    pg_exec("DELETE FROM hosts WHERE host=%s", (host,))
+    _HOST_CACHE["ts"] = 0.0
+    return {"ok": True, "message": f"已删除 {host} 的主机归属（租户 {rows[0]['tenant']}）"}
 
 
 @app.post("/sources", status_code=201)
@@ -1532,6 +1642,7 @@ def derive_tenant(rec: Dict[str, Any],
 
       推导值 = K8s namespace 映射 > 主机台账(hosts) > 来源文件名
       注入值与推导值冲突 → 以推导为准 + 审计
+      **推导不出归属 → 直接拒收**（注入值不参与最终归属，只用于比对留痕）
       最终值不在 collector.tenant_allow 白名单 → 拒收该条 + 审计
 
     租户按业务系统划分：K8s 日志最可靠的来源是容器文件名里的 namespace（部署
@@ -1563,10 +1674,17 @@ def derive_tenant(rec: Dict[str, Any],
         if base.endswith(".log"):
             inferred = base[: -len(".log")]
 
-    final = injected or inferred
+    # 注入值只用于「与推导值比对」，永远不能单独决定归属：判不出来源就拒收，
+    # 否则任何持有采集器 key 的人都能把数据写进任意已启用租户。
+    if not inferred:
+        if injected:
+            audit_tenant_decision("unassigned", collector, injected, inferred, "", rec)
+        return "", "unassigned"
+
+    final = inferred
     action = "ok"
-    if injected and inferred and injected != inferred:
-        final, action = inferred, "mismatch"
+    if injected and injected != inferred:
+        action = "mismatch"
 
     allow = set(str(x) for x in ((collector or {}).get("tenant_allow") or []))
     if allow and final and final not in allow:

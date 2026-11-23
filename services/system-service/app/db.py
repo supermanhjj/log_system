@@ -10,11 +10,16 @@ docs/module-platform-admin.md）。
 登录时选定的租户即前端 `app.tenant`，检索链路无需再做映射。
 """
 import os
+import traceback
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 import psycopg2
 import psycopg2.extras
+
+# init_db 失败原因（成功为 None）。服务照常启动，但 /health 会把它带出来，
+# 避免"表没建成功、服务看起来正常、接口全 500"这种静默失败。
+INIT_DB_ERROR: Optional[str] = None
 
 PG_DSN = os.getenv(
     "SYSTEM_PG_DSN",
@@ -109,15 +114,20 @@ NAMESPACE_TENANT_SEEDS = [
     ("log-system", "log-system", "日志平台自身组件命名空间（预留）"),
 ]
 
-# 种子用户：(账号, 姓名, 角色, 租户, 启用, 手机号, 是否内置)
+# 种子用户：初始部署只创建 admin；其余账号由管理员在「用户管理」里按需创建，
+# 不再预置演示用户，避免现场首次登录就看到一堆不属于自己的账号。
 USER_SEEDS = [
     ("admin", "系统管理员", "platform_admin", "log-system", True, "", True),
-    ("ops_chenli", "陈立", "platform_admin", "log-system", True, "13800000001", False),
-    ("ops_zhouhang", "周航", "ops_duty", "i6000", True, "13800000002", False),
-    ("ops_gaoyuan", "高远", "viewer", "i6000", True, "13800000003", False),
-    ("audit_linjing", "林静", "auditor", "log-system", True, "13800000004", False),
-    ("ops_zhaolei", "赵磊", "ops_duty", "i6000", False, "13800000005", False),
 ]
+
+# 历史版本预置过的演示账号：升级时一次性清理，admin 与现场自建账号不动。
+LEGACY_DEMO_USER_ACCOUNTS = (
+    "ops_chenli",
+    "ops_zhouhang",
+    "ops_gaoyuan",
+    "audit_linjing",
+    "ops_zhaolei",
+)
 
 # 系统参数：(key, 值, 类型, 名称, 说明, 可选项)
 PARAM_SEEDS = [
@@ -330,15 +340,26 @@ def init_db() -> None:
             )
         # 废止租户幂等清理：unknown/default/acme/gp 一律下线，避免历史残留继续
         # 出现在租户下拉或索引命名里。顺序：先迁用户（外键），再清配额/映射，最后删租户。
+        #
+        # 只跑一次。旧实现每次启动都跑：现场若真建了同名租户（code 恰好是
+        # default/acme/gp），下次重启就会把用户改挂到 i6000、配额和 namespace 映射被删，
+        # 表现为"重启后租户和数据凭空消失"，极难排查。用 system_params 打标记。
         retired = list(RETIRED_TENANT_CODES)
-        pg_exec(
-            """UPDATE users SET tenant_id=(SELECT id FROM tenants WHERE code='i6000')
-                WHERE tenant_id IN (SELECT id FROM tenants WHERE code = ANY(%s))""",
-            (retired,),
-        )
-        pg_exec("DELETE FROM tenant_quotas WHERE tenant_code = ANY(%s)", (retired,))
-        pg_exec("DELETE FROM namespace_tenant WHERE tenant = ANY(%s)", (retired,))
-        pg_exec("DELETE FROM tenants WHERE code = ANY(%s)", (retired,))
+        retire_key = "migration.retire_demo_tenants.v1"
+        if not pg_scalar("SELECT pvalue FROM system_params WHERE pkey = %s", (retire_key,)):
+            pg_exec(
+                """UPDATE users SET tenant_id=(SELECT id FROM tenants WHERE code='i6000')
+                    WHERE tenant_id IN (SELECT id FROM tenants WHERE code = ANY(%s))""",
+                (retired,),
+            )
+            pg_exec("DELETE FROM tenant_quotas WHERE tenant_code = ANY(%s)", (retired,))
+            pg_exec("DELETE FROM namespace_tenant WHERE tenant = ANY(%s)", (retired,))
+            pg_exec("DELETE FROM tenants WHERE code = ANY(%s)", (retired,))
+            pg_exec(
+                """INSERT INTO system_params (pkey, pvalue) VALUES (%s, %s)
+                   ON CONFLICT (pkey) DO UPDATE SET pvalue = EXCLUDED.pvalue, updated_at = now()""",
+                (retire_key, "done"),
+            )
         for ns, tenant, note in NAMESPACE_TENANT_SEEDS:
             pg_exec(
                 """INSERT INTO namespace_tenant (namespace, tenant, note)
@@ -359,9 +380,22 @@ def init_db() -> None:
                     (key, resource, action),
                 )
 
+        # 历史演示账号一次性清理：只删固定预置账号，admin 和现场自建账号（如黄金金）保留。
+        # 用 migration 标记控制只跑一次，避免以后有人重新创建同名账号又被启动任务删掉。
+        demo_cleanup_key = "migration.remove_demo_users.v1"
+        if not pg_scalar("SELECT pvalue FROM system_params WHERE pkey = %s", (demo_cleanup_key,)):
+            pg_exec(
+                "DELETE FROM users WHERE account = ANY(%s) AND account <> 'admin'",
+                (list(LEGACY_DEMO_USER_ACCOUNTS),),
+            )
+            pg_exec(
+                """INSERT INTO system_params (pkey, pvalue) VALUES (%s, %s)
+                   ON CONFLICT (pkey) DO UPDATE SET pvalue = EXCLUDED.pvalue, updated_at = now()""",
+                (demo_cleanup_key, "done"),
+            )
+
         # 种子用户：仅在账号不存在时创建，绝不覆盖已改过的密码 / 启停状态
         admin_pwd = os.getenv("AUTH_SEED_ADMIN_PASSWORD", "Admin@123")
-        demo_pwd = os.getenv("AUTH_SEED_DEMO_PASSWORD", "Ops@12345")
         from .security import hash_password  # 延迟导入，避免循环依赖
 
         for account, name, role_key, tenant_code, enabled, phone, builtin in USER_SEEDS:
@@ -375,8 +409,7 @@ def init_db() -> None:
                 """INSERT INTO users (tenant_id, account, name, password_hash, role_key,
                                       phone, enabled, is_builtin)
                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
-                (tenant_id, account, name,
-                 hash_password(admin_pwd if builtin else demo_pwd),
+                (tenant_id, account, name, hash_password(admin_pwd),
                  role_key, phone, enabled, builtin),
             )
 
@@ -397,7 +430,12 @@ def init_db() -> None:
             )
         print("[system-service] init_db done", flush=True)
     except Exception as e:  # noqa: BLE001
-        print(f"[system-service] init_db skipped: {e}", flush=True)
+        # 建表/种子失败不阻塞启动（其他微服务可以先起来），但不能静默：
+        # 把原因记进 INIT_DB_ERROR，/health 会带出来，日志里也留完整堆栈。
+        global INIT_DB_ERROR
+        INIT_DB_ERROR = f"{type(e).__name__}: {e}"
+        print(f"[system-service] init_db FAILED: {INIT_DB_ERROR}", flush=True)
+        traceback.print_exc()
 
 
 def pg_json(v: Any) -> str:

@@ -70,9 +70,10 @@ def _parse_delimiter(definition: Dict[str, Any], text: str) -> Optional[Dict[str
     row = next(csv.reader(io.StringIO(text or ""), delimiter=sep), None)
     if not row:
         return None
-    out = {str(f): v.strip() for f, v in zip(fields, row)}
     # 列数不符视为格式不符，宁可标 unmatched，也不要悄悄丢列
-    return out if len(out) == len(fields) else None
+    if len(row) != len(fields):
+        return None
+    return {str(f): v.strip() for f, v in zip(fields, row)}
 
 
 def _parse_kv(definition: Dict[str, Any], text: str) -> Optional[Dict[str, Any]]:
@@ -117,7 +118,11 @@ def validate(definition: Dict[str, Any]) -> Dict[str, Any]:
     if kind == "grok":
         return grok.validate_pattern(str(definition.get("pattern") or ""))
     if kind == "regex":
-        rx = re.compile(str(definition.get("pattern") or ""))
+        try:
+            rx = re.compile(str(definition.get("pattern") or ""))
+        except re.error as e:
+            # 统一成 ValueError：上层按 400 返回，而不是让 re.error 冒成 500
+            raise ValueError(f"regex 表达式不是合法正则：{e}") from e
         return {"fields": sorted(rx.groupindex.keys())}
     if kind == "delimiter":
         fields = definition.get("fields") or []

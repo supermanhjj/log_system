@@ -16,6 +16,7 @@
 import os
 import json
 import time
+import traceback
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional
 
@@ -24,7 +25,7 @@ import psycopg2.extras
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from opensearchpy import OpenSearch
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from .authz import current_identity, is_admin, resolve_tenant
 
@@ -33,6 +34,11 @@ from .authz import current_identity, is_admin, resolve_tenant
 # ---------------------------------------------------------------------------
 OPENSEARCH_HOST = os.getenv("OPENSEARCH_HOST", "opensearch")
 OPENSEARCH_PORT = int(os.getenv("OPENSEARCH_PORT", "9200"))
+# 认证默认关闭；云上开安全插件时由环境变量打开，不设账号则保持原来的无认证行为。
+OPENSEARCH_SCHEME = os.getenv("OPENSEARCH_SCHEME", "http")
+OPENSEARCH_USER = os.getenv("OPENSEARCH_USER", "")
+OPENSEARCH_PASSWORD = os.getenv("OPENSEARCH_PASSWORD", "")
+OPENSEARCH_VERIFY_CERTS = os.getenv("OPENSEARCH_VERIFY_CERTS", "false").lower() == "true"
 PG_DSN = os.getenv(
     "ALARM_PG_DSN",
     f"dbname={os.getenv('POSTGRES_DB', 'logdb')} "
@@ -42,12 +48,19 @@ PG_DSN = os.getenv(
     f"port={os.getenv('POSTGRES_PORT', '5432')}",
 )
 
-os_client = OpenSearch(
-    hosts=[{"host": OPENSEARCH_HOST, "port": OPENSEARCH_PORT}],
-    http_auth=None,
-    use_ssl=False,
-    verify_certs=False,
-)
+
+def _opensearch_kwargs():
+    kw = {
+        "hosts": [{"host": OPENSEARCH_HOST, "port": OPENSEARCH_PORT}],
+        "use_ssl": OPENSEARCH_SCHEME == "https",
+        "verify_certs": OPENSEARCH_VERIFY_CERTS,
+    }
+    if OPENSEARCH_USER and OPENSEARCH_PASSWORD:
+        kw["http_auth"] = (OPENSEARCH_USER, OPENSEARCH_PASSWORD)
+    return kw
+
+
+os_client = OpenSearch(**_opensearch_kwargs())
 
 # 真实业务数据源（与 log-generator SOURCES 对齐，作为「关联数据源」下拉候选）
 REAL_SOURCES = [
@@ -57,7 +70,8 @@ REAL_SOURCES = [
     "inventory-svc",
     "api-gateway",
 ]
-NOTIFY_LABELS = {"wecom": "企业微信", "sms": "短信", "email": "邮件"}
+NOTIFY_LABELS = {"sms": "短信", "email": "邮件"}
+NOTIFY_VALUES = {"sms", "email"}
 LEVELS = ["严重", "警告", "提示"]
 
 app = FastAPI(title="alarm-service", version="0.4.0")
@@ -168,12 +182,62 @@ def init_db() -> None:
             )
             """
         )
-        # 迁移：告警规则归属租户（tenant='all' 表示平台级通用规则，对所有租户生效）
+        # 迁移：告警规则归属租户。规则表只放租户自己的规则，不再接受 tenant='all'。
         pg_exec("ALTER TABLE alarm_rules ADD COLUMN IF NOT EXISTS tenant TEXT NOT NULL DEFAULT 'default'")
         pg_exec("CREATE INDEX IF NOT EXISTS idx_alarm_rules_tenant ON alarm_rules (tenant)")
+        # 平台共享配置改为「规则模板」：模板只是定义，不参与实时判定；
+        # 租户需要时从模板拉取，生成自己的 alarm_rules 记录后再改阈值/通知人。
+        pg_exec(
+            """
+            CREATE TABLE IF NOT EXISTS alarm_rule_templates (
+                id SERIAL PRIMARY KEY,
+                name TEXT NOT NULL,
+                category TEXT NOT NULL DEFAULT '通用',
+                description TEXT NOT NULL DEFAULT '',
+                match_source TEXT,
+                match_log_class TEXT,
+                match_source_type TEXT,
+                match_level TEXT,
+                match_status_gte INT,
+                keyword TEXT,
+                window_minutes INT NOT NULL DEFAULT 5,
+                threshold INT NOT NULL DEFAULT 1,
+                level TEXT NOT NULL DEFAULT '警告',
+                notify TEXT NOT NULL DEFAULT '',
+                enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                owner TEXT NOT NULL DEFAULT 'system',
+                sort_order INT NOT NULL DEFAULT 0,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+            """
+        )
+        pg_exec(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_alarm_rule_templates_name "
+            "ON alarm_rule_templates (name)"
+        )
         # 迁移：按日志类型圈定规则范围（v2.1 多类型采集）。空 = 全类型，兼容既有规则。
         pg_exec("ALTER TABLE alarm_rules ADD COLUMN IF NOT EXISTS match_log_class TEXT")
         pg_exec("ALTER TABLE alarm_rules ADD COLUMN IF NOT EXISTS match_source_type TEXT")
+        # 迁移：企业微信通知渠道下线。历史规则里的 wecom 统一替换成短信，
+        # 并去重、清空空值，避免老规则继续展示已下线的渠道。
+        # LIKE 用参数化：pg_exec 以空 tuple 调 execute 时，SQL 里的裸 % 会被
+        # psycopg2 当成占位符，抛 "tuple index out of range"。
+        pg_exec(
+            """
+            UPDATE alarm_rules
+            SET notify = COALESCE((
+                SELECT array_to_string(ARRAY(
+                    SELECT DISTINCT x
+                    FROM unnest(string_to_array(replace(notify, 'wecom', 'sms'), ',')) AS x
+                    WHERE x <> ''
+                    ORDER BY x
+                ), ',')
+            ), '')
+            WHERE notify LIKE %s
+            """,
+            ("%wecom%",),
+        )
         pg_exec(
             """
             CREATE TABLE IF NOT EXISTS alarm_event_states (
@@ -187,46 +251,63 @@ def init_db() -> None:
             )
             """
         )
-        existing = pg_query("SELECT COUNT(*) AS c FROM alarm_rules")
+        existing = pg_query("SELECT COUNT(*) AS c FROM alarm_rule_templates")
         if not existing or existing[0]["c"] == 0:
             _seed_rules()
-        # 四类日志规则模板独立幂等播种：老环境规则表非空也要补齐，否则系统/中间件/
-        # 数据库日志纳管后没有任何规则在看，等于"采了不用"。
+        # 四类日志规则模板独立幂等播种：老环境模板表非空也要补齐，否则系统/中间件/
+        # 数据库日志纳管后没有可拉取的骨架。
         _seed_multiclass_rules()
+        # 把历史 tenant='all' 的平台级规则迁成模板；已有租户各复制一份后清理，
+        # 新建租户不再自动获得任何规则。
+        _migrate_platform_rules_to_templates()
+        _cleanup_legacy_default_rules()
     except Exception as e:  # noqa: BLE001
         # 开发期 PG 暂不可用时降级：服务仍可启动，规则/事件接口会返回明确错误
         print(f"[alarm-service] init_db skipped: {e}", flush=True)
+        traceback.print_exc()
 
 
 def _seed_rules() -> None:
+    """首次播种只写模板库，不往租户规则表塞数据。
+
+    租户规则应由租户从模板拉取后自行维护；新建租户默认零规则。
+    """
     seeds = [
-        dict(name="订单服务错误突增", match_source="order-service", match_level="ERROR",
+        dict(name="订单服务错误突增", category="业务日志", description="订单服务 ERROR 单条即告警",
+             match_source="order-service", match_level="ERROR",
              match_status_gte=None, keyword=None, window_minutes=5, threshold=1,
-             level="严重", notify="wecom,sms", enabled=True, owner="黄金金"),
-        dict(name="支付网关 5xx 异常", match_source="payment-gateway", match_level="ERROR",
+             level="严重", notify="sms", enabled=True, owner="黄金金", sort_order=10),
+        dict(name="支付网关 5xx 异常", category="业务日志", description="支付网关 5xx 异常",
+             match_source="payment-gateway", match_level="ERROR",
              match_status_gte=500, keyword=None, window_minutes=5, threshold=1,
-             level="严重", notify="wecom", enabled=True, owner="黄金金"),
-        dict(name="网关 5xx 比例超阈值", match_source="api-gateway", match_level="ERROR",
+             level="严重", notify="sms", enabled=True, owner="黄金金", sort_order=20),
+        dict(name="网关 5xx 比例超阈值", category="业务日志", description="网关 5xx 比例超阈值",
+             match_source="api-gateway", match_level="ERROR",
              match_status_gte=500, keyword=None, window_minutes=10, threshold=3,
-             level="警告", notify="wecom", enabled=True, owner="系统"),
-        dict(name="库存服务慢查询告警", match_source="inventory-svc", match_level="WARN",
+             level="警告", notify="sms", enabled=True, owner="系统", sort_order=30),
+        dict(name="库存服务慢查询告警", category="业务日志", description="库存服务慢查询",
+             match_source="inventory-svc", match_level="WARN",
              match_status_gte=None, keyword="slow query", window_minutes=10, threshold=1,
-             level="警告", notify="email", enabled=True, owner="黄金金"),
-        dict(name="用户服务告警", match_source="user-service", match_level="WARN",
+             level="警告", notify="email", enabled=True, owner="黄金金", sort_order=40),
+        dict(name="用户服务告警", category="业务日志", description="用户服务 WARN 告警",
+             match_source="user-service", match_level="WARN",
              match_status_gte=None, keyword=None, window_minutes=15, threshold=1,
-             level="提示", notify="wecom", enabled=True, owner="系统"),
-        dict(name="全量 ERROR 汇聚告警", match_source=None, match_level="ERROR",
+             level="提示", notify="sms", enabled=True, owner="系统", sort_order=50),
+        dict(name="全量 ERROR 汇聚告警", category="业务日志", description="全量 ERROR 汇聚告警",
+             match_source=None, match_level="ERROR",
              match_status_gte=None, keyword=None, window_minutes=10, threshold=5,
-             level="严重", notify="wecom,sms", enabled=False, owner="系统"),
+             level="严重", notify="sms", enabled=False, owner="系统", sort_order=60),
     ]
     for s in seeds:
         pg_exec(
             """
-            INSERT INTO alarm_rules
-                (name, match_source, match_level, match_status_gte, keyword,
-                 window_minutes, threshold, level, notify, enabled, owner)
-            VALUES (%(name)s,%(match_source)s,%(match_level)s,%(match_status_gte)s,%(keyword)s,
-                    %(window_minutes)s,%(threshold)s,%(level)s,%(notify)s,%(enabled)s,%(owner)s)
+            INSERT INTO alarm_rule_templates
+                (name, category, description, match_source, match_level, match_status_gte,
+                 keyword, window_minutes, threshold, level, notify, enabled, owner, sort_order)
+            VALUES (%(name)s, %(category)s, %(description)s, %(match_source)s, %(match_level)s,
+                    %(match_status_gte)s, %(keyword)s, %(window_minutes)s, %(threshold)s,
+                    %(level)s, %(notify)s, %(enabled)s, %(owner)s, %(sort_order)s)
+            ON CONFLICT (name) DO NOTHING
             """,
             s,
         )
@@ -234,8 +315,8 @@ def _seed_rules() -> None:
 
 # 四类日志（系统 / 中间件 / 数据库 / 业务）的**开箱规则模板**。
 #
-# 定位：tenant='all' 的平台级通用规则——所有租户生效、普通账号只读（与既有
-#   _rule_writable 的语义一致）。运营侧按自身阈值另建租户级规则覆盖即可。
+# 定位：alarm_rule_templates 里的平台共享定义，不参与实时判定；租户按需从模板库
+#   拉取成自己的 alarm_rules 后，再按自身阈值/通知人调整。
 # 为什么按 log_class + source_type 圈定而不是 match_source：
 #   系统日志的 source 是 facility（daemon/authpriv/kern…），中间件/数据库的
 #   source 各实例不同，用 match_source 等于逐台配规则，不可维护。
@@ -243,7 +324,7 @@ def _seed_rules() -> None:
 MULTICLASS_RULE_SEEDS = [
     dict(name="系统日志致命事件（kern/daemon CRIT+）", match_log_class="system",
          match_source_type=None, match_level="FATAL", match_status_gte=None, keyword=None,
-         window_minutes=5, threshold=1, level="严重", notify="wecom,sms", enabled=True,
+         window_minutes=5, threshold=1, level="严重", notify="sms", enabled=True,
          owner="系统", note="内核/服务致命错误，单条即告警"),
     # 认证失败按「关键字」圈定，而不是按 source_type=auth：
     # 上 K8s 后系统日志统一由采集器打标 source_type=syslog（一个容器一种格式），
@@ -252,76 +333,237 @@ MULTICLASS_RULE_SEEDS = [
     dict(name="系统认证失败激增（authpriv）", match_log_class="system",
          match_source_type=None, match_level="WARN", match_status_gte=None,
          keyword="Failed password",
-         window_minutes=10, threshold=10, level="警告", notify="wecom", enabled=True,
+         window_minutes=10, threshold=10, level="警告", notify="sms", enabled=True,
          owner="系统", note="疑似暴力破解或凭据失效，10 分钟内 >10 次"),
     # MySQL 两条默认关闭：本地开发不再部署 MySQL（改用平台自身的 PostgreSQL），
     # 规则保留是为了接入真实 MySQL 时能直接开箱启用，不必重新定义条件。
     dict(name="MySQL 慢查询堆积", match_log_class="database",
          match_source_type="mysql-slow", match_level=None, match_status_gte=None, keyword=None,
-         window_minutes=10, threshold=5, level="警告", notify="wecom", enabled=False,
+         window_minutes=10, threshold=5, level="警告", notify="sms", enabled=False,
          owner="系统", note="接入真实 MySQL 后启用；10 分钟内慢查询 >5 条"),
     dict(name="MySQL 错误日志", match_log_class="database",
          match_source_type="mysql-error", match_level="ERROR", match_status_gte=None, keyword=None,
-         window_minutes=5, threshold=1, level="严重", notify="wecom,sms", enabled=False,
+         window_minutes=5, threshold=1, level="严重", notify="sms", enabled=False,
          owner="系统", note="接入真实 MySQL 后启用；实例级 ERROR（连接失败/表损坏/复制中断）"),
     # 平台自身 PG 的 log_min_duration_statement=200ms，慢查询正文固定带 "duration:"，
     # 用它圈定比按 source_type 圈全部 PG 日志更准（checkpoint/连接日志不该算慢查询）。
     dict(name="PostgreSQL 慢查询堆积", match_log_class="database",
          match_source_type="postgres", match_level=None, match_status_gte=None, keyword="duration:",
-         window_minutes=10, threshold=5, level="警告", notify="wecom", enabled=True,
+         window_minutes=10, threshold=5, level="警告", notify="sms", enabled=True,
          owner="系统", note="10 分钟内慢查询 >5 条，需结合 attrs.dbuser 定位"),
     dict(name="PostgreSQL 错误日志", match_log_class="database",
          match_source_type="postgres", match_level="ERROR", match_status_gte=None, keyword=None,
-         window_minutes=5, threshold=1, level="严重", notify="wecom", enabled=True,
+         window_minutes=5, threshold=1, level="严重", notify="sms", enabled=True,
          owner="系统", note="PG 服务端 ERROR 及以上"),
     dict(name="网关 5xx 突增（nginx access）", match_log_class="middleware",
          match_source_type="nginx-access", match_level=None, match_status_gte=500, keyword=None,
-         window_minutes=5, threshold=5, level="严重", notify="wecom", enabled=True,
+         window_minutes=5, threshold=5, level="严重", notify="sms", enabled=True,
          owner="系统", note="上游不可用或后端超时"),
     dict(name="网关错误日志（nginx error）", match_log_class="middleware",
          match_source_type="nginx-error", match_level="ERROR", match_status_gte=None, keyword=None,
-         window_minutes=10, threshold=3, level="警告", notify="wecom", enabled=True,
+         window_minutes=10, threshold=3, level="警告", notify="sms", enabled=True,
          owner="系统", note="含 upstream timeout / connect() failed"),
     dict(name="Redis 持久化或内存告警", match_log_class="middleware",
          match_source_type="redis", match_level="WARN", match_status_gte=None, keyword=None,
-         window_minutes=10, threshold=1, level="警告", notify="wecom", enabled=True,
+         window_minutes=10, threshold=1, level="警告", notify="sms", enabled=True,
          owner="系统", note="BGSAVE 失败 / 达到 maxmemory"),
 ]
 
 
 def _seed_multiclass_rules() -> None:
-    """按 name 幂等补齐四类日志规则模板（已存在则跳过，不覆盖运营侧改动）。"""
-    for s in MULTICLASS_RULE_SEEDS:
+    """按 name 幂等补齐四类日志模板（已存在则跳过，不覆盖运营侧改动）。"""
+    for idx, s in enumerate(MULTICLASS_RULE_SEEDS):
         try:
-            hit = pg_query("SELECT id FROM alarm_rules WHERE name=%s AND tenant='all'", (s["name"],))
+            hit = pg_query("SELECT id FROM alarm_rule_templates WHERE name=%s", (s["name"],))
             if hit:
                 continue
+            params = dict(s)
+            params["category"] = {
+                "system": "系统日志", "middleware": "中间件日志",
+                "database": "数据库日志", "business": "业务日志",
+            }.get(s.get("match_log_class"), "通用")
+            params["description"] = s.get("note") or ""
+            params["sort_order"] = 100 + idx
             pg_exec(
                 """
-                INSERT INTO alarm_rules
-                    (tenant, name, match_source, match_log_class, match_source_type,
-                     match_level, match_status_gte, keyword, window_minutes, threshold,
-                     level, notify, enabled, owner)
-                VALUES ('all', %(name)s, NULL, %(match_log_class)s, %(match_source_type)s,
-                        %(match_level)s, %(match_status_gte)s, %(keyword)s, %(window_minutes)s,
-                        %(threshold)s, %(level)s, %(notify)s, %(enabled)s, %(owner)s)
+                INSERT INTO alarm_rule_templates
+                    (name, category, description, match_source, match_log_class,
+                     match_source_type, match_level, match_status_gte, keyword,
+                     window_minutes, threshold, level, notify, enabled, owner, sort_order)
+                VALUES (%(name)s, %(category)s, %(description)s, NULL, %(match_log_class)s,
+                        %(match_source_type)s, %(match_level)s, %(match_status_gte)s, %(keyword)s,
+                        %(window_minutes)s, %(threshold)s, %(level)s, %(notify)s, %(enabled)s,
+                        %(owner)s, %(sort_order)s)
+                ON CONFLICT (name) DO NOTHING
                 """,
-                s,
+                params,
             )
         except Exception as e:  # noqa: BLE001
-            print(f"[alarm-service] seed multiclass rule failed ({s['name']}): {e}", flush=True)
+            print(f"[alarm-service] seed multiclass template failed ({s['name']}): {e}", flush=True)
     # 定点迁移：早期「认证失败激增」把条件固定成 source_type=auth（旧采集端的
     # auth 分类）。上 K8s 后系统日志统一是 syslog，该分类不再存在，规则永不命中。
     # 只在条件仍是旧值时改，运营侧手工改过的不动。
     try:
         pg_exec("""
-            UPDATE alarm_rules
+            UPDATE alarm_rule_templates
                SET match_source_type = NULL, keyword = 'Failed password'
-             WHERE name = '系统认证失败激增（authpriv）' AND tenant = 'all'
+             WHERE name = '系统认证失败激增（authpriv）'
                AND match_source_type = 'auth'
         """)
     except Exception as e:  # noqa: BLE001
-        print(f"[alarm-service] migrate auth rule failed: {e}", flush=True)
+        print(f"[alarm-service] migrate auth template failed: {e}", flush=True)
+
+
+# ---------------------------------------------------------------------------
+# 历史平台级规则 → 模板库
+# ---------------------------------------------------------------------------
+def _rekey_event_states(tenant: str, old_rule_id: int, new_rule_id: int) -> None:
+    """规则 id 变化时，把 alarm_event_states 里的 rule:<id> 一起迁移。
+
+    告警事件的人工状态（已恢复/维护中、处理人）是按规则 id 存的。平台规则
+    复制成租户规则后 id 会变，不迁移就会出现「刚关闭的告警又变回告警中」。
+    """
+    if old_rule_id == new_rule_id:
+        return
+    old_event = f"rule:{old_rule_id}"
+    new_event = f"rule:{new_rule_id}"
+    pg_exec(
+        """
+        INSERT INTO alarm_event_states (tenant, event_id, status, handler, reason, updated_at)
+        SELECT %(tenant)s, %(new_event)s, status, handler, reason, updated_at
+          FROM alarm_event_states
+         WHERE tenant=%(tenant)s AND event_id=%(old_event)s
+        ON CONFLICT (tenant, event_id) DO UPDATE
+            SET status=EXCLUDED.status, handler=EXCLUDED.handler,
+                reason=EXCLUDED.reason, updated_at=EXCLUDED.updated_at
+        """,
+        {"tenant": tenant, "old_event": old_event, "new_event": new_event},
+    )
+    pg_exec(
+        "DELETE FROM alarm_event_states WHERE tenant=%s AND event_id=%s",
+        (tenant, old_event),
+    )
+
+
+def _migrate_platform_rules_to_templates() -> None:
+    """把旧模型里 tenant='all' 的共享规则迁成模板。
+
+    迁移策略：
+    1. 先按名称幂等写入 alarm_rule_templates（模板不参与判定）；
+    2. 给当前已有租户各复制一份同名租户规则，保证升级后现有告警不丢；
+    3. 全部复制成功后删除 tenant='all' 旧记录。
+    新建租户不会触发这段逻辑，因此默认零规则。
+    """
+    try:
+        platform = pg_query("SELECT * FROM alarm_rules WHERE tenant='all' ORDER BY id")
+    except Exception as e:  # noqa: BLE001
+        print(f"[alarm-service] migrate platform rules abort: {e}", flush=True)
+        return
+    if not platform:
+        return
+
+    category_map = {
+        "system": "系统日志", "middleware": "中间件日志",
+        "database": "数据库日志", "business": "业务日志",
+    }
+    for r in platform:
+        try:
+            pg_exec(
+                """
+                INSERT INTO alarm_rule_templates
+                    (name, category, description, match_source, match_log_class,
+                     match_source_type, match_level, match_status_gte, keyword,
+                     window_minutes, threshold, level, notify, enabled, owner, sort_order)
+                VALUES (%(name)s, %(category)s, %(description)s, %(match_source)s,
+                        %(match_log_class)s, %(match_source_type)s, %(match_level)s,
+                        %(match_status_gte)s, %(keyword)s, %(window_minutes)s, %(threshold)s,
+                        %(level)s, %(notify)s, %(enabled)s, %(owner)s, 1000)
+                ON CONFLICT (name) DO NOTHING
+                """,
+                {
+                    **dict(r),
+                    "category": category_map.get(r.get("match_log_class"), "通用"),
+                    "description": "由历史平台级规则迁移",
+                },
+            )
+        except Exception as e:  # noqa: BLE001
+            print(f"[alarm-service] migrate platform rule to template failed (id={r['id']}): {e}", flush=True)
+
+    try:
+        tenants = [row["code"] for row in pg_query(
+            "SELECT code FROM tenants WHERE enabled ORDER BY id"
+        )]
+    except Exception as e:  # noqa: BLE001
+        print(f"[alarm-service] copy platform rules skipped (tenants unavailable): {e}", flush=True)
+        return
+    if not tenants:
+        print("[alarm-service] copy platform rules skipped: no enabled tenants", flush=True)
+        return
+
+    failed = False
+    for r in platform:
+        for tenant in tenants:
+            try:
+                inserted = pg_query(
+                    """
+                    INSERT INTO alarm_rules
+                        (tenant, name, match_source, match_log_class, match_source_type,
+                         match_level, match_status_gte, keyword, window_minutes, threshold,
+                         level, notify, enabled, owner)
+                    SELECT %(tenant)s, %(name)s, %(match_source)s, %(match_log_class)s,
+                           %(match_source_type)s, %(match_level)s, %(match_status_gte)s,
+                           %(keyword)s, %(window_minutes)s, %(threshold)s, %(level)s,
+                           %(notify)s, %(enabled)s, %(owner)s
+                     WHERE NOT EXISTS (
+                           SELECT 1 FROM alarm_rules WHERE tenant=%(tenant)s AND name=%(name)s
+                     )
+                    RETURNING id
+                    """,
+                    {**dict(r), "tenant": tenant},
+                )
+                if inserted:
+                    new_rule_id = inserted[0]["id"]
+                else:
+                    existing = pg_query(
+                        "SELECT id FROM alarm_rules WHERE tenant=%s AND name=%s",
+                        (tenant, r["name"]),
+                    )
+                    if not existing:
+                        raise RuntimeError("rule copy missing after insert")
+                    new_rule_id = existing[0]["id"]
+                # 事件状态按 rule:<id> 存。平台规则复制成租户规则后 id 变了，
+                # 必须把已关闭/维护中的状态一起搬到新 id，否则关闭状态会“丢失”。
+                _rekey_event_states(tenant, r["id"], new_rule_id)
+            except Exception as e:  # noqa: BLE001
+                failed = True
+                print(
+                    f"[alarm-service] copy platform rule failed "
+                    f"(tenant={tenant}, id={r['id']}): {e}",
+                    flush=True,
+                )
+    if failed:
+        # 复制不完整时保留旧记录，下一次启动继续迁移，避免静默丢告警。
+        print("[alarm-service] platform rules kept because copy was incomplete", flush=True)
+        return
+    pg_exec("DELETE FROM alarm_rules WHERE tenant='all'")
+    _EVAL_CACHE.clear()
+    print(f"[alarm-service] migrated {len(platform)} platform rules to templates", flush=True)
+
+
+def _cleanup_legacy_default_rules() -> None:
+    """清理早期演示种子：tenant='default' 不属于任何真实租户，且已进入模板库。
+
+    只有确认 tenants 表里没有 default 这个真实租户时才删，避免误删同名环境。
+    """
+    try:
+        if pg_query("SELECT 1 FROM tenants WHERE code='default'"):
+            return
+        rows = pg_query("DELETE FROM alarm_rules WHERE tenant='default' RETURNING id")
+        if rows:
+            _EVAL_CACHE.clear()
+            print(f"[alarm-service] removed {len(rows)} legacy default rules", flush=True)
+    except Exception as e:  # noqa: BLE001
+        print(f"[alarm-service] cleanup legacy default rules skipped: {e}", flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -338,31 +580,43 @@ class RuleIn(BaseModel):
     window_minutes: int = 5
     threshold: int = 1
     level: str = "警告"                          # 告警严重级别：严重/警告/提示
-    notify: List[str] = []                      # wecom / sms / email
+    notify: List[str] = []                      # sms / email（企业微信渠道已下线）
     enabled: bool = True
     owner: str = "system"
 
+    @field_validator("notify")
+    @classmethod
+    def validate_notify(cls, value: List[str]) -> List[str]:
+        invalid = [item for item in value if item not in NOTIFY_VALUES]
+        if invalid:
+            raise ValueError(f"不支持的通知方式：{','.join(invalid)}")
+        return value
+
+
+class TemplateIn(RuleIn):
+    """规则模板：平台维护的共享定义，租户拉取后才生成真正的 alarm_rules。"""
+    category: str = Field("通用", max_length=40)
+    description: str = Field("", max_length=500)
+    sort_order: int = 0
+
 
 def _rule_visible(rule: Dict[str, Any], tenant: str) -> bool:
-    """可见性：管理员 all 巡检可见全部；否则只能看本租户规则与平台级通用规则。"""
+    """可见性：管理员 all 巡检可见全部；否则只能看本租户规则。"""
     if tenant == "all":
         return True
-    return (rule.get("tenant") or "all") in (tenant, "all")
+    return rule.get("tenant") == tenant
 
 
-def _rule_writable(rule: Dict[str, Any], tenant: str) -> bool:
-    """可写性：平台级通用规则（tenant='all'）不允许普通账号改；其余限本租户。"""
-    owner_tenant = rule.get("tenant") or "all"
-    if owner_tenant == "all":
-        return tenant == "all"
-    return tenant == "all" or owner_tenant == tenant
+def _rule_writable(rule: Dict[str, Any], tenant: str, identity: Dict[str, Any]) -> bool:
+    """可写性：管理员切到 all 时可跨租户维护；租户视角只能改本租户规则。"""
+    return tenant == "all" or rule.get("tenant") == tenant
 
 
 def row_to_rule(r: Dict[str, Any]) -> Dict[str, Any]:
     notify = [x for x in (r.get("notify") or "").split(",") if x]
     return {
         "id": r["id"],
-        "tenant": r.get("tenant") or "all",
+        "tenant": r.get("tenant"),
         "name": r["name"],
         "matchSource": r.get("match_source"),
         "matchLogClass": r.get("match_log_class"),
@@ -376,6 +630,30 @@ def row_to_rule(r: Dict[str, Any]) -> Dict[str, Any]:
         "notify": notify,
         "enabled": r["enabled"],
         "owner": r.get("owner"),
+        "createdAt": to_local(r.get("created_at")),
+        "updatedAt": to_local(r.get("updated_at")),
+    }
+
+
+def row_to_template(r: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "id": r["id"],
+        "name": r["name"],
+        "category": r.get("category") or "通用",
+        "description": r.get("description") or "",
+        "matchSource": r.get("match_source"),
+        "matchLogClass": r.get("match_log_class"),
+        "matchSourceType": r.get("match_source_type"),
+        "matchLevel": r.get("match_level"),
+        "matchStatusGte": r.get("match_status_gte"),
+        "keyword": r.get("keyword"),
+        "windowMinutes": r["window_minutes"],
+        "threshold": r["threshold"],
+        "level": r["level"],
+        "notify": [x for x in (r.get("notify") or "").split(",") if x],
+        "enabled": r["enabled"],
+        "owner": r.get("owner"),
+        "sortOrder": r.get("sort_order") or 0,
         "createdAt": to_local(r.get("created_at")),
         "updatedAt": to_local(r.get("updated_at")),
     }
@@ -430,6 +708,7 @@ def evaluate_rule(rule: Dict[str, Any], idx: str, now: int) -> Optional[Dict[str
         "query": query,
         "aggs": {
             "first": {"min": {"field": "@timestamp"}},
+            "last": {"max": {"field": "@timestamp"}},
             "sources": {"terms": {"field": "source", "size": 5}},
             "hosts": {"terms": {"field": "host", "size": 5}},
         },
@@ -452,6 +731,9 @@ def evaluate_rule(rule: Dict[str, Any], idx: str, now: int) -> Optional[Dict[str
     first_ts = None
     if aggs.get("first", {}).get("value") is not None:
         first_ts = datetime.fromtimestamp(aggs["first"]["value"] / 1000, tz=timezone.utc)
+    last_ts = None
+    if aggs.get("last", {}).get("value") is not None:
+        last_ts = datetime.fromtimestamp(aggs["last"]["value"] / 1000, tz=timezone.utc)
     src = sample["hits"]["hits"][0]["_source"] if sample["hits"]["hits"] else {}
     # 事件「关联数据源」展示：按类型圈定的规则显示类型名，否则回落到数据源名/全部
     scope = rule.get("match_source") or "全部数据源"
@@ -475,6 +757,8 @@ def evaluate_rule(rule: Dict[str, Any], idx: str, now: int) -> Optional[Dict[str
         "count": cnt,
         "firstSeen": to_local(first_ts),
         "firstSeenTs": to_local_ms(first_ts),
+        "lastSeen": to_local(last_ts),
+        "lastSeenTs": to_local_ms(last_ts),
         "durationSec": max(0, int((now - (to_local_ms(first_ts) or now)) / 1000)),
         "matchedSources": [b["key"] for b in aggs.get("sources", {}).get("buckets", [])],
         "matchedHosts": [b["key"] for b in aggs.get("hosts", {}).get("buckets", [])],
@@ -531,8 +815,21 @@ def source_aliases(tenant: str) -> Dict[str, str]:
         return {}
 
 
+def _closed_event_has_new_hit(state: Dict[str, Any], ev: Dict[str, Any]) -> bool:
+    """已关闭事件是否出现「关闭之后」的新命中。
+
+    关闭时间取 alarm_event_states.updated_at；最新命中取 OpenSearch 的 max(@timestamp)。
+    只要存在关闭后的日志，就说明这是一次新的告警，应自动回到「告警中」。
+    """
+    if state.get("status") != "已恢复":
+        return False
+    closed_ms = to_local_ms(state.get("updated_at"))
+    last_ms = ev.get("lastSeenTs")
+    return bool(closed_ms and last_ms and last_ms > closed_ms)
+
+
 def build_events(tenant: str) -> List[Dict[str, Any]]:
-    """按租户判定告警：本租户规则 + 平台级通用规则（tenant='all'）合并评估。"""
+    """按租户判定告警：只评估该租户自己的规则，平台模板不参与判定。"""
     cached = eval_cache_get(tenant)
     if cached is not None:
         return cached
@@ -543,7 +840,7 @@ def build_events(tenant: str) -> List[Dict[str, Any]]:
         rules = pg_query("SELECT * FROM alarm_rules WHERE enabled = TRUE ORDER BY id")
     else:
         rules = pg_query(
-            "SELECT * FROM alarm_rules WHERE enabled = TRUE AND tenant IN (%s,'all') ORDER BY id",
+            "SELECT * FROM alarm_rules WHERE enabled = TRUE AND tenant=%s ORDER BY id",
             (tenant,),
         )
     events: List[Dict[str, Any]] = []
@@ -561,13 +858,22 @@ def build_events(tenant: str) -> List[Dict[str, Any]]:
         ev["id"] = event_id
         # 人工状态覆盖
         st = pg_query(
-            "SELECT status, handler, reason FROM alarm_event_states WHERE tenant=%s AND event_id=%s",
+            "SELECT status, handler, reason, updated_at FROM alarm_event_states "
+            "WHERE tenant=%s AND event_id=%s",
             (tenant, event_id),
         )
         if st:
-            ev["status"] = st[0]["status"]
-            ev["handler"] = st[0]["handler"]
-            ev["closeReason"] = st[0]["reason"]
+            state = dict(st[0])
+            if _closed_event_has_new_hit(state, ev):
+                # 关闭后又出现新日志：视为一次新告警，自动回到「告警中」并清掉上一位处理人，
+                # 否则列表会一直停留在「已恢复」，与正在产生的日志相矛盾。
+                set_event_state(tenant, event_id, "告警中", None, None)
+                state["status"] = "告警中"
+                state["handler"] = None
+                state["reason"] = None
+            ev["status"] = state["status"]
+            ev["handler"] = state["handler"]
+            ev["closeReason"] = state["reason"]
         else:
             ev["status"] = "告警中"
             ev["handler"] = None
@@ -671,8 +977,14 @@ def _esc(v: Any) -> str:
     return str(v).replace("\\", "\\\\").replace("'", "\\'")
 
 
-def _iso_utc(ms: int) -> str:
-    return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+def _iso_local(ms: int) -> str:
+    """关联检索 PPL 的时间字面量按服务端本地时区带偏移输出。
+
+    @timestamp 在索引里是 UTC，但检索页时间选择器、结果表格都按浏览器本地时区展示。
+    这里输出 `2026-11-23T17:11:22+08:00` 这类带偏移的 ISO 时间，PPL 里看到的钟点
+    与页面时间范围一致，同时 OpenSearch 仍按同一绝对时刻过滤。
+    """
+    return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).astimezone().isoformat(timespec="seconds")
 
 
 def build_related_pql(rule: Dict[str, Any], ev: Dict[str, Any], tenant: str) -> Dict[str, Any]:
@@ -706,8 +1018,8 @@ def build_related_pql(rule: Dict[str, Any], ev: Dict[str, Any], tenant: str) -> 
     to_ms = now + 60_000
     from_ms = min(ev.get("firstSeenTs") or (now - window_ms), now - window_ms) - 60_000
     if time_f:
-        conds.append(f"{time_f} >= timestamp('{_iso_utc(from_ms)}')")
-        conds.append(f"{time_f} <= timestamp('{_iso_utc(to_ms)}')")
+        conds.append(f"{time_f} >= timestamp('{_iso_local(from_ms)}')")
+        conds.append(f"{time_f} <= timestamp('{_iso_local(to_ms)}')")
         applied.append(f"时间窗口({time_f})")
     else:
         skipped.append("时间窗口(索引无 date 字段)")
@@ -793,7 +1105,8 @@ def root():
         "service": "alarm-service",
         "docs": "/docs",
         "endpoints": [
-            "/rules (规则 CRUD)",
+            "/rules (租户规则 CRUD)",
+            "/templates (平台规则模板：列表/拉取)",
             "/events (规则实时判定的告警事件)",
             "/events/close (关闭/批量关闭)",
         ],
@@ -806,6 +1119,197 @@ def _startup():
     init_db()
 
 
+# ------------------------------- 规则模板 -------------------------------
+@app.get("/templates")
+def list_templates(
+    keyword: str = Query("", description="模板名称模糊匹配"),
+    category: str = Query("", description="模板分类"),
+    identity: Dict[str, Any] = Depends(current_identity),
+):
+    """平台共享的规则模板；所有登录用户可查看，模板本身不参与告警判定。"""
+    sql = "SELECT * FROM alarm_rule_templates WHERE 1=1"
+    params: List[Any] = []
+    if keyword:
+        sql += " AND (name ILIKE %s OR description ILIKE %s)"
+        params.extend([f"%{keyword}%", f"%{keyword}%"])
+    if category:
+        sql += " AND category=%s"
+        params.append(category)
+    sql += " ORDER BY sort_order, id"
+    rows = pg_query(sql, tuple(params))
+    return {"items": [row_to_template(r) for r in rows], "total": len(rows)}
+
+
+@app.get("/templates/{template_id}")
+def get_template(
+    template_id: int,
+    identity: Dict[str, Any] = Depends(current_identity),
+):
+    rows = pg_query("SELECT * FROM alarm_rule_templates WHERE id=%s", (template_id,))
+    if not rows:
+        raise HTTPException(status_code=404, detail="规则模板不存在")
+    return row_to_template(rows[0])
+
+
+@app.post("/templates")
+def create_template(
+    payload: TemplateIn,
+    identity: Dict[str, Any] = Depends(current_identity),
+):
+    if not is_admin(identity):
+        raise HTTPException(status_code=403, detail="仅平台管理员可维护规则模板")
+    row = pg_query(
+        """
+        INSERT INTO alarm_rule_templates
+            (name, category, description, match_source, match_log_class, match_source_type,
+             match_level, match_status_gte, keyword, window_minutes, threshold, level,
+             notify, enabled, owner, sort_order)
+        VALUES (%(name)s, %(category)s, %(description)s, %(match_source)s, %(match_log_class)s,
+                %(match_source_type)s, %(match_level)s, %(match_status_gte)s, %(keyword)s,
+                %(window_minutes)s, %(threshold)s, %(level)s, %(notify)s, %(enabled)s,
+                %(owner)s, %(sort_order)s)
+        RETURNING id
+        """,
+        {
+            "name": payload.name,
+            "category": payload.category or "通用",
+            "description": payload.description or "",
+            "match_source": payload.match_source or None,
+            "match_log_class": payload.match_log_class or None,
+            "match_source_type": payload.match_source_type or None,
+            "match_level": payload.match_level or None,
+            "match_status_gte": payload.match_status_gte,
+            "keyword": payload.keyword or None,
+            "window_minutes": payload.window_minutes,
+            "threshold": payload.threshold,
+            "level": payload.level,
+            "notify": ",".join(payload.notify),
+            "enabled": payload.enabled,
+            "owner": payload.owner,
+            "sort_order": payload.sort_order,
+        },
+    )
+    return {"id": row[0]["id"], "ok": True}
+
+
+@app.put("/templates/{template_id}")
+def update_template(
+    template_id: int,
+    payload: TemplateIn,
+    identity: Dict[str, Any] = Depends(current_identity),
+):
+    if not is_admin(identity):
+        raise HTTPException(status_code=403, detail="仅平台管理员可维护规则模板")
+    rows = pg_query("SELECT id FROM alarm_rule_templates WHERE id=%s", (template_id,))
+    if not rows:
+        raise HTTPException(status_code=404, detail="规则模板不存在")
+    pg_exec(
+        """
+        UPDATE alarm_rule_templates SET
+            name=%(name)s, category=%(category)s, description=%(description)s,
+            match_source=%(match_source)s, match_log_class=%(match_log_class)s,
+            match_source_type=%(match_source_type)s, match_level=%(match_level)s,
+            match_status_gte=%(match_status_gte)s, keyword=%(keyword)s,
+            window_minutes=%(window_minutes)s, threshold=%(threshold)s, level=%(level)s,
+            notify=%(notify)s, enabled=%(enabled)s, owner=%(owner)s,
+            sort_order=%(sort_order)s, updated_at=now()
+        WHERE id=%(id)s
+        """,
+        {
+            "id": template_id,
+            "name": payload.name,
+            "category": payload.category or "通用",
+            "description": payload.description or "",
+            "match_source": payload.match_source or None,
+            "match_log_class": payload.match_log_class or None,
+            "match_source_type": payload.match_source_type or None,
+            "match_level": payload.match_level or None,
+            "match_status_gte": payload.match_status_gte,
+            "keyword": payload.keyword or None,
+            "window_minutes": payload.window_minutes,
+            "threshold": payload.threshold,
+            "level": payload.level,
+            "notify": ",".join(payload.notify),
+            "enabled": payload.enabled,
+            "owner": payload.owner,
+            "sort_order": payload.sort_order,
+        },
+    )
+    return {"id": template_id, "ok": True}
+
+
+@app.delete("/templates/{template_id}")
+def delete_template(
+    template_id: int,
+    identity: Dict[str, Any] = Depends(current_identity),
+):
+    if not is_admin(identity):
+        raise HTTPException(status_code=403, detail="仅平台管理员可维护规则模板")
+    rows = pg_query("SELECT id FROM alarm_rule_templates WHERE id=%s", (template_id,))
+    if not rows:
+        raise HTTPException(status_code=404, detail="规则模板不存在")
+    pg_exec("DELETE FROM alarm_rule_templates WHERE id=%s", (template_id,))
+    return {"id": template_id, "ok": True}
+
+
+@app.post("/templates/{template_id}/apply")
+def apply_template(
+    template_id: int,
+    tenant: Optional[str] = Query(None),
+    identity: Dict[str, Any] = Depends(current_identity),
+):
+    """把模板拉取成当前租户的一条规则；模板本身保持不变，后续修改只影响本租户。"""
+    tenant = resolve_tenant(identity, tenant)
+    if tenant == "all":
+        raise HTTPException(status_code=400, detail="请先选择具体租户，再拉取规则模板")
+    rows = pg_query("SELECT * FROM alarm_rule_templates WHERE id=%s", (template_id,))
+    if not rows:
+        raise HTTPException(status_code=404, detail="规则模板不存在")
+    tpl = rows[0]
+    exists = pg_query(
+        "SELECT id FROM alarm_rules WHERE tenant=%s AND name=%s",
+        (tenant, tpl["name"]),
+    )
+    if exists:
+        return {
+            "id": exists[0]["id"],
+            "ok": True,
+            "existing": True,
+            "tenant": tenant,
+        }
+    row = pg_query(
+        """
+        INSERT INTO alarm_rules
+            (tenant, name, match_source, match_log_class, match_source_type,
+             match_level, match_status_gte, keyword, window_minutes, threshold,
+             level, notify, enabled, owner)
+        VALUES (%(tenant)s, %(name)s, %(match_source)s, %(match_log_class)s,
+                %(match_source_type)s, %(match_level)s, %(match_status_gte)s, %(keyword)s,
+                %(window_minutes)s, %(threshold)s, %(level)s, %(notify)s, %(enabled)s,
+                %(owner)s)
+        RETURNING id
+        """,
+        {
+            "tenant": tenant,
+            "name": tpl["name"],
+            "match_source": tpl.get("match_source"),
+            "match_log_class": tpl.get("match_log_class"),
+            "match_source_type": tpl.get("match_source_type"),
+            "match_level": tpl.get("match_level"),
+            "match_status_gte": tpl.get("match_status_gte"),
+            "keyword": tpl.get("keyword"),
+            "window_minutes": tpl["window_minutes"],
+            "threshold": tpl["threshold"],
+            "level": tpl["level"],
+            "notify": tpl.get("notify") or "",
+            "enabled": tpl["enabled"],
+            "owner": tpl.get("owner") or "system",
+        },
+    )
+    _EVAL_CACHE.clear()
+    return {"id": row[0]["id"], "ok": True, "existing": False, "tenant": tenant}
+
+
 # ------------------------------- 告警规则 -------------------------------
 @app.get("/rules")
 def list_rules(
@@ -816,15 +1320,15 @@ def list_rules(
     owner: str = Query("", description="更新人"),
     identity: Dict[str, Any] = Depends(current_identity),
 ):
-    """规则为租户级资产。普通账号看「本租户 + 平台级通用」，管理员可用 tenant=all 巡检全平台。"""
+    """规则为租户级资产。普通账号只看本租户，管理员可用 tenant=all 巡检全平台。"""
     tenant = resolve_tenant(identity, tenant)
     sql = "SELECT * FROM alarm_rules WHERE 1=1"
     params: List[Any] = []
     if tenant == "all":
         pass  # 管理员全平台巡检，不加租户条件
     else:
-        # 本租户规则 + 平台级通用规则（tenant='all'）：与 build_events 的判定口径保持一致
-        sql += " AND tenant IN (%s,'all')"
+        # 只看本租户规则；平台共享配置在模板库，不在这里混入
+        sql += " AND tenant=%s"
         params.append(tenant)
     if keyword:
         sql += " AND name ILIKE %s"
@@ -850,8 +1354,11 @@ def create_rule(
     identity: Dict[str, Any] = Depends(current_identity),
 ):
     tenant = resolve_tenant(identity, tenant)
-    if tenant == "all" and not is_admin(identity):
-        raise HTTPException(status_code=403, detail="仅平台管理员可创建平台级通用规则")
+    if tenant == "all":
+        raise HTTPException(
+            status_code=400,
+            detail="规则必须归属具体租户；平台共享配置请维护规则模板",
+        )
     row = pg_query(
         """
         INSERT INTO alarm_rules
@@ -908,8 +1415,8 @@ def update_rule(
     rows = pg_query("SELECT * FROM alarm_rules WHERE id=%s", (rule_id,))
     if not rows or not _rule_visible(rows[0], tenant):
         raise HTTPException(status_code=404, detail="规则不存在")
-    if not _rule_writable(rows[0], tenant):
-        raise HTTPException(status_code=403, detail="平台级通用规则仅平台管理员可修改")
+    if not _rule_writable(rows[0], tenant, identity):
+        raise HTTPException(status_code=403, detail="无权修改该租户的告警规则")
     pg_exec(
         """
         UPDATE alarm_rules SET
@@ -952,8 +1459,8 @@ def delete_rule(
     rows = pg_query("SELECT * FROM alarm_rules WHERE id=%s", (rule_id,))
     if not rows or not _rule_visible(rows[0], tenant):
         raise HTTPException(status_code=404, detail="规则不存在")
-    if not _rule_writable(rows[0], tenant):
-        raise HTTPException(status_code=403, detail="平台级通用规则仅平台管理员可删除")
+    if not _rule_writable(rows[0], tenant, identity):
+        raise HTTPException(status_code=403, detail="无权删除该租户的告警规则")
     pg_exec("DELETE FROM alarm_rules WHERE id=%s", (rule_id,))
     _EVAL_CACHE.clear()
     return {"id": rule_id, "ok": True}
@@ -970,8 +1477,8 @@ def toggle_rule(
     rows = pg_query("SELECT * FROM alarm_rules WHERE id=%s", (rule_id,))
     if not rows or not _rule_visible(rows[0], tenant):
         raise HTTPException(status_code=404, detail="规则不存在")
-    if not _rule_writable(rows[0], tenant):
-        raise HTTPException(status_code=403, detail="平台级通用规则仅平台管理员可启停")
+    if not _rule_writable(rows[0], tenant, identity):
+        raise HTTPException(status_code=403, detail="无权启停该租户的告警规则")
     enabled = bool(payload.get("enabled", True))
     pg_exec("UPDATE alarm_rules SET enabled=%s, updated_at=now() WHERE id=%s", (enabled, rule_id))
     _EVAL_CACHE.clear()

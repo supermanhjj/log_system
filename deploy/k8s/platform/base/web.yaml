@@ -7,14 +7,50 @@ spec:
   template:
     metadata: { labels: { app: web } }
     spec:
+      # 网关配置在启动时渲染：DNS 地址和命名空间都不写死。
+      # 渲染失败（例如取不到 DNS）会卡在 Init:Error，属于“快速暴露”，
+      # 而不是起来以后所有 /api 静默 502。
+      initContainers:
+        - name: render-nginx-conf
+          image: ruilog-web:k8s
+          envFrom: [{ configMapRef: { name: ruilog-env } }]
+          env:
+            - name: POD_NAMESPACE
+              valueFrom: { fieldRef: { fieldPath: metadata.namespace } }
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              NS="${NGINX_RESOLVER:-}"
+              if [ -z "$NS" ]; then
+                NS=$(awk '/^nameserver/{print $2; exit}' /etc/resolv.conf)
+              fi
+              if [ -z "$NS" ]; then
+                echo "[web] 取不到集群 DNS：请在 ruilog-env 里设置 NGINX_RESOLVER"; exit 1
+              fi
+              echo "[web] resolver=$NS namespace=$POD_NAMESPACE"
+              sed -e "s|__RESOLVER__|$NS|g" -e "s|__NAMESPACE__|$POD_NAMESPACE|g" \
+                /nginx-template/nginx-k8s.conf > /etc/nginx/conf.d/default.conf
+              nginx -t
+          volumeMounts:
+            - { name: nginx-template, mountPath: /nginx-template, readOnly: true }
+            - { name: nginx-conf-dir, mountPath: /etc/nginx/conf.d }
       containers:
         - name: web
           image: ruilog-web:k8s
           ports: [{ containerPort: 80 }]
+          volumeMounts:
+            - { name: nginx-conf-dir, mountPath: /etc/nginx/conf.d }
           readinessProbe: { httpGet: { path: /index.html, port: 80 }, initialDelaySeconds: 3, periodSeconds: 10 }
           resources:
             requests: { cpu: 20m, memory: 32Mi }
             limits: { cpu: 300m, memory: 128Mi }
+      volumes:
+        - name: nginx-template
+          configMap: { name: web-nginx-conf }
+        - name: nginx-conf-dir
+          emptyDir: {}
 ---
 apiVersion: v1
 kind: Service

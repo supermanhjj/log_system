@@ -12,20 +12,33 @@ image:
   repository: fluent/fluent-bit
   # 必须用 5.2：configmap 的多行过滤是 Multiline_Parser（5.x 语法），
   # 2.x 只认 multiline.parser，版本不匹配会导致 cri parser 未注册、filter 初始化失败。
-  tag: "5.2.0-arm64"
+  # 默认 5.2.0 是多架构标签，云上 amd64/arm64 都能拉；
+  # Apple Silicon 本地如果拉到 amd64 报 exec format error，叠加 values-local.yaml 指定 arm64。
+  tag: "5.2.0"
   pullPolicy: IfNotPresent
 
 collector:
   clusterId: sgcc-test           # 多集群区分，写入 attrs.cluster_id
-  # 现场：平台与采集器同在 K8s，走集群内服务名；本地测试：平台在 docker-compose，
-  # 采集器在 Docker Desktop K8s，走宿主地址（ingest 已映射宿主 8005）。
-  ingestUrl: http://host.docker.internal:8005/ingest/collector
-  ingestPort: 8005
+  # 平台与采集器同在 K8s（本地 Docker Desktop 与现场都是），走集群内服务名。
+  # 只有采集器部署在集群外（主机 Agent）时才改成平台对外入口。
+  ingestUrl: http://ingest-service:8000/ingest/collector
+  ingestPort: 8000
   # 二选一：existingSecret（推荐）或下面的 collectorKey（调试用，会明文进 Secret）
   existingSecret: ""
   secretKey: collector-key
   collectorKey: "dev-collector-key"
   memBufLimit: 64MB
+
+# 采集器自身作为「Agent」向平台上报心跳，Agent 管理页才能看到在跑的采集端。
+# 台账归属租户：K8s 采集器是集群级组件，这里填它主要服务的业务系统；
+# 真正的日志归属仍由服务端按 namespace→tenant 映射判定，与此无关。
+agent:
+  enabled: true
+  service: agent-service
+  port: 8000
+  uri: /heartbeat
+  tenant: i6000
+  intervalSec: 30
 
 # 每条 INPUT 可精确到 container（同一 namespace 内不同服务分帧规则不同时必填）。
 # multiline 可选：ruilog-java / ruilog-go / ruilog-python / none。

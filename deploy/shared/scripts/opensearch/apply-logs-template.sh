@@ -29,11 +29,19 @@ ISM="$ROOT/opensearch/ism/ruilog-detail-retention.json"
 [ -f "$ISM" ] || { echo "[apply] ISM 策略不存在：$ISM"; exit 1; }
 
 python3 - "$OS_URL" "$TPL" "$ISM" <<'PY'
-import json, os, sys, urllib.request, urllib.error
+import json, os, sys, urllib.request, urllib.error, base64
 
 base, tpl_path, ism_path = sys.argv[1], sys.argv[2], sys.argv[3]
 template = json.load(open(tpl_path, encoding="utf-8"))
 policy = json.load(open(ism_path, encoding="utf-8"))
+
+# 可选 Basic Auth：只有 OPENSEARCH_USER/PASSWORD 都设置时才带。
+# 本地/隔离测试默认不设，行为与关闭安全插件时完全一致。
+auth_headers = {}
+user, pwd = os.getenv("OPENSEARCH_USER", ""), os.getenv("OPENSEARCH_PASSWORD", "")
+if user and pwd:
+    token = base64.b64encode(f"{user}:{pwd}".encode()).decode()
+    auth_headers["Authorization"] = f"Basic {token}"
 
 # 分片/副本可由环境变量覆盖：测试环境 1/0，生产按磁盘与节点数调整
 settings = template["template"]["settings"]
@@ -44,8 +52,9 @@ settings["number_of_replicas"] = int(os.getenv("OPENSEARCH_REPLICAS",
 
 def call(method, path, body=None):
     data = json.dumps(body).encode() if body is not None else None
+    headers = {"Content-Type": "application/json", **auth_headers}
     req = urllib.request.Request(base + path, data=data, method=method,
-                                 headers={"Content-Type": "application/json"})
+                                 headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=30) as r:
             return r.status, json.loads(r.read() or b"{}")

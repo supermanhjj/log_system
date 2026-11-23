@@ -54,7 +54,7 @@
 ├── docker-compose.yml / compose.override.yml / docker-compose.prod.yml   # 容器部署入口（保留在根目录）
 ├── deploy/
 │   ├── docker/     # 仅容器部署：nginx 反代与静态托管、fluentbit 采集器、OpenSearch Dashboards 配置
-│   ├── k8s/        # 仅 K8s 部署：platform（kustomize base + overlays/local）、collector（Helm DaemonSet）、i6000-demo（演示业务清单）
+│   ├── k8s/        # 仅 K8s 部署：platform（kustomize base + overlays/local、cloud、cloud-ha）、collector（Helm DaemonSet）、i6000-demo（演示业务清单）
 │   ├── shared/     # 两种部署共用：clickhouse 建表/迁移、opensearch 索引模板与 ISM、kafka/opensearch 运维脚本
 │   └── release/    # 发布：dockerfiles（backend/web/flink-job）、build-images.sh、load-images.sh、package.sh
 ├── services/ frontend/ flink-jobs/ tools/   # 业务源码（与部署方式无关）
@@ -64,7 +64,9 @@
 | 场景 | 命令 |
 |---|---|
 | 容器部署（本地开发） | `docker compose up -d --build` |
-| K8s 部署（本地 Docker Desktop） | `docker build -f deploy/release/dockerfiles/backend.Dockerfile -t log_system-backend:k8s .`（web / flink-job 同理）→ `sh deploy/release/load-images.sh` → `kubectl apply -k deploy/k8s/platform/overlays/local` |
+| K8s 部署（本地 Docker Desktop） | `docker build -f deploy/release/dockerfiles/backend.Dockerfile -t log_system-backend:k8s .`（web / flink-job 同理）→ `sh deploy/release/load-images.sh` → `sh deploy/k8s/apply.sh local` |
+| K8s 部署（云上测试） | 修改 `deploy/k8s/platform/overlays/cloud/kustomization.yaml` 的镜像仓库/StorageClass/PVC → `sh deploy/k8s/apply.sh cloud`；采集器用 `-f deploy/k8s/collector/values-cloud.yaml` |
+| K8s 部署（3 节点生产形态） | `sh deploy/k8s/apply.sh cloud-ha`（前提：Kafka/OS 已扩到 3 节点） |
 | 发布（多架构镜像推送） | `REGISTRY=<registry>/ruilog TAG=1.0.0 sh deploy/release/build-images.sh` |
 | 发布（交付包归档） | `VERSION=1.0.0 sh deploy/release/package.sh` → `dist/ruilog-deploy-1.0.0.tar.gz` |
 
@@ -97,7 +99,7 @@ docker compose down -v
 ## 已知边界
 
 - **登录、RBAC 与多租户隔离已落地**：`search` / `dashboard` / `alarm` / `ingest` 四服务各自引入 `authz.py`，全部业务端点校验 Bearer 并按 JWT 强制解析租户；看板与告警规则已补 `tenant` 列做租户级隔离。剩余 `/agents`、`/ai` 的主机与模型配置尚未租户化（详见 `module-platform-admin.md` 第 9 节）。
-- 种子账号密码为演示用（`admin` / `Admin@123`，其余 `Ops@12345`），生产部署前必须用 `AUTH_SEED_ADMIN_PASSWORD` / `AUTH_SEED_DEMO_PASSWORD` 覆盖并改掉。
+- 种子账号仅保留 `admin`（`admin / Admin@123`，生产部署前用 `AUTH_SEED_ADMIN_PASSWORD` 覆盖并改掉）；其他账号由管理员在「用户管理」中创建，不再预置演示账号。
 - `/pql` 仅关键字黑名单，缺索引/函数白名单；时间范围已随请求注入（`source` 段后作为独立 `where`）。
 - AI 自然语言转 PPL 的**生成端点、配置页预览与检索页「智能检索 · ChatPPL」弹窗均已可用**；时间范围在 `source` 段后作为独立 `where` 注入，与关键字检索口径一致。
 - 智能检索的**租户维度随检索范围变化**：单租户范围租户是检索上下文（出现即剥除）；「全部租户」范围可用虚拟字段 `tenant`（如 `stats count() by tenant, level`、`where tenant = '总部生产'`），由检索网关翻译为物理字段并在结果中显示租户中文名。详见 `docs/module-log-search.md` 第 9 章。

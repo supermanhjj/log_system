@@ -12,16 +12,21 @@
 # =============================================================================
 set -e
 BROKER="${KAFKA_BROKER:-kafka:9092}"
+# 单 broker 本地默认 1；云上三 broker 由 ConfigMap 覆盖为 3。
+RF="${KAFKA_TOPIC_RF:-1}"
+MIN_ISR="${KAFKA_MIN_INSYNC_REPLICAS:-1}"
 BIN=/opt/bitnami/kafka/bin/kafka-topics.sh
 
 create() {
   name="$1"; parts="$2"
   if "$BIN" --bootstrap-server "$BROKER" --list 2>/dev/null | grep -qx "$name"; then
-    echo "[kafka-init] topic exists: $name"
+    echo "[kafka-init] topic exists: $name (expected RF=$RF; 已有 topic 不会被本脚本改副本数)"
   else
     "$BIN" --bootstrap-server "$BROKER" --create \
-      --topic "$name" --partitions "$parts" --replication-factor 1
-    echo "[kafka-init] created: $name (partitions=$parts)"
+      --topic "$name" --partitions "$parts" \
+      --replication-factor "$RF" \
+      --config "min.insync.replicas=$MIN_ISR"
+    echo "[kafka-init] created: $name (partitions=$parts, rf=$RF, min.insync.replicas=$MIN_ISR)"
   fi
 }
 

@@ -18,6 +18,9 @@ JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "1440"))
 
 PWD_MIN, PWD_MAX = 8, 32
+# bcrypt 对 >72 字节的输入直接拒算（抛 ValueError），而中文字符 1 字 = 3 字节，
+# 32 个中文字符就是 96 字节。必须在这里按字节兜住，否则接口会 500 而不是 400。
+PWD_MAX_BYTES = 72
 PWD_RULE = "密码长度 8-32 位，需同时包含字母与数字"
 
 
@@ -34,6 +37,8 @@ def verify_password(raw: str, hashed: str) -> bool:
 
 def password_error(raw: str) -> Optional[str]:
     if not raw or len(raw) < PWD_MIN or len(raw) > PWD_MAX:
+        return PWD_RULE
+    if len(raw.encode("utf-8")) > PWD_MAX_BYTES:
         return PWD_RULE
     if not any(c.isalpha() for c in raw) or not any(c.isdigit() for c in raw):
         return PWD_RULE

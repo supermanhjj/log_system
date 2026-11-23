@@ -9,12 +9,18 @@
 # 1) 在平台「数据接入 → 解析规则 → 采集器与审计」创建采集器，拿到明文 key。
 #    数据库只存 sha256；旧版 INGEST_COLLECTOR_KEYS 环境变量仍可用但不限制租户。
 
-# 2) 装到 K8s
-helm install ruilog-collector ./deploy/k8s/collector \
+# 2) 本地 Docker Desktop / Apple Silicon：叠加 values-local.yaml（指定 arm64）
+helm upgrade --install ruilog-collector ./deploy/k8s/collector \
   -n ruilog-system --create-namespace \
+  -f deploy/k8s/collector/values-local.yaml \
   --set collector.clusterId=sgcc-test \
-  --set collector.ingestUrl=http://ruilog-ingest.ruilog-system.svc:8000/ingest/collector \
+  --set collector.ingestUrl=http://ingest-service:8000/ingest/collector \
   --set collector.collectorKey='<第 1 步的 key>'
+
+# 2b) 云上测试环境：用 values-cloud.yaml，替换 clusterId / ingestUrl / key / tenant
+helm upgrade --install ruilog-collector ./deploy/k8s/collector \
+  -n ruilog-system --create-namespace \
+  -f deploy/k8s/collector/values-cloud.yaml
 
 # 3) 新增业务系统：values 里加三行，然后升级
 helm upgrade ruilog-collector ./deploy/k8s/collector \

@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh, Download, Close } from '@element-plus/icons-vue'
 import { useAppStore } from '../stores/app'
+import { useAuthStore } from '../stores/auth'
 import {
   listEvents,
   closeEvent,
@@ -15,6 +16,7 @@ import {
 } from '../api/alarms'
 
 const app = useAppStore()
+const auth = useAuthStore()
 const router = useRouter()
 
 const loading = ref(false)
@@ -161,7 +163,8 @@ async function viewRelatedLog() {
 // ——— 关闭 / 维护 ———
 async function doClose(row, reason) {
   try {
-    await closeEvent(row.id, reason, app.userName || '黄金金')
+    // 处理人取当前登录用户，不能用不存在的 app.userName，否则会落到演示名。
+    await closeEvent(row.id, reason, auth.displayName || auth.user?.account || '系统')
     ElMessage.success('告警已关闭，恢复通知已发送')
     loadEvents(false)
   } catch (e) {
@@ -196,7 +199,7 @@ async function onBatchClose() {
     inputValue: '批量处理',
     inputValidator: (v) => (v && v.trim() ? true : '原因不可为空'),
   })
-    .then(({ value }) => closeEvents(ids, value.trim(), app.userName || '黄金金'))
+    .then(({ value }) => closeEvents(ids, value.trim(), auth.displayName || auth.user?.account || '系统'))
     .then((res) => {
       ElMessage.success(`成功关闭 ${res.closed} 条，跳过 ${res.skipped} 条已恢复`)
       loadEvents(false)

@@ -7,7 +7,7 @@
 聚合来源：
 - 写入量 / 写入趋势      : count + date_histogram（@timestamp）
 - 告警级别分布 / 活动告警 : terms(level) 枚举全部原始级别（致命/错误/警告/信息/调试…）各自配色统计；活动告警 = WARN 及以上（ERROR/FATAL+WARN）
-- 最近告警              : 近期 WARN+ 事件（ERROR/FATAL/WARN），按时间倒序取前 5
+- 最近告警              : 告警事件表最近 5 条（alarm-service /events），与告警中心同源
 - 检索耗时 P95 / 分布    : OpenSearch 查询洞察索引（top_queries-*）中真实检索记录的
                           measurements.latency.number，按固定时间桶做 P95 聚合；
                           记录一经写入不再变化，故历史柱值不会随刷新波动。
@@ -17,8 +17,8 @@
                           默认 800ms），改完 10 秒内生效，且对 30 秒结果缓存同样生效。
 - 数据源健康度 / 在线数  : 各 source 近 1h 接收量 ÷ 近 7d 同时段均值（与高保真原型公式一致）
 
-说明：告警在平台中尚无独立后端（alarm-service 仍为骨架），故“告警”面板由日志严重级别实时推导，
-属于“按严重级别的活跃事件视图”；告警事件表仅列出 WARN+（真正需关注的事件）。
+说明：最近告警与告警事件页共用 alarm-service 的规则判定结果，不再把 WARN+ 原始日志
+直接当作告警事件展示，避免“运行总览”和“告警事件”口径不一致。
 """
 import os
 import json
@@ -27,9 +27,10 @@ import time
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional
 
+import httpx
 import psycopg2
 from psycopg2.extras import RealDictCursor
-from fastapi import Depends, FastAPI, HTTPException, Query, Body
+from fastapi import Depends, FastAPI, HTTPException, Query, Body, Request
 from fastapi.middleware.cors import CORSMiddleware
 from opensearchpy import OpenSearch
 
@@ -38,16 +39,29 @@ from . import ch_client
 
 OPENSEARCH_HOST = os.getenv("OPENSEARCH_HOST", "opensearch")
 OPENSEARCH_PORT = int(os.getenv("OPENSEARCH_PORT", "9200"))
+ALARM_SERVICE_URL = os.getenv("ALARM_SERVICE_URL", "http://alarm-service:8000")
+# 认证默认关闭；云上开安全插件时由环境变量打开，不设账号则保持原来的无认证行为。
+OPENSEARCH_SCHEME = os.getenv("OPENSEARCH_SCHEME", "http")
+OPENSEARCH_USER = os.getenv("OPENSEARCH_USER", "")
+OPENSEARCH_PASSWORD = os.getenv("OPENSEARCH_PASSWORD", "")
+OPENSEARCH_VERIFY_CERTS = os.getenv("OPENSEARCH_VERIFY_CERTS", "false").lower() == "true"
 # OpenSearch query insights 写入的检索记录索引（滚动按天建，通配覆盖全部历史）。
 QUERY_INSIGHTS_INDEX = os.getenv("QUERY_INSIGHTS_INDEX", "top_queries-*")
 
+
+def _opensearch_kwargs():
+    kw = {
+        "hosts": [{"host": OPENSEARCH_HOST, "port": OPENSEARCH_PORT}],
+        "use_ssl": OPENSEARCH_SCHEME == "https",
+        "verify_certs": OPENSEARCH_VERIFY_CERTS,
+    }
+    if OPENSEARCH_USER and OPENSEARCH_PASSWORD:
+        kw["http_auth"] = (OPENSEARCH_USER, OPENSEARCH_PASSWORD)
+    return kw
+
+
 # 开发期安全插件关闭，无 auth；惰性建立连接。
-client = OpenSearch(
-    hosts=[{"host": OPENSEARCH_HOST, "port": OPENSEARCH_PORT}],
-    http_auth=None,
-    use_ssl=False,
-    verify_certs=False,
-)
+client = OpenSearch(**_opensearch_kwargs())
 
 app = FastAPI(title="dashboard-service", version="0.4.1")
 app.add_middleware(
@@ -462,8 +476,45 @@ def root():
     }
 
 
+def recent_alarm_events(tenant: str, authorization: Optional[str]) -> List[Dict[str, Any]]:
+    """取告警事件表最近 5 条，与告警事件页保持同一口径。
+
+    运行总览以前直接查 WARN+ 原始日志，再把每条日志冒充成“告警”，
+    与 alarm-service 按规则聚合后的告警事件对不上。这里统一从 alarm-service 取数：
+    规则判定、状态覆盖、来源别名都由告警中心负责，概览只负责展示最近 5 条。
+    """
+    try:
+        headers = {"Authorization": authorization} if authorization else {}
+        with httpx.Client(timeout=5.0) as client:
+            resp = client.get(
+                f"{ALARM_SERVICE_URL.rstrip('/')}/events",
+                params={"tenant": tenant, "page": 1, "pageSize": 5},
+                headers=headers,
+            )
+            resp.raise_for_status()
+            items = (resp.json() or {}).get("items") or []
+    except Exception as e:  # noqa: BLE001
+        # 告警服务暂时不可用时，概览卡片返回空，不用原始 WARN 日志伪造告警事件。
+        print(f"[dashboard-service] recent alarms skipped: {e}", flush=True)
+        return []
+
+    rows: List[Dict[str, Any]] = []
+    for ev in items:
+        rows.append({
+            "name": ev.get("name") or "—",
+            "level": ev.get("level") or "—",
+            "source": ev.get("source") or "—",
+            "sourceName": ev.get("sourceName") or ev.get("source") or "—",
+            "occurTime": ev.get("firstSeen") or "—",
+            "status": ev.get("status") or "告警中",
+            "handler": ev.get("handler") or "—",
+        })
+    return rows
+
+
 @app.get("/overview")
 def overview(
+    request: Request,
     range_in: str = Query("今日", description="时间范围：今日/近 1 小时/近 24 小时/近 7 天/近 30 天 或 today/1h/1d/7d/30d。今日=东八区自然日 00:00→当前"),
     tenant: Optional[str] = Query(None),
     force: bool = Query(False, description="强制刷新：绕过缓存重新聚合"),
@@ -477,7 +528,13 @@ def overview(
     if not force:
         cached = cache_get(cache_key)
         if cached is not None:
-            return apply_target(cached, target)
+            out = apply_target(cached, target)
+            # 最近告警是告警中心的实时状态（含关闭/处理人），不能跟着 30 秒聚合缓存走：
+            # 否则用户刚关闭告警，总览里的状态和处理人仍会短暂显示旧值。
+            out["recentAlarms"] = recent_alarm_events(
+                tenant, request.headers.get("authorization")
+            )
+            return out
 
     idx = index_for(tenant)
     to = now_ms()
@@ -586,36 +643,8 @@ def overview(
         for k, c in sorted(log_class_counts.items(), key=lambda kv: -kv[1])
     ]
 
-    # 4) 最近告警（WARN+ 事件，按时间倒序）
-    recent_body = {
-        "size": 5,
-        "query": {
-            "bool": {
-                "must": [
-                    _time_must(frm, to),
-                    {"terms": {"level": ["ERROR", "FATAL", "WARN"]}},
-                ]
-            }
-        },
-        "sort": [{"@timestamp": {"order": "desc"}}],
-        "_source": ["@timestamp", "level", "source", "message"],
-    }
-    recent_resp = agg_search(idx, recent_body)
-    recent_alarms = []
-    for h in recent_resp["hits"]["hits"]:
-        s = h.get("_source", {})
-        msg = (s.get("message") or "")[:48]
-        recent_alarms.append(
-            {
-                "name": msg or s.get("source", "—"),
-                "level": classify_level(s.get("level")),
-                "source": s.get("source", "—"),
-                "sourceName": aliases.get(s.get("source"), s.get("source", "—")),
-                "occurTime": to_local(s.get("@timestamp")),
-                "status": "告警中",
-                "handler": "—",
-            }
-        )
+    # 4) 最近告警（直接取 alarm-service 的告警事件，与“告警事件”页同源）
+    recent_alarms = recent_alarm_events(tenant, request.headers.get("authorization"))
 
     # 5) 检索耗时分布：按固定时间桶聚合查询洞察里已落盘的真实检索记录
     #    历史桶的样本是当时写入的，刷新不会重测，因此历史柱值恒定；只有当前桶随新检索增长。

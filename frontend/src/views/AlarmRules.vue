@@ -3,14 +3,16 @@ import { ref, reactive, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh, Plus, Document, Delete } from '@element-plus/icons-vue'
-import { useAppStore } from '../stores/app'
-import { useAuthStore } from '../stores/auth'
+import { currentTenant } from '../api/http'
 import {
   listRules,
   createRule,
   updateRule,
   deleteRule,
   toggleRule,
+  getRule,
+  listTemplates,
+  applyTemplate,
   REAL_SOURCES,
   LEVELS,
   NOTIFY_OPTIONS,
@@ -18,16 +20,21 @@ import {
   notifyLabels,
 } from '../api/alarms'
 
-const app = useAppStore()
-const auth = useAuthStore()
 const router = useRouter()
 
 const loading = ref(false)
 const error = ref(false)
+const activeTab = ref('rules')
 
 const filters = reactive({ keyword: '', level: '', enabled: '', owner: '' })
 const tableData = ref([])
 const total = ref(0)
+
+const templateLoading = ref(false)
+const templateError = ref(false)
+const templates = ref([])
+const templateTotal = ref(0)
+const templateFilters = reactive({ keyword: '', category: '' })
 
 const dialogVisible = ref(false)
 const dialogMode = ref('create') // create | edit
@@ -45,7 +52,7 @@ const form = reactive({
   windowMinutes: 5,
   threshold: 1,
   level: '警告',
-  notify: ['wecom'],
+  notify: ['sms'],
   enabled: true,
   owner: '黄金金',
 })
@@ -85,6 +92,15 @@ const levelOptions = computed(() => [
   { value: 'INFO', label: 'INFO' },
 ])
 const windowOptions = [5, 10, 30, 60]
+const TEMPLATE_CATEGORIES = ['系统日志', '中间件日志', '数据库日志', '业务日志', '通用']
+
+// 企业微信渠道已下线：历史规则如果还带 wecom，打开编辑时清掉；
+// 如果清完没有任何渠道，默认回到短信，避免保存成“无通知”。
+function sanitizeNotify(notify) {
+  const allowed = NOTIFY_OPTIONS.map((o) => o.value)
+  const kept = (notify || []).filter((n) => allowed.includes(n))
+  return kept.length ? kept : ['sms']
+}
 
 function levelTagType(level) {
   if (level === '严重') return 'danger'
@@ -133,8 +149,60 @@ function goEvents() {
   router.push('/alarms/events')
 }
 
+// ——— 模板库 ———
+async function loadTemplates(showTip = false) {
+  templateLoading.value = true
+  templateError.value = false
+  try {
+    const data = await listTemplates({
+      keyword: templateFilters.keyword,
+      category: templateFilters.category,
+    })
+    templates.value = data.items
+    templateTotal.value = data.total
+    if (showTip) ElMessage.success('模板列表已刷新')
+  } catch (e) {
+    templateError.value = true
+    ElMessage.error('模板加载失败：' + (e.response?.data?.detail || e.message))
+  } finally {
+    templateLoading.value = false
+  }
+}
+function onTemplateSearch() {
+  loadTemplates(false)
+}
+function onTemplateReset() {
+  templateFilters.keyword = ''
+  templateFilters.category = ''
+  loadTemplates(false)
+}
+async function onApplyTemplate(row) {
+  if (currentTenant() === 'all') {
+    ElMessage.warning('请先切换到具体租户，再拉取模板')
+    return
+  }
+  try {
+    const resp = await applyTemplate(row.id)
+    if (resp.existing) {
+      ElMessage.info('当前租户已有同名规则，已打开编辑')
+    } else {
+      ElMessage.success('已拉取到当前租户，可继续调整配置')
+    }
+    activeTab.value = 'rules'
+    await loadRules(false)
+    const detail = await getRule(resp.id)
+    openEdit(detail)
+  } catch (e) {
+    ElMessage.error('拉取模板失败：' + (e.response?.data?.detail || e.message))
+  }
+}
+
 // ——— 弹窗 ———
 function openCreate() {
+  if (currentTenant() === 'all') {
+    ElMessage.warning('请先切换到具体租户，再新建规则')
+    return
+  }
   dialogMode.value = 'create'
   Object.assign(form, {
     id: null,
@@ -148,7 +216,7 @@ function openCreate() {
     windowMinutes: 5,
     threshold: 1,
     level: '警告',
-    notify: ['wecom'],
+    notify: ['sms'],
     enabled: true,
     owner: '黄金金',
   })
@@ -168,7 +236,7 @@ function openEdit(row) {
     windowMinutes: row.windowMinutes,
     threshold: row.threshold,
     level: row.level,
-    notify: [...row.notify],
+    notify: sanitizeNotify(row.notify),
     enabled: row.enabled,
     owner: row.owner || '黄金金',
   })
@@ -190,7 +258,7 @@ async function onSubmit() {
       window_minutes: Number(form.windowMinutes),
       threshold: Number(form.threshold),
       level: form.level,
-      notify: form.notify,
+      notify: sanitizeNotify(form.notify),
       enabled: form.enabled,
       owner: form.owner.trim() || 'system',
     }
@@ -242,7 +310,10 @@ function onDelete(row) {
     .catch(() => {})
 }
 
-onMounted(() => loadRules(false))
+onMounted(() => {
+  loadRules(false)
+  loadTemplates(false)
+})
 </script>
 
 <template>
@@ -254,20 +325,29 @@ onMounted(() => loadRules(false))
       </div>
       <div class="head-bar">
         <div>
-          <h1 class="title">告警规则</h1>
-          <p class="desc">规则基于检索条件对日志实时判定，保存后即时生效</p>
+          <h1 class="title">{{ activeTab === 'rules' ? '告警规则' : '规则模板' }}</h1>
+          <p class="desc">
+            {{ activeTab === 'rules' ? '规则基于检索条件对日志实时判定，保存后即时生效' : '平台共享的规则定义，拉取后成为当前租户规则' }}
+          </p>
         </div>
         <div class="head-actions">
-          <el-button :icon="Refresh" @click="onRefresh">刷新</el-button>
-          <el-button type="primary" :icon="Plus" @click="openCreate">新建规则</el-button>
+          <el-button :icon="Refresh" @click="activeTab === 'rules' ? onRefresh() : loadTemplates(true)">刷新</el-button>
+          <el-button v-if="activeTab === 'rules'" type="primary" :icon="Plus" @click="openCreate">新建规则</el-button>
           <el-button :icon="Document" @click="goEvents">查看告警事件</el-button>
         </div>
       </div>
     </div>
 
+    <div class="view-switch">
+      <el-radio-group v-model="activeTab" size="small">
+        <el-radio-button value="rules">告警规则</el-radio-button>
+        <el-radio-button value="templates">规则模板</el-radio-button>
+      </el-radio-group>
+    </div>
+
     <!-- 错误态 -->
     <el-alert
-      v-if="error"
+      v-if="error && activeTab === 'rules'"
       type="error"
       :closable="false"
       show-icon
@@ -283,7 +363,7 @@ onMounted(() => loadRules(false))
     </el-alert>
 
     <!-- 筛选 -->
-    <div class="filter-card">
+    <div v-if="activeTab === 'rules'" class="filter-card">
       <div class="filter-row">
         <div class="filter-item">
           <label>规则名称</label>
@@ -314,13 +394,11 @@ onMounted(() => loadRules(false))
     </div>
 
     <!-- 列表 -->
-    <el-card shadow="never" class="table-card">
+    <el-card v-if="activeTab === 'rules'" shadow="never" class="table-card">
       <el-table :data="tableData" stripe>
         <el-table-column label="规则名称" min-width="180" show-overflow-tooltip align="left" header-align="left">
           <template #default="{ row }">
             <span>{{ row.name }}</span>
-            <!-- 平台级通用规则（tenant=all）对所有租户生效，普通账号只读 -->
-            <el-tag v-if="row.tenant === 'all'" size="small" type="warning" effect="plain" class="plat-tag">平台级</el-tag>
           </template>
         </el-table-column>
         <el-table-column label="作用范围" width="170" align="left" header-align="left">
@@ -358,11 +436,7 @@ onMounted(() => loadRules(false))
         </el-table-column>
         <el-table-column label="操作" width="140" fixed="right" align="center" header-align="center">
           <template #default="{ row }">
-            <!-- 平台级规则仅平台管理员可改，避免单租户改坏全平台告警口径 -->
-            <div v-if="row.tenant === 'all' && !auth.isPlatformAdmin" class="op-actions op-disabled" title="平台级规则仅平台管理员可维护">
-              <span class="op-hint">只读</span>
-            </div>
-            <div v-else class="op-actions">
+            <div class="op-actions">
               <el-button text size="small" @click="openEdit(row)">编辑</el-button>
               <el-button text size="small" type="danger" :icon="Delete" @click="onDelete(row)">删除</el-button>
             </div>
@@ -371,6 +445,90 @@ onMounted(() => loadRules(false))
       </el-table>
       <div class="total-line">共 {{ total }} 条规则</div>
     </el-card>
+
+    <!-- 规则模板：平台共享定义，租户拉取后才生成自己的规则 -->
+    <template v-if="activeTab === 'templates'">
+      <el-alert
+        v-if="templateError"
+        type="error"
+        :closable="false"
+        show-icon
+        title="模板加载失败"
+        style="margin-bottom: 12px"
+      >
+        <template #default>
+          <div class="alert-body">
+            <span>数据加载失败，请稍后重试</span>
+            <el-button size="small" type="danger" plain @click="loadTemplates(false)">重试</el-button>
+          </div>
+        </template>
+      </el-alert>
+
+      <div class="filter-card">
+        <div class="filter-row">
+          <div class="filter-item">
+            <label>模板名称</label>
+            <el-input v-model="templateFilters.keyword" placeholder="名称或说明" clearable @keyup.enter="onTemplateSearch" />
+          </div>
+          <div class="filter-item">
+            <label>分类</label>
+            <el-select v-model="templateFilters.category" placeholder="全部分类" clearable>
+              <el-option v-for="c in TEMPLATE_CATEGORIES" :key="c" :label="c" :value="c" />
+            </el-select>
+          </div>
+          <div class="filter-actions">
+            <el-button type="primary" @click="onTemplateSearch">查询</el-button>
+            <el-button @click="onTemplateReset">重置</el-button>
+          </div>
+        </div>
+      </div>
+
+      <el-card v-loading="templateLoading" shadow="never" class="table-card">
+        <el-table :data="templates" stripe>
+          <el-table-column label="模板名称" min-width="220" show-overflow-tooltip align="left" header-align="left">
+            <template #default="{ row }">
+              <div class="tpl-name">{{ row.name }}</div>
+              <div v-if="row.description" class="tpl-desc">{{ row.description }}</div>
+            </template>
+          </el-table-column>
+          <el-table-column label="分类" width="110" align="left" header-align="left">
+            <template #default="{ row }">
+              <el-tag size="small" effect="plain">{{ row.category }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="作用范围" width="170" align="left" header-align="left">
+            <template #default="{ row }">
+              <el-tag v-if="row.matchLogClass" size="small" effect="plain">
+                {{ LOG_CLASS_OPTIONS.find((o) => o.value === row.matchLogClass)?.label || row.matchLogClass }}
+              </el-tag>
+              <span v-if="row.matchSourceType" class="mono-scope">{{ row.matchSourceType }}</span>
+              <span v-if="!row.matchLogClass" class="hint-scope">{{ row.matchSource || '全部数据源' }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="判定条件" min-width="260" show-overflow-tooltip align="left" header-align="left">
+            <template #default="{ row }">
+              <span class="cond" :title="conditionText(row)">{{ conditionText(row) }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="级别" width="90" align="center" header-align="center">
+            <template #default="{ row }">
+              <el-tag :type="levelTagType(row.level)" size="small" effect="light">{{ row.level }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="通知方式" width="150" align="left" header-align="left">
+            <template #default="{ row }">
+              <span class="notify">{{ notifyLabels(row.notify) || '—' }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="操作" width="150" fixed="right" align="center" header-align="center">
+            <template #default="{ row }">
+              <el-button text type="primary" size="small" @click="onApplyTemplate(row)">拉取到当前租户</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+        <div class="total-line">共 {{ templateTotal }} 个模板</div>
+      </el-card>
+    </template>
 
     <!-- 新建 / 编辑 弹窗 -->
     <el-dialog
@@ -464,6 +622,8 @@ onMounted(() => loadRules(false))
 .desc { font-size: 13px; color: var(--color-text-3); margin: 4px 0 0; }
 .head-actions { display: flex; gap: 8px; }
 .alert-body { display: flex; justify-content: space-between; align-items: center; }
+.view-switch { display: flex; }
+.view-switch :deep(.el-radio-group) { background: #fff; padding: 4px; border: 1px solid var(--color-border-1); border-radius: 4px; }
 
 .filter-card { background: #fff; border: 1px solid var(--color-border-1); border-radius: 4px; padding: 14px 18px; }
 .filter-row { display: flex; align-items: flex-end; gap: 14px; flex-wrap: wrap; }
@@ -475,11 +635,9 @@ onMounted(() => loadRules(false))
 .table-card :deep(.el-card__body) { padding: 12px 14px 14px; }
 .op-actions { display: flex; align-items: center; justify-content: center; gap: 2px; flex-wrap: nowrap; }
 .op-actions .el-button { margin: 0 !important; }
-/* 平台级规则对普通账号只读：不隐藏行，只把操作位换成只读提示，避免误以为数据缺失 */
-.op-disabled { color: #8a94a6; }
-.op-hint { font-size: 12px; }
-.plat-tag { margin-left: 6px; }
 .cond { color: var(--color-text-2); font-size: 13px; }
+.tpl-name { color: var(--color-text-1); font-size: 13px; }
+.tpl-desc { color: var(--color-text-3); font-size: 12px; margin-top: 2px; }
 /* 作用范围列：类型标签 + 来源类型机器码并列，未按类型圈定时回落到数据源名 */
 .mono-scope { margin-left: 6px; font-family: 'SFMono-Regular', Consolas, Menlo, monospace; font-size: 12px; color: var(--color-text-3); }
 .hint-scope { color: var(--color-text-3); font-size: 13px; }

@@ -64,12 +64,9 @@
 
 | 账号 | 姓名 | 角色 | 租户 | 手机号 | 说明 |
 |---|---|---|---|---|---|
-| `admin` | 系统管理员 | 平台管理员 | 总部生产 | — | **内置账号**，口令取 `AUTH_SEED_ADMIN_PASSWORD` |
-| `ops_chenli` | 陈立 | 平台管理员 | 总部生产 | 13800000001 | 其余账号口令取 `AUTH_SEED_DEMO_PASSWORD` |
-| `ops_zhouhang` | 周航 | 运维值班 | 总部生产 | 13800000002 | |
-| `ops_gaoyuan` | 高远 | 只读用户 | 省侧运维 | 13800000003 | 跨租户样本，验证越权拦截 |
-| `audit_linjing` | 林静 | 审计员 | 总部生产 | 13800000004 | 只有审计权限，验证菜单过滤 |
-| `ops_zhaolei` | 赵磊 | 运维值班 | 总部生产 | 13800000005 | **初始即停用**，验证停用后登录被拒 |
+| `admin` | 系统管理员 | 平台管理员 | 日志平台 | — | **唯一预置账号**，口令取 `AUTH_SEED_ADMIN_PASSWORD` |
+
+历史版本预置过的 `ops_chenli` / `ops_zhouhang` / `ops_gaoyuan` / `audit_linjing` / `ops_zhaolei` 已通过 `migration.remove_demo_users.v1` 一次性清理；现场自建账号（如 `huangjinjin`）不受影响。
 
 参数种子 5 项：`search_limit`(int 5000)、`search_p95_target`(int 800，检索耗时目标 ms)、`timezone`(enum)、`session_timeout_min`(int 30)、`audit_enabled`(bool)。
 
@@ -249,8 +246,7 @@ for perm in sorted(set(req.permissions)):
 |---|---|---|
 | `SYSTEM_PG_DSN` | 由 `POSTGRES_*` 拼出 | 需要单独指定时覆盖 |
 | `JWT_SECRET` / `JWT_ALGORITHM` | `dev-only-not-secret` / `HS256` | **必须与 auth-service 一致**，否则解析不了它签发的 Token |
-| `AUTH_SEED_ADMIN_PASSWORD` | `Admin@123` | 仅 `admin` 内置账号首次创建时使用 |
-| `AUTH_SEED_DEMO_PASSWORD` | `Ops@12345` | 其余 5 个种子账号首次创建时使用 |
+| `AUTH_SEED_ADMIN_PASSWORD` | `Admin@123` | 仅 `admin` 内置账号首次创建时使用；其他账号不再预置 |
 
 - 容器：`image: log_system-backend`，`depends_on: [postgres]`，`env_file: .env`；开发期由 `compose.override.yml` 暴露 `8007:8000` 并开 `--reload`。
 - **首次部署本服务必须先于 `auth-service` 起来**（建表 + 种子）。

@@ -1,0 +1,130 @@
+# 云上 K8s 测试环境 overlay（单节点数据层）
+#
+# 与 overlays/local 的分工：
+#   local —— Docker Desktop：local-path、小 PVC、arm64 采集器、LoadBalancer
+#   cloud —— 云上测试：Harbor 镜像、云盘 StorageClass、按日量扩 PVC、sysctl
+#   cloud-ha —— 3 节点/3 副本生产形态：在 cloud 基础上把 OS 副本、Kafka RF 调大
+#
+# 使用前把 registry.example.com/ruilog 和 cloud-ssd 换成实际值。
+# 如果集群已有默认 StorageClass，可删除下面所有 storageClassName 的 add 操作。
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: ruilog-system
+
+resources:
+  - ../../base
+
+images:
+  - name: log_system-backend
+    newName: registry.example.com/ruilog/backend
+    newTag: 0.9.0-test
+  - name: ruilog-web
+    newName: registry.example.com/ruilog/web
+    newTag: 0.9.0-test
+  - name: log_system-flink
+    newName: registry.example.com/ruilog/flink-base
+    newTag: 0.9.0-test
+  - name: ruilog-flink-job
+    newName: registry.example.com/ruilog/flink-job
+    newTag: 0.9.0-test
+
+patches:
+  # ---------------------------------------------------------------------------
+  # 运行时开关：云上测试默认仍是单节点数据层，所以 OS 3 分片 0 副本、Kafka RF1。
+  # 3 节点生产请用 overlays/cloud-ha（会覆盖成 3 分片 2 副本、RF3）。
+  # ---------------------------------------------------------------------------
+  - target: { kind: ConfigMap, name: ruilog-env }
+    patch: |-
+      - op: replace
+        path: /data/OPENSEARCH_SHARDS
+        value: "3"
+      - op: replace
+        path: /data/OPENSEARCH_REPLICAS
+        value: "0"
+      - op: replace
+        path: /data/KAFKA_TOPIC_RF
+        value: "1"
+      - op: replace
+        path: /data/KAFKA_MIN_INSYNC_REPLICAS
+        value: "1"
+
+  # ---------------------------------------------------------------------------
+  # 数据层磁盘：按 0.05–0.1 TB/天、明细 30 天估算（口径见部署手册第 2 节）。
+  # 真实日量更大时按同比例扩；PVC 扩完还要确认 StorageClass allowVolumeExpansion。
+  # ---------------------------------------------------------------------------
+  - target: { kind: StatefulSet, name: postgres }
+    patch: |-
+      - op: add
+        path: /spec/volumeClaimTemplates/0/spec/storageClassName
+        value: cloud-ssd
+      - op: replace
+        path: /spec/volumeClaimTemplates/0/spec/resources/requests/storage
+        value: 20Gi
+  - target: { kind: StatefulSet, name: kafka }
+    patch: |-
+      - op: add
+        path: /spec/volumeClaimTemplates/0/spec/storageClassName
+        value: cloud-ssd
+      - op: replace
+        path: /spec/volumeClaimTemplates/0/spec/resources/requests/storage
+        value: 50Gi
+  - target: { kind: StatefulSet, name: opensearch }
+    patch: |-
+      - op: add
+        path: /spec/volumeClaimTemplates/0/spec/storageClassName
+        value: cloud-ssd
+      - op: replace
+        path: /spec/volumeClaimTemplates/0/spec/resources/requests/storage
+        value: 2Ti
+  - target: { kind: StatefulSet, name: clickhouse }
+    patch: |-
+      - op: add
+        path: /spec/volumeClaimTemplates/0/spec/storageClassName
+        value: cloud-ssd
+      - op: replace
+        path: /spec/volumeClaimTemplates/0/spec/resources/requests/storage
+        value: 1536Gi
+  - target: { kind: PersistentVolumeClaim, name: flink-checkpoints }
+    patch: |-
+      - op: add
+        path: /spec/storageClassName
+        value: cloud-ssd
+      - op: replace
+        path: /spec/resources/requests/storage
+        value: 20Gi
+  - target: { kind: PersistentVolumeClaim, name: redis-data }
+    patch: |-
+      - op: add
+        path: /spec/storageClassName
+        value: cloud-ssd
+      - op: replace
+        path: /spec/resources/requests/storage
+        value: 2Gi
+
+  # ---------------------------------------------------------------------------
+  # OpenSearch 节点内核参数：云主机默认 vm.max_map_count 往往不够。
+  # Docker Desktop 已由虚拟机预置，因此只放在 cloud overlay，不污染 base。
+  # 如果节点安全策略禁止 privileged，改为节点池 bootstrap 或独立 DaemonSet 设置。
+  # ---------------------------------------------------------------------------
+  - target: { kind: StatefulSet, name: opensearch }
+    patch: |-
+      - op: add
+        path: /spec/template/spec/initContainers
+        value:
+          - name: sysctl-max-map-count
+            image: busybox:1.36
+            securityContext:
+              privileged: true
+            command: ["sysctl", "-w", "vm.max_map_count=262144"]
+
+# ---------------------------------------------------------------------------
+# 云端认证说明（默认关闭，保持测试环境简单）：
+# 若要开启 OpenSearch 安全插件：
+#   1) 在 data.yaml 的 opensearch 环境里把 DISABLE_SECURITY_PLUGIN 改为 false，
+#      并按 OpenSearch 文档配置证书；
+#   2) 给 ruilog-secret 增加 OPENSEARCH_USER / OPENSEARCH_PASSWORD；
+#   3) 把上面 ConfigMap 的 OPENSEARCH_SCHEME 改成 https，
+#      同时把 OPENSEARCH_URL 改成 https://opensearch:9200（opensearch-init Job 用它），
+#      OPENSEARCH_VERIFY_CERTS 视证书情况设 true/false。
+# 服务端代码已支持“有账号才带 auth”，不设账号时行为与本地完全一致。
+# --------------------------------------------------------------------------

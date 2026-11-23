@@ -100,23 +100,80 @@ spec:
         - name: ckpt
           persistentVolumeClaim: { claimName: flink-checkpoints }
 ---
-# 作业提交：等 JM 就绪后 flink run。失败会由 Job 重试（backoffLimit）。
-apiVersion: batch/v1
-kind: Job
+# 作业守护：常驻 supervisor 代替一次性 submit Job。
+#
+# 为什么不用 Job：K8s Job 一旦 Complete 就不会再跑。Docker Desktop / 节点重启后，
+# JM 被拉起成一个空的 session 集群（无 HA 元数据，日志会写 "recovered 0 persisted
+# job graphs"），没人重新提交作业，于是 Kafka 只积压、不落库，Web 端“今日”永远是空的。
+#
+# supervisor 每 30s（SUPERVISOR_CHECK_INTERVAL 可调）走一次 JM REST /jobs/overview：
+# 有 RUNNING 作业就跳过；没有就把残留的非运行作业 cancel 掉再重新 flink run -d。作业本身 setStartingOffsets 用
+# committedOffsets(EARLIEST) 续读、下游靠 event_id / ReplacingMergeTree 幂等，
+# 重复提交不会丢数据也不会重复计数。
+apiVersion: apps/v1
+kind: Deployment
 metadata:
-  name: flink-job-submit
+  name: flink-job-supervisor
 spec:
-  backoffLimit: 10
+  replicas: 1
+  selector: { matchLabels: { app: flink-job-supervisor } }
   template:
+    metadata: { labels: { app: flink-job-supervisor } }
     spec:
-      restartPolicy: OnFailure
-      initContainers:
-        - name: wait-jm
-          image: log_system-backend:k8s
-          command: ["python", "-c", "import socket,time\nfor _ in range(60):\n    try:\n        socket.create_connection(('flink-jobmanager',6123),3).close(); print('jm ready'); break\n    except OSError:\n        time.sleep(3)\nelse:\n    raise SystemExit('jm timeout')"]
       containers:
-        - name: submit
+        - name: supervisor
           image: ruilog-flink-job:k8s
-          command: ["/opt/flink/bin/flink", "run", "-d", "-m", "flink-jobmanager:8081", "/opt/flink/jobs/log-pipeline.jar"]
           envFrom:
             - configMapRef: { name: ruilog-env }
+          env:
+            # 探测间隔放 ConfigMap（optional）：base 默认 30s，overlay 可调 60s。
+            # 显式 value 会盖掉 envFrom，所以这里必须用 valueFrom 才能让 CM 生效。
+            - name: SUPERVISOR_CHECK_INTERVAL
+              valueFrom:
+                configMapKeyRef: { name: ruilog-env, key: SUPERVISOR_CHECK_INTERVAL, optional: true }
+            - name: SUPERVISOR_RETRY_INTERVAL
+              valueFrom:
+                configMapKeyRef: { name: ruilog-env, key: SUPERVISOR_RETRY_INTERVAL, optional: true }
+          command:
+            - sh
+            - -c
+            - |
+              set -u
+              JM="${FLINK_JOBMANAGER:-flink-jobmanager:8081}"
+              JAR=/opt/flink/jobs/log-pipeline.jar
+              FLINK=/opt/flink/bin/flink
+              # 探活用 REST，不要用 flink CLI：CLI 每次都是一次 JVM 冷启动，
+              # 15s 一次的代价在低配单节点上是可见的 CPU 尖峰。
+              # 注意 /jobs/overview 的字段是 state 不是 status。
+              probe() {
+                if command -v curl >/dev/null 2>&1; then
+                  curl -sf -m 5 "http://$JM/jobs/overview" 2>/dev/null | grep -q '"state":"RUNNING"'
+                else
+                  $FLINK list -r -m "$JM" 2>/dev/null | grep -qE '[0-9a-f]{32}'
+                fi
+              }
+              echo "[supervisor] watching $JM for $JAR"
+              while true; do
+                if probe; then
+                  sleep "${SUPERVISOR_CHECK_INTERVAL:-30}"
+                  continue
+                fi
+                # 双检：JM 刚起来、作业还在 CREATED→RUNNING 过渡时，别把它当成残留 cancel 掉
+                sleep 5
+                if probe; then
+                  sleep "${SUPERVISOR_CHECK_INTERVAL:-30}"
+                  continue
+                fi
+                ALL=$($FLINK list -m "$JM" 2>/dev/null | grep -oE '[0-9a-f]{32}' || true)
+                for j in $ALL; do
+                  echo "[supervisor] cancel non-running job $j"
+                  $FLINK cancel -m "$JM" "$j" >/dev/null 2>&1 || true
+                done
+                echo "[supervisor] no RUNNING job, submitting..."
+                # JM 还没就绪时这里会失败，下一轮自动重试
+                $FLINK run -d -m "$JM" "$JAR" 2>&1 | tail -8 || true
+                sleep "${SUPERVISOR_RETRY_INTERVAL:-20}"
+              done
+          resources:
+            requests: { cpu: 50m, memory: 256Mi }
+            limits: { cpu: 500m, memory: 768Mi }

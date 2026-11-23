@@ -65,7 +65,7 @@
 
 | 看什么 | 地址 | 说明 |
 |---|---|---|
-| 前端页面 | http://localhost:8080 | Vue3 SPA（frontend/dist 挂载），**需登录**：`admin / Admin@123`（平台管理员）、`ops_gaoyuan / Ops@12345`（acme 租户普通账号） |
+| 前端页面 | http://localhost:8080 | Vue3 SPA（frontend/dist 挂载），**需登录**：`admin / Admin@123`（平台管理员，唯一预置账号） |
 | 租户管理 | http://localhost:8080/settings/tenants | 平台管理 → 租户管理（新建/编辑/配额/启停/删除，需 `tenant:*` 权限） |
 | 日志看板（OpenSearch Dashboards） | http://localhost:5601 | 明细检索 / 可视化（**双引擎中的明细引擎**），**免登录** |
 | **Flink 流处理界面** | http://localhost:8081 | **实时作业监控**（LogPipelineJob RUNNING / checkpoint / 反压） |

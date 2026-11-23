@@ -11,6 +11,9 @@ configMapGenerator:
   - name: ruilog-env
     literals:
       - TZ=Asia/Shanghai
+      # 网关 DNS 地址。留空 = 启动时自动取 Pod 的 /etc/resolv.conf（适配任何集群）；
+      # 需要固定时在 overlay 里覆盖，例如 k3s/RKE2 写 10.43.0.10。
+      - NGINX_RESOLVER=
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
       - POSTGRES_USER=loguser
@@ -22,15 +25,25 @@ configMapGenerator:
       - OPENSEARCH_URL=http://opensearch:9200
       - OPENSEARCH_SHARDS=1
       - OPENSEARCH_REPLICAS=0
+      # 认证默认关闭（本地/隔离测试环境）；云上开启安全插件时由 overlay 覆盖。
+      # 服务端代码按「有 OPENSEARCH_USER/PASSWORD 才带 auth」处理，默认不设即保持无认证。
+      - OPENSEARCH_SCHEME=http
+      - OPENSEARCH_VERIFY_CERTS=false
       - KAFKA_BROKER=kafka:9092
       - KAFKA_TOPIC_RAW=ruilog.logs.raw
       - KAFKA_TOPIC_DLQ=ruilog.logs.dlq
+      # 本地单 broker 默认 RF1；生产多 broker overlay 覆盖为 3。
+      - KAFKA_TOPIC_RF=1
+      - KAFKA_MIN_INSYNC_REPLICAS=1
       - CLICKHOUSE_HOST=clickhouse
       - CLICKHOUSE_PORT=8123
       - CLICKHOUSE_HTTP_URL=http://clickhouse:8123
       - CLICKHOUSE_DB=ruilog
       - CLICKHOUSE_USER=ruilog
       - FLINK_JOBMANAGER=flink-jobmanager:8081
+      # supervisor 探测间隔：base 30s；overlays/offline 覆盖成 60s
+      - SUPERVISOR_CHECK_INTERVAL=30
+      - SUPERVISOR_RETRY_INTERVAL=20
       - FLINK_WRITE_OS=true
       - INGEST_STORAGE_MODE=kafka
       - AGG_ENGINE=ch
@@ -51,6 +64,9 @@ configMapGenerator:
   - name: os-template
     files:
       - logs-template.json=../../../shared/opensearch/index-templates/logs-template.json
+  - name: web-nginx-conf
+    files:
+      - nginx-k8s.conf
   - name: os-ism
     files:
       - ruilog-detail-retention.json=../../../shared/opensearch/ism/ruilog-detail-retention.json
