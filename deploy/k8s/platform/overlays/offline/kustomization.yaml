@@ -15,17 +15,17 @@ resources:
   - ../../base
 
 images:
-  - name: log_system-backend
-    newName: ruilog/backend
+  - name: ruilog-backend
+    newName: ruilog-backend
     newTag: 0.9.1-offline
   - name: ruilog-web
-    newName: ruilog/web
+    newName: ruilog-web
     newTag: 0.9.1-offline
-  - name: log_system-flink
-    newName: ruilog/flink-base
+  - name: ruilog-flink
+    newName: ruilog-flink
     newTag: 0.9.1-offline
   - name: ruilog-flink-job
-    newName: ruilog/flink-job
+    newName: ruilog-flink-job
     newTag: 0.9.1-offline
 
 patches:

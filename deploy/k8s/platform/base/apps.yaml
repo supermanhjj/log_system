@@ -10,7 +10,7 @@ spec:
     spec:
       containers:
         - name: auth-service
-          image: log_system-backend:k8s
+          image: ruilog-backend:k8s
           workingDir: /app/services/auth-service
           command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
           envFrom: [{ configMapRef: { name: ruilog-env } }, { secretRef: { name: ruilog-secret } }]
@@ -39,7 +39,7 @@ spec:
     spec:
       containers:
         - name: search-service
-          image: log_system-backend:k8s
+          image: ruilog-backend:k8s
           workingDir: /app/services/search-service
           command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
           envFrom: [{ configMapRef: { name: ruilog-env } }, { secretRef: { name: ruilog-secret } }]
@@ -68,7 +68,7 @@ spec:
     spec:
       containers:
         - name: dashboard-service
-          image: log_system-backend:k8s
+          image: ruilog-backend:k8s
           workingDir: /app/services/dashboard-service
           command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
           envFrom: [{ configMapRef: { name: ruilog-env } }, { secretRef: { name: ruilog-secret } }]
@@ -97,7 +97,7 @@ spec:
     spec:
       containers:
         - name: alarm-service
-          image: log_system-backend:k8s
+          image: ruilog-backend:k8s
           workingDir: /app/services/alarm-service
           command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
           envFrom: [{ configMapRef: { name: ruilog-env } }, { secretRef: { name: ruilog-secret } }]
@@ -127,7 +127,7 @@ spec:
       # 等 system-service 播完租户/namespace 映射再接收日志，避免首分钟日志因归属不明被拒收
       initContainers:
         - name: wait-tenant-map
-          image: log_system-backend:k8s
+          image: ruilog-backend:k8s
           envFrom: [{ configMapRef: { name: ruilog-env } }, { secretRef: { name: ruilog-secret } }]
           command:
             - python
@@ -147,7 +147,7 @@ spec:
                   raise SystemExit("tenant map timeout")
       containers:
         - name: ingest-service
-          image: log_system-backend:k8s
+          image: ruilog-backend:k8s
           workingDir: /app/services/ingest-service
           command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
           envFrom: [{ configMapRef: { name: ruilog-env } }, { secretRef: { name: ruilog-secret } }]
@@ -176,7 +176,7 @@ spec:
     spec:
       containers:
         - name: agent-service
-          image: log_system-backend:k8s
+          image: ruilog-backend:k8s
           workingDir: /app/services/agent-service
           command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
           envFrom: [{ configMapRef: { name: ruilog-env } }, { secretRef: { name: ruilog-secret } }]
@@ -205,7 +205,7 @@ spec:
     spec:
       containers:
         - name: system-service
-          image: log_system-backend:k8s
+          image: ruilog-backend:k8s
           workingDir: /app/services/system-service
           command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
           envFrom: [{ configMapRef: { name: ruilog-env } }, { secretRef: { name: ruilog-secret } }]
@@ -234,7 +234,7 @@ spec:
     spec:
       containers:
         - name: ai-service
-          image: log_system-backend:k8s
+          image: ruilog-backend:k8s
           workingDir: /app/services/ai-service
           command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
           envFrom: [{ configMapRef: { name: ruilog-env } }, { secretRef: { name: ruilog-secret } }]

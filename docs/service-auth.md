@@ -191,7 +191,7 @@ LoginView.vue
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | `1440` | 登录态有效期（分钟） |
 | `AUTH_PG_DSN` | 由 `POSTGRES_*` 拼出 | 需要单独指定时覆盖 |
 
-- 容器：`image: log_system-backend`，`depends_on: [postgres, redis]`，`env_file: .env`；开发期由 `compose.override.yml` 暴露 `8001:8000` 并开 `--reload`。
+- 容器：`image: ruilog-backend`，`depends_on: [postgres, redis]`，`env_file: .env`；开发期由 `compose.override.yml` 暴露 `8001:8000` 并开 `--reload`。
 - **启动顺序：先 `system-service`（建表 + 种子）→ 再本服务。**
 - 自检：`curl localhost:8080/api/auth/health` → `200`；`curl localhost:8080/api/auth/tenants` → 三个租户。
 

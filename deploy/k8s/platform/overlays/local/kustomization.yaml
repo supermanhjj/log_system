@@ -5,7 +5,7 @@ resources:
 # 本地 Docker Desktop：镜像由 docker build 生成后导入节点 containerd，
 # 因此 tag 不用 latest（避免默认 Always），也不需要镜像仓库。
 images:
-  - name: log_system-backend
+  - name: ruilog-backend
     newTag: k8s
   - name: ruilog-web
     newTag: k8s

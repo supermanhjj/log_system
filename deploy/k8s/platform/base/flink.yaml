@@ -31,13 +31,13 @@ spec:
     spec:
       initContainers:
         - name: init-dirs
-          image: log_system-flink:1.18
+          image: ruilog-flink:1.18
           securityContext: { runAsUser: 0 }
           command: ["sh", "-c", "mkdir -p /flink-checkpoints/savepoints && chown -R flink:flink /flink-checkpoints"]
           volumeMounts: [{ name: ckpt, mountPath: /flink-checkpoints }]
       containers:
         - name: jobmanager
-          image: log_system-flink:1.18
+          image: ruilog-flink:1.18
           # 官方镜像以 docker-entrypoint.sh 为入口，jobmanager/taskmanager 必须走 args
           args: ["jobmanager"]
           env:
@@ -75,13 +75,13 @@ spec:
     spec:
       initContainers:
         - name: init-dirs
-          image: log_system-flink:1.18
+          image: ruilog-flink:1.18
           securityContext: { runAsUser: 0 }
           command: ["sh", "-c", "mkdir -p /flink-checkpoints && chown -R flink:flink /flink-checkpoints"]
           volumeMounts: [{ name: ckpt, mountPath: /flink-checkpoints }]
       containers:
         - name: taskmanager
-          image: log_system-flink:1.18
+          image: ruilog-flink:1.18
           args: ["taskmanager"]
           env:
             - { name: TZ, value: Asia/Shanghai }

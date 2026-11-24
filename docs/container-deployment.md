@@ -31,7 +31,7 @@
 | `tools/log-generator/` | **测试业务系统模拟器**：持续输出 `[LEVEL] <msg> tenant=<id>` 多租户日志到共享卷 `app_logs`，由 Fluent Bit `tail` 采集，构成"业务系统→采集→多租户索引"完整测试链路（无真实业务时可反复测） |
 | `flink-jobs/README.md` | 实时告警 Job 占位说明（Java/Scala 或 PyFlink 待定） |
 
-**应用层镜像基底**：`python:3.11-slim`（**8 服务共用**；注意当前 `log_system-backend:latest` 构建于 2026-11-12，镜像内尚无 `ai-service` 代码，开发期靠 bind mount 运行，生产须重建镜像，见 4.5）；**采集器**：`fluent/fluent-bit:5.2.0-arm64`（Apple Silicon 原生，免 QEMU 模拟；生产 x86_64 主机改多架构 tag `5.2.0`）；**数据层**：`postgres:16-alpine` / `opensearchproject/opensearch:3.9.0` / `opensearch-dashboards:3.9.0` / `redis:7-alpine` / `bitnami/kafka:3.7` / `flink:1.18-scala_2.12`（amd64 模拟）。
+**应用层镜像基底**：`python:3.11-slim`（**8 服务共用**；注意当前 `ruilog-backend:latest` 构建于 2026-11-12，镜像内尚无 `ai-service` 代码，开发期靠 bind mount 运行，生产须重建镜像，见 4.5）；**采集器**：`fluent/fluent-bit:5.2.0-arm64`（Apple Silicon 原生，免 QEMU 模拟；生产 x86_64 主机改多架构 tag `5.2.0`）；**数据层**：`postgres:16-alpine` / `opensearchproject/opensearch:3.9.0` / `opensearch-dashboards:3.9.0` / `redis:7-alpine` / `bitnami/kafka:3.7` / `flink:1.18-scala_2.12`（amd64 模拟）。
 
 **多租户测试链路（log-generator）**：生成器写到 `app_logs` 卷的日志经 Fluent Bit `app_log` 解析器**直接产出 `tenant_id` 字段**（正则捕获组 `(?<tenant_id>...)`），再由 `rewrite_tag` 把租户注入 tag（`tenant.<id>`），按 tag 路由到 `logs-default` / `logs-acme` / `logs-gp` 三个独立索引（opensearch 输出 `Index` 不支持运行时 `${tenant_id}` record accessor，故用 tag 路由），直接验证 3.2(9) 的行级多租户隔离。`scripts/validate-chain.sh` 的 T2 已升级为跨租户索引计数校验；**T4 的 Python 客户端探测方式已在 11-14 复核为无效，PPL 服务端实测可用**（见 3.5）；**T6 Kafka 判定已修正**（broker 可达即 PASS，Kafka 3.7 默认无 topic 不算不可达）。
 
@@ -52,17 +52,17 @@
 | `bitnami/kafka:3.7` | 668MB | 消息缓冲，`log_system-kafka` 直接运行（当前无 topic 属正常） |
 | `nginx:1.27-alpine` | 49.7MB | 反向代理，`log_system-web` 直接运行（`/api/*` 转发微服务） |
 | `flink:1.18-scala_2.12` | 782MB | 流计算，`log_system-flink-{job,task}manager` 直接运行（本地 arm64，免 QEMU） |
-| `python:3.11-slim` | 150MB | **构建父镜像**：`log_system-backend` 与 `log_system-log-generator` 的 FROM |
-| `fluent/fluent-bit:5.2.0-arm64` | 134MB | **构建父镜像**：`log_system-fluentbit` 的 FROM（Apple Silicon 原生） |
+| `python:3.11-slim` | 150MB | **构建父镜像**：`ruilog-backend` 与 `ruilog-log-generator` 的 FROM |
+| `fluent/fluent-bit:5.2.0-arm64` | 134MB | **构建父镜像**：`ruilog-fluentbit` 的 FROM（Apple Silicon 原生） |
 | `debian:trixie-slim` | 101MB | **构建辅助**：多阶段向 distroless Fluent Bit 注入 shell/curl（glibc 2.38+ / OpenSSL 3.4+ 匹配基底） |
 
 ### 2.2 自建镜像（Dockerfile 实际构建，承载本平台代码）
 
 | 镜像 | 大小 | 基于 | 承载内容 |
 |------|------|------|----------|
-| `log_system-backend:latest` | 258MB | `python:3.11-slim` + `requirements.txt` | 8 个 FastAPI 微服务（共用一份代码层，不同 `command` 启动）；**该镜像为 11-12 构建，新增 ai-service 后生产需重建** |
-| `log_system-fluentbit:latest` | 144MB | `fluent/fluent-bit:5.2.0-arm64` + trixie 注入 | Fluent Bit 采集器（配置/脚本 bind mount 热更） |
-| `log_system-log-generator:latest` | 150MB | `python:3.11-slim` | 测试业务系统，持续吐多租户日志到 `app_logs` 卷 |
+| `ruilog-backend:latest` | 258MB | `python:3.11-slim` + `requirements.txt` | 8 个 FastAPI 微服务（共用一份代码层，不同 `command` 启动）；**该镜像为 11-12 构建，新增 ai-service 后生产需重建** |
+| `ruilog-fluentbit:latest` | 144MB | `fluent/fluent-bit:5.2.0-arm64` + trixie 注入 | Fluent Bit 采集器（配置/脚本 bind mount 热更） |
+| `ruilog-log-generator:latest` | 150MB | `python:3.11-slim` | 测试业务系统，持续吐多租户日志到 `app_logs` 卷 |
 
 > 已清理的残留：`log_system-{agent,system,dashboard}-service:latest`（首轮并发构建同一 Dockerfile 竞态产出，引用数 0、内容等同 backend，约 774MB）、`debian:bookworm-slim`、`alpine:latest`、`fluent/fluent-bit:5.2.0`（非 arm64 测试拉取），均不再保留。
 
@@ -78,16 +78,16 @@
 | `log_system-web-1` | `nginx:1.27-alpine` | 反向代理 + Vue3 SPA 静态托管（`./frontend/dist`），`/api/*` 转发到各微服务 |
 | `log_system-flink-jobmanager-1` | `flink:1.18` | 流计算作业管理（P2 告警作业） |
 | `log_system-flink-taskmanager-1` | `flink:1.18` | 流计算任务执行 |
-| `log_system-auth-service-1` | `log_system-backend` | 认证 / 鉴权 |
-| `log_system-search-service-1` | `log_system-backend` | 日志检索（→ OpenSearch `_search`） |
-| `log_system-dashboard-service-1` | `log_system-backend` | 看板聚合 |
-| `log_system-alarm-service-1` | `log_system-backend` | 告警（→ Kafka） |
-| `log_system-ingest-service-1` | `log_system-backend` | 采集接入（→ Kafka） |
-| `log_system-agent-service-1` | `log_system-backend` | 管控面 / 心跳接收（`/heartbeat`） |
-| `log_system-system-service-1` | `log_system-backend` | 系统 / 健康检查 |
-| `log_system-ai-service-1` | `log_system-backend` | **2026-11-14 新增**：AI 能力配置中心 + NL→PPL 生成端点（模型接入 / PPL 语法规则库 / 能力注册表 / 智能检索预览），宿主 `8008`，详见第 4 章 |
-| `log_system-fluentbit-1` | `log_system-fluentbit` | 采集器：`tail` 读日志 → 解析多租户 → `rewrite_tag` 路由 → OpenSearch |
-| `log_system-log-generator-1` | `log_system-log-generator` | 测试业务系统，持续写多租户日志供采集 |
+| `log_system-auth-service-1` | `ruilog-backend` | 认证 / 鉴权 |
+| `log_system-search-service-1` | `ruilog-backend` | 日志检索（→ OpenSearch `_search`） |
+| `log_system-dashboard-service-1` | `ruilog-backend` | 看板聚合 |
+| `log_system-alarm-service-1` | `ruilog-backend` | 告警（→ Kafka） |
+| `log_system-ingest-service-1` | `ruilog-backend` | 采集接入（→ Kafka） |
+| `log_system-agent-service-1` | `ruilog-backend` | 管控面 / 心跳接收（`/heartbeat`） |
+| `log_system-system-service-1` | `ruilog-backend` | 系统 / 健康检查 |
+| `log_system-ai-service-1` | `ruilog-backend` | **2026-11-14 新增**：AI 能力配置中心 + NL→PPL 生成端点（模型接入 / PPL 语法规则库 / 能力注册表 / 智能检索预览），宿主 `8008`，详见第 4 章 |
+| `log_system-fluentbit-1` | `ruilog-fluentbit` | 采集器：`tail` 读日志 → 解析多租户 → `rewrite_tag` 路由 → OpenSearch |
+| `log_system-log-generator-1` | `ruilog-log-generator` | 测试业务系统，持续写多租户日志供采集 |
 
 > 另有一套外部 Dify 项目栈（`docker-*` 容器 + `langgenius/dify-*` 等镜像）与本平台无关，未纳入、未改动。
 > 表中「告警（→ Kafka）」「采集接入（→ Kafka）」是 11-12 的设计描述；当前日志由 Fluent Bit 直写 OpenSearch、告警为请求时同步判定，Kafka 仅参与连通性探测，详见 `module-alarm-center.md` / `module-data-ingestion.md`。
@@ -157,7 +157,7 @@
 | 文件:行号 | 内容 |
 |---|---|
 | `docker-compose.yml:111-120` | `web.depends_on` 追加 `ai-service`，保证 nginx 启动时 upstream 可解析 |
-| `docker-compose.yml:192-200` | `ai-service`：`image: log_system-backend`、`working_dir: /app/services/ai-service`、`uvicorn app.main:app --port 8000`、`env_file: .env`、`depends_on: [postgres, ingest-service]`（同步索引字段需调 `/meta`） |
+| `docker-compose.yml:192-200` | `ai-service`：`image: ruilog-backend`、`working_dir: /app/services/ai-service`、`uvicorn app.main:app --port 8000`、`env_file: .env`、`depends_on: [postgres, ingest-service]`（同步索引字段需调 `/meta`） |
 | `compose.override.yml:5-10` | `web` 挂载 `./frontend/dist:/usr/share/nginx/html:ro`，端口 `${WEB_PORT:-8080}:80` |
 | `compose.override.yml:55-60` | `ai-service` 源码 bind mount，`--reload`、`ports: ["8008:8000"]` |
 | `compose.override.yml:61-63` | 追加 `extra_hosts: host.docker.internal:host-gateway`，供「本地自定义」接入访问宿主机 Ollama / oMLX |
@@ -170,7 +170,7 @@
 
 | 项 | 值 |
 |---|---|
-| 容器 / 镜像 | `log_system-ai-service-1` / `log_system-backend:latest`（8 个后端服务共用一份镜像，不同 `command`） |
+| 容器 / 镜像 | `log_system-ai-service-1` / `ruilog-backend:latest`（8 个后端服务共用一份镜像，不同 `command`） |
 | 运行用户 / 工作目录 | `appuser`（非 root，`HOME=/home/appuser`）/ `/app/services/ai-service` |
 | 启动命令 | 开发 `uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload`；生产去掉 `--reload` |
 | 端口 | 容器内 `8000`，开发期宿主 `8008`；网关 `http://localhost:8080/api/ai/` |
@@ -210,7 +210,7 @@ docker compose -f docker-compose.yml -f compose.override.yml restart web
 curl http://localhost:8008/health && curl http://localhost:8080/api/ai/health
 ```
 
-- **生产必须重建镜像**：`Dockerfile:22` 用 `COPY services /app/services` 把代码打进镜像，当前 `log_system-backend:latest` 构建于 2026-11-12，**镜像内不含 `ai-service` 目录**；开发期靠 bind mount 才跑得起来。上线前执行 `docker compose build`（或构建脚本）重建后再起生产编排。
+- **生产必须重建镜像**：`Dockerfile:22` 用 `COPY services /app/services` 把代码打进镜像，当前 `ruilog-backend:latest` 构建于 2026-11-12，**镜像内不含 `ai-service` 目录**；开发期靠 bind mount 才跑得起来。上线前执行 `docker compose build`（或构建脚本）重建后再起生产编排。
 - 后端源码小改：开发期 `--reload` 热更，无需重建；改 `requirements.txt` 则要重建镜像。
 
 ### 4.6 当前验证结果（2026-11-14 实测）
@@ -229,7 +229,7 @@ curl http://localhost:8008/health && curl http://localhost:8080/api/ai/health
 
 1. **时间词已进入 PPL 过滤（2026-11-16 修复）**：检索页 PPL（手写与智能检索填入）统一把页面时间范围传给 `/pql`，后端在 `source` 段后注入独立 `where @timestamp >= '…Z' and @timestamp <= '…Z'`；实测「按级别统计最近 1 小时」合计 1200 条，与直方图 1000 余条一致。**关键坑**：`@timestamp` 在索引中存 UTC，PPL 比较必须用带 `Z` 的 ISO 字面量——不带 Z 会 500，用空格格式会静默返回空结果。能力注册表 `nl2ppl` 状态为 `available`。`/grammar/preview` 仍只做字面规则命中。
 2. **WorkBuddy / CodeBuddy CLI 接入已下线（2026-11-17）**：该方式仅作技术验证，因容器内无 Node、宿主机 CLI 调用受沙箱与凭据上下文限制，决定暂不纳入产品。前后端页签、容器挂载、宿主机桥接脚本与库内配置均已移除，模型接入只保留商用 API 与本地自定义两类。
-3. **生产前置**：重建 `log_system-backend` 镜像、注入 `AI_PG_DSN` / `AI_INGEST_META_URL`（云托管地址）、评估 API Key 加密。
+3. **生产前置**：重建 `ruilog-backend` 镜像、注入 `AI_PG_DSN` / `AI_INGEST_META_URL`（云托管地址）、评估 API Key 加密。
 4. **安全闸门待补**：`/pql` 目前仅关键字黑名单、无索引/函数白名单、`timeRange` 未传入，AI 语句落地前必须先补（见 `module-log-search.md` 第 6 节）。
 
 ### 4.8 NL→PPL 运行时（2026-11-14 晚间追加）

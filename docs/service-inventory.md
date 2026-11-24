@@ -33,8 +33,8 @@
 | `log_system-redis-1` | redis | redis:7-alpine | localhost | 6379 | 6379 | running | 缓存 / 会话 / Agent 心跳 |
 | `log_system-kafka-1` | kafka | bitnami/kafka:3.7 | localhost | 9092 | 9092 | running | **v2.0 数据主干**：raw(6 分区)/dlq(3 分区) topic，ingest 幂等写入 → Flink 消费 |
 | `log_system-clickhouse-1` | **clickhouse** | clickhouse/clickhouse-server:24.3 | localhost | 8123 / 9000 | 8123 / 9000 | running | **v2.0 新增**：聚合引擎（双引擎之一），明细宽表 + 分钟级预聚合 |
-| `log_system-flink-jobmanager-1` | flink-jobmanager | **log_system-flink:1.18**（自建，基于 flink:1.18-scala_2.12） | localhost | 8081 | 8081 | running | **v2.0 起跑正式 Job**：作业调度 / checkpoint 协调 / Web UI |
-| `log_system-flink-taskmanager-1` | flink-taskmanager | log_system-flink:1.18（自建） | （仅容器网络） | — | 6123 / 8081 | running | 执行 DataStream Job（2 slots） |
+| `log_system-flink-jobmanager-1` | flink-jobmanager | **ruilog-flink:1.18**（自建，基于 flink:1.18-scala_2.12） | localhost | 8081 | 8081 | running | **v2.0 起跑正式 Job**：作业调度 / checkpoint 协调 / Web UI |
+| `log_system-flink-taskmanager-1` | flink-taskmanager | ruilog-flink:1.18（自建） | （仅容器网络） | — | 6123 / 8081 | running | 执行 DataStream Job（2 slots） |
 
 > **一次性初始化容器**（`restart: "no"`，跑完退出，不在 `docker ps` 常驻列表）：`kafka-init`（幂等建 topic）、`flink-init`（把 checkpoint/savepoint 卷属主改为 `flink:flink`）。
 
@@ -43,21 +43,21 @@
 | 容器名 | 服务 | 镜像 | 宿主机地址 | 映射端口 | 容器端口 | 状态 | 角色 |
 |---|---|---|---|---|---|---|---|
 | `log_system-web-1` | web | nginx:1.27-alpine | localhost | 8080 | 80 | running | 前端静态页 + 后端反向代理网关 |
-| `log_system-auth-service-1` | [auth-service](service-auth.md) | log_system-backend | localhost | 8001 | 8000 | running | 登录 / JWT 签发 / `/me` 当前用户与权限 / 改密（不建表，只读 users·tenants·roles） |
-| `log_system-search-service-1` | search-service | log_system-backend | localhost | 8002 | 8000 | running | 日志检索 |
-| `log_system-dashboard-service-1` | dashboard-service | log_system-backend | localhost | 8003 | 8000 | running | 看板数据后端（**v2.0：`AGG_ENGINE=ch` 时聚合走 ClickHouse，失败回退 OS**） |
-| `log_system-alarm-service-1` | alarm-service | log_system-backend | localhost | 8004 | 8000 | running | 告警 |
-| `log_system-ingest-service-1` | ingest-service | log_system-backend | localhost | 8005 | 8000 | running | 日志接入（**v2.0：`/ingest` 幂等写 Kafka，`INGEST_STORAGE_MODE` 控制模式**） |
-| `log_system-agent-service-1` | agent-service | log_system-backend | localhost | 8006 | 8000 | running | 运维 Agent 管控面 |
-| `log_system-system-service-1` | [system-service](service-system.md) | log_system-backend | localhost | 8007 | 8000 | running | 平台管理：用户 / 角色权限 / **租户管理** / 系统参数 / 审计日志 / 日志空间管理（九表建表方，容量与索引实时取数） |
-| `log_system-ai-service-1` | ai-service | log_system-backend | localhost | 8008 | 8000 | running | AI 能力配置中心 + NL→PPL 生成端点（模型接入 / PPL 语法规则库 / 能力注册表 / 智能检索预览） |
+| `log_system-auth-service-1` | [auth-service](service-auth.md) | ruilog-backend | localhost | 8001 | 8000 | running | 登录 / JWT 签发 / `/me` 当前用户与权限 / 改密（不建表，只读 users·tenants·roles） |
+| `log_system-search-service-1` | search-service | ruilog-backend | localhost | 8002 | 8000 | running | 日志检索 |
+| `log_system-dashboard-service-1` | dashboard-service | ruilog-backend | localhost | 8003 | 8000 | running | 看板数据后端（**v2.0：`AGG_ENGINE=ch` 时聚合走 ClickHouse，失败回退 OS**） |
+| `log_system-alarm-service-1` | alarm-service | ruilog-backend | localhost | 8004 | 8000 | running | 告警 |
+| `log_system-ingest-service-1` | ingest-service | ruilog-backend | localhost | 8005 | 8000 | running | 日志接入（**v2.0：`/ingest` 幂等写 Kafka，`INGEST_STORAGE_MODE` 控制模式**） |
+| `log_system-agent-service-1` | agent-service | ruilog-backend | localhost | 8006 | 8000 | running | 运维 Agent 管控面 |
+| `log_system-system-service-1` | [system-service](service-system.md) | ruilog-backend | localhost | 8007 | 8000 | running | 平台管理：用户 / 角色权限 / **租户管理** / 系统参数 / 审计日志 / 日志空间管理（九表建表方，容量与索引实时取数） |
+| `log_system-ai-service-1` | ai-service | ruilog-backend | localhost | 8008 | 8000 | running | AI 能力配置中心 + NL→PPL 生成端点（模型接入 / PPL 语法规则库 / 能力注册表 / 智能检索预览） |
 
 ### 3. 采集层 & 测试模拟器
 
 | 容器名 | 服务 | 镜像 | 宿主机地址 | 映射端口 | 容器端口 | 状态 | 角色 |
 |---|---|---|---|---|---|---|---|
-| `log_system-fluentbit-1` | fluentbit | log_system-fluentbit | （仅容器网络） | — | 2020 | running | 采集 agent（tail 多来源文件 → 注入来源租户 → HTTP 上报 ingest-service `/ingest/collector`） |
-| `log_system-log-generator-1` | log-generator | log_system-log-generator | （无端口） | — | — | running | 测试业务模拟器，向共享卷持续输出多租户日志 |
+| `log_system-fluentbit-1` | fluentbit | ruilog-fluentbit | （仅容器网络） | — | 2020 | running | 采集 agent（tail 多来源文件 → 注入来源租户 → HTTP 上报 ingest-service `/ingest/collector`） |
+| `log_system-log-generator-1` | log-generator | ruilog-log-generator | （无端口） | — | — | running | 测试业务模拟器，向共享卷持续输出多租户日志 |
 
 ---
 
@@ -183,7 +183,7 @@ docker compose exec -T log-generator python /app/backfill.py \
 - **免登录原因**：开发环境 OpenSearch 用 `DISABLE_SECURITY_PLUGIN=true`、Dashboards 用 `DISABLE_SECURITY_DASHBOARDS_PLUGIN=true` 关闭鉴权。`.env` 中的 `OPENSEARCH_USER`/`OPENSEARCH_PASSWORD`（均为 `admin`）仅用于微服务连接后端，看板本身免登录。
 - **端口规律**：8 个后端微服务容器内统一跑 `:8000`，经宿主机 `8001–8008` 暴露；前端 `8080`，看板 `5601`，Flink Web UI `8081`，数据库/消息中间件各用标准端口（postgres 5432 / redis 6379 / kafka 9092 / opensearch 9200 / **clickhouse 8123·9000**）。
 - **容器网络**：`fluentbit`、`log-generator`、`flink-taskmanager` 不暴露宿主机端口，仅通过 `log_net` 桥接网络通信。
-- **v2.0 新增组件**：ClickHouse（8123/9000，聚合引擎）、Flink 自建镜像（`log_system-flink:1.18`，含 Kafka connector）、`kafka-init`/`flink-init` 两个一次性容器；新增卷 `chdata`/`kafkadata`/`flinkckpt`/`flinksp`。
+- **v2.0 新增组件**：ClickHouse（8123/9000，聚合引擎）、Flink 自建镜像（`ruilog-flink:1.18`，含 Kafka connector）、`kafka-init`/`flink-init` 两个一次性容器；新增卷 `chdata`/`kafkadata`/`flinkckpt`/`flinksp`。
 - **写入模式开关**：`INGEST_STORAGE_MODE`（direct/dual/kafka）、`AGG_ENGINE`（ch/os）、`FLINK_WRITE_OS`（false/true）——当前 `dual` + `ch` + `false`，稳态目标 `kafka` + `ch` + `true`。
 
 ---

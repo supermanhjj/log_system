@@ -248,7 +248,7 @@ for perm in sorted(set(req.permissions)):
 | `JWT_SECRET` / `JWT_ALGORITHM` | `dev-only-not-secret` / `HS256` | **必须与 auth-service 一致**，否则解析不了它签发的 Token |
 | `AUTH_SEED_ADMIN_PASSWORD` | `Admin@123` | 仅 `admin` 内置账号首次创建时使用；其他账号不再预置 |
 
-- 容器：`image: log_system-backend`，`depends_on: [postgres]`，`env_file: .env`；开发期由 `compose.override.yml` 暴露 `8007:8000` 并开 `--reload`。
+- 容器：`image: ruilog-backend`，`depends_on: [postgres]`，`env_file: .env`；开发期由 `compose.override.yml` 暴露 `8007:8000` 并开 `--reload`。
 - **首次部署本服务必须先于 `auth-service` 起来**（建表 + 种子）。
 - 忘记 admin 密码：重启不会重置（种子只在账号不存在时插入）。用其他平台管理员重置，或改库里的 `password_hash`。
 - 自检：`curl localhost:8080/api/system/health` → `200`；无 Token 访问 `/api/system/users` → `401 未登录，请先登录`。

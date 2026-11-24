@@ -168,7 +168,7 @@ docker compose exec -T log-generator python /app/backfill.py \
 | P1 | 租户动态化 | 去掉 Fluent Bit 里 `default/acme/gp` 硬编码，与后端 `INDEX_BY_TENANT` 统一 |
 | P2 | Kafka / Flink 链路 | 若按设计稿引入流处理，需补 topic 与真实 Job；否则在设计文档中明确「开发/演示阶段直写 OpenSearch」为正式方案 |
 | P2 | 采样率、owner 等登记项生效 | 与 auth/RBAC 接通后去掉硬编码 |
-| P2 | 生产编排 | `docker-compose.prod.yml` 目前 `volumes: []`，AI 模块 CLI 挂载与前端 dist 需另行处理；上线前需重建 `log_system-backend` 镜像 |
+| P2 | 生产编排 | `docker-compose.prod.yml` 目前 `volumes: []`，AI 模块 CLI 挂载与前端 dist 需另行处理；上线前需重建 `ruilog-backend` 镜像 |
 
 ---
 

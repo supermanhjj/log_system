@@ -2,19 +2,19 @@
 # 发布镜像构建：一次产出 amd64 + arm64 并推送。
 #
 # 用法：
-#   REGISTRY=registry.cn-hangzhou.aliyuncs.com/ruilog TAG=0.9.0-test \
+#   REGISTRY=registry.cn-hangzhou.aliyuncs.com TAG=0.9.0-test \
 #     sh deploy/release/build-images.sh
 #
 # 镜像名与 K8s/Compose 对齐：
-#   log_system-backend  —— 8 个 FastAPI 服务共用
+#   ruilog-backend      —— 8 个 FastAPI 服务共用
 #   ruilog-web          —— nginx + 前端静态文件
-#   flink-base          —— Flink 1.18 + Kafka connector（基础镜像，先构建）
-#   ruilog-flink-job    —— flink-base + log-pipeline.jar（作业镜像）
+#   ruilog-flink        —— Flink 1.18 + Kafka connector（基础镜像，先构建）
+#   ruilog-flink-job    —— ruilog-flink + log-pipeline.jar（作业镜像）
 #
-# 注意：flink-base 的构建上下文是 flink-jobs/（Dockerfile 里 COPY lib/*.jar），
+# 注意：ruilog-flink 的构建上下文是 flink-jobs/（Dockerfile 里 COPY lib/*.jar），
 # 作业镜像的构建上下文是仓库根（Dockerfile 里 COPY flink-jobs/java/target/...）。
 set -e
-REGISTRY="${REGISTRY:?需要设置 REGISTRY，例如 registry.cn-hangzhou.aliyuncs.com/ruilog}"
+REGISTRY="${REGISTRY:?需要设置 REGISTRY，例如 registry.cn-hangzhou.aliyuncs.com}"
 TAG="${TAG:-latest}"
 PLATFORMS="${PLATFORMS:-linux/amd64,linux/arm64}"
 HERE=$(cd "$(dirname "$0")/../.." && pwd)
@@ -43,14 +43,14 @@ build() {
 }
 
 build_flink_base() {
-  printf '[build] %s:%s (%s, context=flink-jobs)\n' "$REGISTRY/flink-base" "$TAG" "$PLATFORMS"
+  printf '[build] %s:%s (%s, context=flink-jobs)\n' "$REGISTRY/ruilog-flink" "$TAG" "$PLATFORMS"
   docker buildx build --platform "$PLATFORMS" \
-    -f flink-jobs/Dockerfile -t "$REGISTRY/flink-base:$TAG" --push flink-jobs
+    -f flink-jobs/Dockerfile -t "$REGISTRY/ruilog-flink:$TAG" --push flink-jobs
 }
 
 # 先构建 Flink 基础镜像，作业镜像 FROM 它。
 build_flink_base
-build log_system-backend deploy/release/dockerfiles/backend.Dockerfile
+build ruilog-backend deploy/release/dockerfiles/backend.Dockerfile
 build ruilog-web deploy/release/dockerfiles/web.Dockerfile
 build ruilog-flink-job deploy/release/dockerfiles/flink-job.Dockerfile \
-  --build-arg "FLINK_BASE=$REGISTRY/flink-base:$TAG"
+  --build-arg "FLINK_BASE=$REGISTRY/ruilog-flink:$TAG"

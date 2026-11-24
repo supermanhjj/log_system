@@ -15,17 +15,17 @@ resources:
   - ../../base
 
 images:
-  - name: log_system-backend
-    newName: registry.example.com/ruilog/backend
+  - name: ruilog-backend
+    newName: registry.example.com/ruilog-backend
     newTag: 0.9.0-test
   - name: ruilog-web
-    newName: registry.example.com/ruilog/web
+    newName: registry.example.com/ruilog-web
     newTag: 0.9.0-test
-  - name: log_system-flink
-    newName: registry.example.com/ruilog/flink-base
+  - name: ruilog-flink
+    newName: registry.example.com/ruilog-flink
     newTag: 0.9.0-test
   - name: ruilog-flink-job
-    newName: registry.example.com/ruilog/flink-job
+    newName: registry.example.com/ruilog-flink-job
     newTag: 0.9.0-test
 
 patches:

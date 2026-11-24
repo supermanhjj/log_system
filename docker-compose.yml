@@ -186,7 +186,7 @@ services:
     build:
       context: ./flink-jobs
       dockerfile: Dockerfile
-    image: log_system-flink:1.18
+    image: ruilog-flink:1.18
     command: jobmanager
     depends_on:
       flink-init:
@@ -217,7 +217,7 @@ services:
     build:
       context: ./flink-jobs
       dockerfile: Dockerfile
-    image: log_system-flink:1.18
+    image: ruilog-flink:1.18
     command: taskmanager
     depends_on:
       flink-init:
@@ -260,7 +260,7 @@ services:
     networks: [log_net]
 
   auth-service:
-    image: log_system-backend
+    image: ruilog-backend
     working_dir: /app/services/auth-service
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
     environment:
@@ -270,7 +270,7 @@ services:
     networks: [log_net]
 
   search-service:
-    image: log_system-backend
+    image: ruilog-backend
     working_dir: /app/services/search-service
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
     environment:
@@ -280,7 +280,7 @@ services:
     networks: [log_net]
 
   dashboard-service:
-    image: log_system-backend
+    image: ruilog-backend
     working_dir: /app/services/dashboard-service
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
     environment:
@@ -290,7 +290,7 @@ services:
     networks: [log_net]
 
   alarm-service:
-    image: log_system-backend
+    image: ruilog-backend
     working_dir: /app/services/alarm-service
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
     environment:
@@ -300,7 +300,7 @@ services:
     networks: [log_net]
 
   ingest-service:
-    image: log_system-backend
+    image: ruilog-backend
     working_dir: /app/services/ingest-service
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
     environment:
@@ -316,7 +316,7 @@ services:
     networks: [log_net]
 
   agent-service:
-    image: log_system-backend
+    image: ruilog-backend
     working_dir: /app/services/agent-service
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
     environment:
@@ -326,7 +326,7 @@ services:
     networks: [log_net]
 
   system-service:
-    image: log_system-backend
+    image: ruilog-backend
     working_dir: /app/services/system-service
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
     environment:
@@ -338,7 +338,7 @@ services:
     networks: [log_net]
 
   ai-service:
-    image: log_system-backend
+    image: ruilog-backend
     working_dir: /app/services/ai-service
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
     environment:
@@ -351,7 +351,7 @@ services:
   # 业务主机只部署单一 Fluent Bit 进程；管控脚本随包部署、由 exec 插件调起（不另起进程）
   # 见 docs/tech-stack-selection.md 3.2(8) / 9.1
   fluentbit:
-    image: log_system-fluentbit
+    image: ruilog-fluentbit
     environment:
       <<: *tz
       # 采集器凭证：采集端凭它向 ingest-service 数据面上报；租户按来源注入，
@@ -383,7 +383,7 @@ services:
   # 租户名已同步为现存租户 i6000（旧 default/acme/gp 已废止，写这些文件会被网关拒收）。
   log-generator:
     profiles: ["legacy-docker"]
-    image: log_system-log-generator
+    image: ruilog-log-generator
     environment:
       <<: *tz
       TENANTS: "i6000"

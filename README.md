@@ -64,10 +64,10 @@
 | 场景 | 命令 |
 |---|---|
 | 容器部署（本地开发） | `docker compose up -d --build` |
-| K8s 部署（本地 Docker Desktop） | `docker build -f deploy/release/dockerfiles/backend.Dockerfile -t log_system-backend:k8s .`（web / flink-job 同理）→ `sh deploy/release/load-images.sh` → `sh deploy/k8s/apply.sh local` |
+| K8s 部署（本地 Docker Desktop） | 镜像统一为 `ruilog-<组件>`：`ruilog-backend:k8s`、`ruilog-web:k8s`、`ruilog-flink:1.18`、`ruilog-flink-job:k8s`。构建后执行 `sh deploy/release/load-images.sh` → `sh deploy/k8s/apply.sh local` |
 | K8s 部署（云上测试） | 修改 `deploy/k8s/platform/overlays/cloud/kustomization.yaml` 的镜像仓库/StorageClass/PVC → `sh deploy/k8s/apply.sh cloud`；采集器用 `-f deploy/k8s/collector/values-cloud.yaml` |
 | K8s 部署（3 节点生产形态） | `sh deploy/k8s/apply.sh cloud-ha`（前提：Kafka/OS 已扩到 3 节点） |
-| 发布（多架构镜像推送） | `REGISTRY=<registry>/ruilog TAG=1.0.0 sh deploy/release/build-images.sh` |
+| 发布（多架构镜像推送） | `REGISTRY=<registry> TAG=1.0.0 sh deploy/release/build-images.sh` |
 | 发布（交付包归档） | `VERSION=1.0.0 sh deploy/release/package.sh` → `dist/ruilog-deploy-1.0.0.tar.gz` |
 
 ## 本地启动

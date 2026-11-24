@@ -456,12 +456,12 @@ Flink 1.18 Java DataStream Job（checkpoint EXACTLY_ONCE / 10s）
 |------|--------|------|------|------|------|
 | **ClickHouse** | `log_system-clickhouse-1` | `clickhouse/clickhouse-server` | 24.3 | 聚合引擎（双引擎之一），明细宽表 + 分钟级预聚合 | `8123←8123`（HTTP）、`9000←9000`（Native） |
 | **Kafka** | `log_system-kafka-1` | `bitnami/kafka` | 3.7 | 数据主干（v1.x 已在编排但仅占位，v2.0 真正承载日志流） | `9092←9092` |
-| **Flink JobManager** | `log_system-flink-jobmanager-1` | `log_system-flink:1.18`（自建，基于 `flink:1.18-scala_2.12`） | 1.18 | 作业调度 / checkpoint 协调 / Web UI | `8081←8081` |
+| **Flink JobManager** | `log_system-flink-jobmanager-1` | `ruilog-flink:1.18`（自建，基于 `flink:1.18-scala_2.12`） | 1.18 | 作业调度 / checkpoint 协调 / Web UI | `8081←8081` |
 | **Flink TaskManager** | `log_system-flink-taskmanager-1` | 同上 | 1.18 | 执行 DataStream Job（2 slots） | 仅容器内（`6123`、`8081`） |
 | `kafka-init`（一次性） | `log_system-kafka-init-1` | `bitnami/kafka:3.7` | 3.7 | 幂等创建 `ruilog.logs.raw`(6 分区) / `ruilog.logs.dlq`(3 分区)，跑完即退出 | 无 |
 | `flink-init`（一次性） | `log_system-flink-init-1` | `flink:1.18-scala_2.12` | 1.18 | 修正常量挂载卷属主为 `flink:flink`（否则 JM 无法建 checkpoint 目录），跑完即退出 | 无 |
 
-> 自建镜像 `log_system-flink:1.18` = 官方 `flink:1.18-scala_2.12` + `flink-jobs/lib/` 下的 Kafka connector / kafka-clients（官方镜像不含 connector）。因 arm64 本机无 JDK、镜像无 Python，Java Job 用 Maven 容器构建。
+> 自建镜像 `ruilog-flink:1.18` = 官方 `flink:1.18-scala_2.12` + `flink-jobs/lib/` 下的 Kafka connector / kafka-clients（官方镜像不含 connector）。因 arm64 本机无 JDK、镜像无 Python，Java Job 用 Maven 容器构建。
 
 #### （2）新增 / 改造代码模块
 
